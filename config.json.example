@@ -1,0 +1,37 @@
+{
+    "port": 8080,
+    "timeout": 30,
+    "max_file_size": 100,
+    "storage_service": "r2",
+    "upload_cache": {
+        "type": "memory",
+        "path": "cache",
+        "max_files": 100
+    },
+    "db": {
+        "type": "postgres",
+        "host": "127.0.0.1",
+        "port": "5432",
+        "user": "postgres",
+        "password": "",
+        "database": "object_share"
+    },
+    "encryption": {
+        "enabled": false,
+        "mode": "server-side",
+        "method": "aes-256-gcm",
+        "key": "",
+        "decryption_cache": {
+            "type": "memory",
+            "path": "decryption_cache"
+            "max_files": 100
+        }
+    },
+    "r2": {
+        "bucket_name": "",
+        "account_id": "",
+        "secret_id": "",
+        "secret_key": "",
+        "presign_link_timeout": 600
+    }
+}

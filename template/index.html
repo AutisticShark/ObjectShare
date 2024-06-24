@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>ObjectShare</title>
+    <!-- CSS files -->
+    <link href="//cdn.jsdelivr.net/npm/@tabler/core@latest/dist/css/tabler.min.css" rel="stylesheet"/>
+    <!-- JS files -->
+    <script src="//cdn.jsdelivr.net/npm/@tabler/core@latest/dist/js/tabler.min.js"></script>
+    <script src="//cdn.jsdelivr.net/npm/htmx.org@v2/dist/htmx.min.js"></script>
+</head>
+<body>
+    <div class="page">
+        <header class="navbar navbar-expand-md d-print-none">
+            <div class="container-xl">
+                <div class="row g-2 align-items-center">
+                    <div class="col">
+                        <h2 class="page-title">
+                            <a href="/" class="text-decoration-none">
+                                ObjectShare
+                            </a>
+                        </h2>
+                    </div>
+                </div>
+            </div>
+        </header>
+        <div class="page-wrapper">
+            <div class="page-header d-print-none">
+                <div class="container-xl">
+                    <div class="row g-2 align-items-center">
+                        <div class="col">
+                            <h2 class="page-title">
+                                Uploader
+                            </h2>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="page-body">
+                <div class="container-xl">
+                    <div class="card">
+                        <div class="card-body">
+                            <form hx-encoding='multipart/form-data' hx-post='/api/v1/upload'
+                                  _='on htmx:xhr:progress(loaded, total) set #progress.value to (loaded/total)*100'>
+                                <div class="form-group mb-3 row">
+                                    <div class="col">
+                                        <input type='file' name='file'>
+                                    </div>
+                                    <div class="col-auto">
+                                        <button class="btn btn-primary">
+                                            Upload
+                                        </button>
+                                        <progress class="progress my-1" id='progress' value='0' max='100'></progress>
+                                    </div>
+                                </div>
+                            </form>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <footer class="footer footer-transparent d-print-none">
+                <div class="container-xl">
+                    <div class="row text-center align-items-center flex-row-reverse">
+                        <div class="col-lg-auto ms-lg-auto">
+                            <ul class="list-inline list-inline-dots mb-0">
+                                <li class="list-inline-item">v{{.Version}}</li>
+                                <li class="list-inline-item"><a href="" target="_blank" class="link-secondary" rel="noopener">GitHub</a></li>
+                                <li class="list-inline-item">
+                                    Made with
+                                    <svg xmlns="http://www.w3.org/2000/svg" class="icon text-pink icon-filled icon-inline" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z" fill="none"></path><path d="M19.5 12.572l-7.5 7.428l-7.5 -7.428a5 5 0 1 1 7.5 -6.566a5 5 0 1 1 7.5 6.572"></path></svg>
+                                    by Cat
+                                </li>
+                            </ul>
+                        </div>
+                    </div>
+                </div>
+            </footer>
+        </div>
+    </div>
+</body>
+</html>
