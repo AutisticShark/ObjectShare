@@ -23,7 +23,7 @@
         "key": "",
         "decryption_cache": {
             "type": "memory",
-            "path": "decryption_cache"
+            "path": "decryption_cache",
             "max_files": 100
         }
     },
