@@ -43,4 +43,8 @@ WiP
 
 ## License
 
-[GPLv3](blob/main/LICENSE)
+[GPL-3.0](./LICENSE)
+
+## Star History
+
+[![Star History Chart](https://api.star-history.com/svg?repos=AutisticShark/ObjectShare&type=Date)](https://star-history.com/#AutisticShark/ObjectShare&Date)
