@@ -4,7 +4,7 @@ Run a file sharing site in minutes.
 
 ## Preview
 
-![ObjectShare v0.0.1](./.github/ObjectShare_0.0.1.png)
+![ObjectShare v0.0.2](./.github/ObjectShare_0.0.2.png)
 
 ## Tech Stack
 

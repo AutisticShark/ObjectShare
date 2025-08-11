@@ -19,6 +19,9 @@ func main() {
 	if *configFilePath != "" {
 		config.Viper.AddConfigPath(*configFilePath)
 	}
+	
+	Timeout := time.Duration(int64(config.Config.Timeout) * int64(time.Second))
+	MaxFileSize := config.Config.MaxFileSize * 1024 * 1024
 
 	router := chi.NewRouter()
 
@@ -26,13 +29,13 @@ func main() {
 	router.Use(middleware.RealIP)
 	router.Use(middleware.Logger)
 	router.Use(middleware.Recoverer)
-	router.Use(middleware.Timeout(time.Duration(int64(config.Config.Timeout) * int64(time.Second))))
+	router.Use(middleware.Timeout(Timeout))
 
 	router.Get("/", htmx.IndexV1)
 	router.Get("/file/{id}", htmx.FileViewV1)
 
 	router.Route("/api/v1", func(router chi.Router) {
-		router.Post("/upload", htmx.UploadV1)
+		router.With(middleware.RequestSize(MaxFileSize)).Post("/upload", htmx.UploadV1)
 		router.Get("/download/{id}", htmx.DownloadV1)
 		router.Delete("/delete/{id}", htmx.DeleteV1)
 		router.Put("/update/{id}", htmx.UpdateV1)

@@ -13,7 +13,10 @@ func GetPostgresConnection() *gorm.DB {
 		" user=" + config.Config.Db.User + " password=" + config.Config.Db.Password +
 		" dbname=" + config.Config.Db.Database + " sslmode=disable TimeZone=Asia/Taipei"
 
-	connection, err := gorm.Open(postgres.Open(dsn), &gorm.Config{})
+	connection, err := gorm.Open(postgres.Open(dsn), &gorm.Config{
+		SkipDefaultTransaction: true,
+		PrepareStmt:            true,
+	})
 	if err != nil {
 		panic(err)
 	}
