@@ -6,14 +6,15 @@ import (
 	"ObjectShare/service"
 	"crypto/sha256"
 	"encoding/hex"
-	"github.com/c2h5oh/datasize"
-	"github.com/go-chi/chi/v5"
-	"github.com/google/uuid"
-	"golang.org/x/crypto/sha3"
 	"html/template"
 	"io"
 	"net/http"
 	"time"
+
+	"github.com/c2h5oh/datasize"
+	"github.com/go-chi/chi/v5"
+	"github.com/google/uuid"
+	"golang.org/x/crypto/sha3"
 )
 
 var (

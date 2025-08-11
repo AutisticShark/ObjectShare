@@ -2,9 +2,10 @@ package db
 
 import (
 	"ObjectShare/config"
+	"strconv"
+
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
-	"strconv"
 )
 
 func GetPostgresConnection() *gorm.DB {

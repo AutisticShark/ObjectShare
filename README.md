@@ -8,10 +8,10 @@ Run a file sharing site in minutes.
 
 ## Tech Stack
 
-- Go 1.22 - Programming language
+- Go 1.25 - Programming language
 - chi v5 - Http router
 - Htmx v2 - Frontend "framework"
-- Postgres v16 - Database
+- Postgres v17 - Database
 
 ## Usage
 

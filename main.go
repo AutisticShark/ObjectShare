@@ -3,12 +3,13 @@ package main
 import (
 	"ObjectShare/api/htmx"
 	"ObjectShare/config"
-	"github.com/go-chi/chi/v5"
-	"github.com/go-chi/chi/v5/middleware"
-	"github.com/spf13/pflag"
 	"net/http"
 	"strconv"
 	"time"
+
+	"github.com/go-chi/chi/v5"
+	"github.com/go-chi/chi/v5/middleware"
+	"github.com/spf13/pflag"
 )
 
 func main() {
