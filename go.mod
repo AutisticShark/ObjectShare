@@ -10,7 +10,7 @@ require (
 	github.com/c2h5oh/datasize v0.0.0-20231215233829-aa82cc1e6500
 	github.com/go-chi/chi/v5 v5.2.2
 	github.com/google/uuid v1.6.0
-	github.com/spf13/pflag v1.0.7
+	github.com/spf13/pflag v1.0.8
 	github.com/spf13/viper v1.20.1
 	golang.org/x/crypto v0.41.0
 	gorm.io/driver/postgres v1.6.0
