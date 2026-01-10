@@ -9,8 +9,8 @@ type FileList struct {
 	FileSize              int64
 	FileSha256            string `gorm:"unique;type:varchar"`
 	FileSha3              string `gorm:"unique;type:varchar"`
-	IsEncrypted           bool   `gorm:"default:false"`
 	IsAnonymousUpload     bool   `gorm:"default:true"`
+	IsEncrypted           bool   `gorm:"default:false"`
 	EncryptionMethod      string `gorm:"default:aes-256-gcm"`
 	EncryptionKey         string `gorm:"unique;type:varchar"`
 	StorageService        string `gorm:"type:varchar;default:r2"`
