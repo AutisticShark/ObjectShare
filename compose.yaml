@@ -1,0 +1,67 @@
+name: objectshare
+
+services:
+  app:
+    image: ${OBJECTSHARE_IMAGE:-objectshare:local}
+    build:
+      context: .
+      args:
+        VERSION: ${OBJECTSHARE_VERSION:-dev}
+    restart: unless-stopped
+    stop_grace_period: 20s
+    init: true
+    read_only: true
+    tmpfs:
+      - /tmp:size=256m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    ports:
+      - "${OBJECTSHARE_PORT:-8080}:8080"
+    environment:
+      OBJECTSHARE_ADDRESS: ":8080"
+      OBJECTSHARE_MAX_FILE_SIZE_MB: "${OBJECTSHARE_MAX_FILE_SIZE_MB:-100}"
+      OBJECTSHARE_STORAGE_SERVICE: "${OBJECTSHARE_STORAGE_SERVICE:-filesystem}"
+      OBJECTSHARE_STORAGE_PATH: "${OBJECTSHARE_STORAGE_PATH:-/var/lib/objectshare/objects}"
+      OBJECTSHARE_R2_BUCKET_NAME: "${OBJECTSHARE_R2_BUCKET_NAME:-}"
+      OBJECTSHARE_R2_ACCOUNT_ID: "${OBJECTSHARE_R2_ACCOUNT_ID:-}"
+      OBJECTSHARE_R2_ACCESS_KEY_ID: "${OBJECTSHARE_R2_ACCESS_KEY_ID:-}"
+      OBJECTSHARE_R2_SECRET_ACCESS_KEY: "${OBJECTSHARE_R2_SECRET_ACCESS_KEY:-}"
+      OBJECTSHARE_R2_PRESIGN_TIMEOUT: "${OBJECTSHARE_R2_PRESIGN_TIMEOUT:-10m}"
+      OBJECTSHARE_R2_UPLOAD_PRESIGN_TIMEOUT: "${OBJECTSHARE_R2_UPLOAD_PRESIGN_TIMEOUT:-1h}"
+      OBJECTSHARE_SECURE_COOKIES: "${OBJECTSHARE_SECURE_COOKIES:-false}"
+      OBJECTSHARE_DB_HOST: db
+      OBJECTSHARE_DB_PORT: "5432"
+      OBJECTSHARE_DB_USER: objectshare
+      OBJECTSHARE_DB_PASSWORD: "${POSTGRES_PASSWORD:-objectshare-dev}"
+      OBJECTSHARE_DB_DATABASE: objectshare
+      OBJECTSHARE_DB_SSLMODE: disable
+      OBJECTSHARE_ENCRYPTION_ENABLED: "${OBJECTSHARE_ENCRYPTION_ENABLED:-false}"
+      OBJECTSHARE_ENCRYPTION_KEY: "${OBJECTSHARE_ENCRYPTION_KEY:-}"
+    volumes:
+      - object-data:/var/lib/objectshare
+    depends_on:
+      db:
+        condition: service_healthy
+
+  db:
+    image: postgres:18.6-alpine3.24@sha256:d3e1620b530c944afa6e887d22eb899824da68e19c52024bf98f5220c88a65b2
+    restart: unless-stopped
+    stop_grace_period: 30s
+    environment:
+      POSTGRES_USER: objectshare
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:-objectshare-dev}"
+      POSTGRES_DB: objectshare
+    volumes:
+      - postgres-data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U objectshare -d objectshare"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+volumes:
+  object-data:
+  postgres-data:

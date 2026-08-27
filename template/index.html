@@ -1,81 +1,100 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <title>ObjectShare</title>
-    <!-- CSS files -->
-    <link href="//cdn.jsdelivr.net/npm/@tabler/core@latest/dist/css/tabler.min.css" rel="stylesheet"/>
-    <!-- JS files -->
-    <script src="//cdn.jsdelivr.net/npm/@tabler/core@latest/dist/js/tabler.min.js"></script>
-    <script src="//cdn.jsdelivr.net/npm/htmx.org@v2/dist/htmx.min.js"></script>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ObjectShare</title>
+  <link rel="stylesheet"
+        href="https://cdn.jsdelivr.net/npm/@tabler/core@1.4.0/dist/css/tabler.min.css"
+        integrity="sha384-kz+I4+mczbNiZfLAJMxOlJaZmnbRYhARHNkR2k6tal4gz7OL33/0puDD3SvkiNX9"
+        crossorigin="anonymous">
+  <script defer src="https://cdn.jsdelivr.net/npm/htmx.org@2.0.10/dist/htmx.min.js"
+          integrity="sha384-H5SrcfygHmAuTDZphMHqBJLc3FhssKjG7w/CeCpFReSfwBWDTKpkzPP8c+cLsK+V"
+          crossorigin="anonymous"></script>
+  <script defer src="/assets/upload.js"></script>
 </head>
 <body>
-    <div class="page">
-        <header class="navbar navbar-expand-md d-print-none">
-            <div class="container-xl">
-                <div class="row g-2 align-items-center">
-                    <div class="col">
-                        <h2 class="page-title">
-                            <a href="/" class="text-decoration-none">
-                                ObjectShare
-                            </a>
-                        </h2>
-                    </div>
-                </div>
-            </div>
-        </header>
-        <div class="page-wrapper">
-            <div class="page-header d-print-none">
-                <div class="container-xl">
-                    <div class="row g-2 align-items-center">
-                        <div class="col">
-                            <h2 class="page-title">
-                                Uploader
-                            </h2>
-                        </div>
-                    </div>
-                </div>
-            </div>
-            <div class="page-body">
-                <div class="container-xl">
-                    <div class="card">
-                        <div class="card-body">
-                            <form hx-encoding='multipart/form-data' hx-post='/api/v1/upload'
-                                  _='on htmx:xhr:progress(loaded, total) set #progress.value to (loaded/total)*100'>
-                                <div class="form-group mb-3 row">
-                                    <div class="col">
-                                        <input type='file' name='file'>
-                                    </div>
-                                    <div class="col-auto">
-                                        <button class="btn btn-primary">
-                                            Upload
-                                        </button>
-                                        <progress class="progress my-1" id='progress' value='0' max='100'></progress>
-                                    </div>
-                                </div>
-                            </form>
-                        </div>
-                    </div>
-                </div>
-            </div>
-            <footer class="footer footer-transparent d-print-none">
-                <div class="container-xl">
-                    <div class="row text-center align-items-center flex-row-reverse">
-                        <div class="col-lg-auto ms-lg-auto">
-                            <ul class="list-inline list-inline-dots mb-0">
-                                <li class="list-inline-item">v{{.Version}}</li>
-                                <li class="list-inline-item"><a href="https://github.com/AutisticShark/ObjectShare" target="_blank" class="link-secondary" rel="noopener">GitHub</a></li>
-                                <li class="list-inline-item">
-                                    Made with
-                                    <svg xmlns="http://www.w3.org/2000/svg" class="icon text-pink icon-filled icon-inline" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z" fill="none"></path><path d="M19.5 12.572l-7.5 7.428l-7.5 -7.428a5 5 0 1 1 7.5 -6.566a5 5 0 1 1 7.5 6.572"></path></svg>
-                                    by Cat
-                                </li>
-                            </ul>
-                        </div>
-                    </div>
-                </div>
-            </footer>
+  <div class="page">
+    <header class="navbar navbar-expand-md d-print-none">
+      <div class="container-xl">
+        <div class="navbar-brand navbar-brand-autodark">
+          <a href="/" class="text-decoration-none">ObjectShare</a>
         </div>
+        <div class="navbar-nav flex-row order-md-last">
+          <a href="https://github.com/AutisticShark/ObjectShare"
+             class="nav-link"
+             rel="noopener noreferrer">GitHub</a>
+        </div>
+      </div>
+    </header>
+
+    <div class="page-wrapper">
+      <div class="page-header d-print-none">
+        <div class="container-xl">
+          <div class="row g-2 align-items-center">
+            <div class="col">
+              <div class="page-pretitle">ObjectShare</div>
+              <h2 class="page-title">Share a file</h2>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="page-body">
+        <div class="container-xl">
+          <div class="row justify-content-center">
+            <div class="col-12 col-lg-8">
+              <div class="card">
+                <div class="card-header">
+                  <h3 class="card-title">Uploader</h3>
+                </div>
+                <form id="upload-form" action="/api/v1/upload" method="post" enctype="multipart/form-data"
+                      {{if .DirectUpload}}data-direct-upload="true"{{else}}hx-post="/api/v1/upload" hx-encoding="multipart/form-data" hx-disabled-elt="#upload-button"{{end}}>
+                  <div class="card-body">
+                    <p class="text-secondary">
+                      Files are shared through an unlisted link. This browser receives an
+                      owner token that permits rename and deletion.
+                    </p>
+                    <div class="mb-3">
+                      <label class="form-label" for="file">Choose a file</label>
+                      <input class="form-control" id="file" type="file" name="file" required>
+                      <small class="form-hint">Maximum file size: {{.MaxFileSize}} MiB.</small>
+                    </div>
+                    <div id="upload-status" class="alert alert-info d-none" role="status" aria-live="polite"></div>
+                    <div id="upload-progress-wrap" class="progress d-none" aria-hidden="true">
+                      <div id="upload-progress" class="progress-bar" role="progressbar" style="width: 0%" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"></div>
+                    </div>
+                  </div>
+                  <div class="card-footer text-end">
+                    <button id="upload-button" class="btn btn-primary" type="submit">Upload</button>
+                  </div>
+                </form>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <footer class="footer footer-transparent d-print-none">
+        <div class="container-xl">
+          <div class="row text-center align-items-center flex-row-reverse">
+            <div class="col-lg-auto ms-lg-auto">
+              <ul class="list-inline list-inline-dots mb-0">
+                <li class="list-inline-item">ObjectShare {{.Version}}</li>
+                <li class="list-inline-item">
+                  Made with
+                  <svg xmlns="http://www.w3.org/2000/svg" class="icon text-pink icon-filled icon-inline" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round" aria-label="love">
+                    <path stroke="none" d="M0 0h24v24H0z" fill="none"></path>
+                    <path d="M19.5 12.572l-7.5 7.428l-7.5 -7.428a5 5 0 1 1 7.5 -6.566a5 5 0 1 1 7.5 6.572"></path>
+                  </svg>
+                  by Cat
+                </li>
+              </ul>
+            </div>
+          </div>
+        </div>
+      </footer>
     </div>
+  </div>
 </body>
 </html>

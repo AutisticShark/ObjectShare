@@ -17,3 +17,9 @@ vendor/
 
 # Config file
 config.json
+.env
+
+# Local runtime/build data
+data/
+.tmp/
+build/
