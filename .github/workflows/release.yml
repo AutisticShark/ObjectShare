@@ -3,112 +3,146 @@ name: Test and Release
 on:
   workflow_dispatch:
   push:
-    branches:
-      - main
+    branches: [main]
     paths:
       - "**/*.go"
       - "go.mod"
       - "go.sum"
+      - "template/**"
+      - "README.md"
+      - "LICENSE"
+      - "config.json.example"
       - ".github/workflows/*.yml"
   pull_request:
-    types: [ opened, synchronize, reopened ]
     paths:
       - "**/*.go"
       - "go.mod"
       - "go.sum"
+      - "template/**"
+      - "README.md"
+      - "LICENSE"
+      - "config.json.example"
       - ".github/workflows/*.yml"
   release:
-    types: [ published ]
+    types: [published]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: binary-release-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name != 'release' }}
 
 jobs:
   build:
-    permissions: write-all
-    strategy:
-      matrix:
-        build-tag: [ 'none' ]
-        goos: [ linux ]
-        goarch: [ amd64 ]
-        goamd64: [ v1, v3 ]
-        include:
-          - build-tag: none
-            goos: linux
-            goarch: arm64
-          - build-tag: none
-            goos: linux
-            goarch: riscv64
-      fail-fast: false
+    name: Build ${{ matrix.asset }}
     runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - goos: linux
+            goarch: amd64
+            goamd64: v1
+            asset: linux-amd64
+          - goos: linux
+            goarch: amd64
+            goamd64: v3
+            asset: linux-amd64v3
+          - goos: linux
+            goarch: arm64
+            goamd64: v1
+            asset: linux-arm64
+          - goos: linux
+            goarch: riscv64
+            goamd64: v1
+            asset: linux-riscv64
     env:
-      BUILD_TAG: ${{ matrix.build-tag }}
+      CGO_ENABLED: "0"
       GOOS: ${{ matrix.goos }}
       GOARCH: ${{ matrix.goarch }}
       GOAMD64: ${{ matrix.goamd64 }}
-      CGO_ENABLED: 0
     steps:
-      - name: Checkout
-        uses: actions/checkout@v6
-      - name: Generate build information
-        id: get_filename
-        run: |
-          echo "BUILD_TAG: $BUILD_TAG, GOOS: $GOOS, GOARCH: $GOARCH, GOAMD64: $GOAMD64"
-          if [ "$GOAMD64" == "v3" ]; then
-            if [ "$BUILD_TAG" == "none" ]; then
-              echo "ASSET_NAME=$GOOS-$GOARCH$GOAMD64" >> $GITHUB_OUTPUT
-              echo "ASSET_NAME=$GOOS-$GOARCH$GOAMD64" >> $GITHUB_ENV
-            else
-              echo "ASSET_NAME=$GOOS-$GOARCH$GOAMD64-$BUILD_TAG" >> $GITHUB_OUTPUT
-              echo "ASSET_NAME=$GOOS-$GOARCH$GOAMD64-$BUILD_TAG" >> $GITHUB_ENV
-            fi
-          else
-            if [ "$BUILD_TAG" == "none" ]; then
-              echo "ASSET_NAME=$GOOS-$GOARCH" >> $GITHUB_OUTPUT
-              echo "ASSET_NAME=$GOOS-$GOARCH" >> $GITHUB_ENV
-            else
-              echo "ASSET_NAME=$GOOS-$GOARCH-$BUILD_TAG" >> $GITHUB_OUTPUT
-              echo "ASSET_NAME=$GOOS-$GOARCH-$BUILD_TAG" >> $GITHUB_ENV
-            fi
-          fi
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Set up Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: ^1.25
-      - name: Get project dependencies
-        run: go mod download
-      - name: Build ObjectShare Binary
+          go-version: "1.27.0"
+          cache: true
+      - name: Verify modules
         run: |
-          mkdir -p build_assets
-          if [ $BUILD_TAG != "none" ]; then
-            go build -v -o build_assets/object-share -trimpath -ldflags "-s -w -buildid=" -tags $BUILD_TAG
+          go mod download
+          go mod verify
+      - name: Select binary version
+        id: version
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          COMMIT_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          if [[ "$EVENT_NAME" == "release" ]]; then
+            version="$RELEASE_TAG"
           else
-            go build -v -o build_assets/object-share -trimpath -ldflags "-s -w -buildid="
+            version="dev-${COMMIT_SHA:0:12}"
           fi
-      - name: Prepare config files
+          echo "value=$version" >> "$GITHUB_OUTPUT"
+      - name: Build and package binary
+        shell: bash
+        env:
+          ASSET: ${{ matrix.asset }}
+          VERSION: ${{ steps.version.outputs.value }}
         run: |
-          cp ${GITHUB_WORKSPACE}/README.md ./build_assets/README.md
-          cp ${GITHUB_WORKSPACE}/LICENSE ./build_assets/LICENSE
-          cp ${GITHUB_WORKSPACE}/config.json.example ./build_assets/config.json.example
-      - name: Create zip archive
+          set -euo pipefail
+          mkdir -p package dist
+          go build -trimpath -buildvcs=false \
+            -ldflags="-s -w -buildid= -X github.com/AutisticShark/ObjectShare/config.Version=$VERSION" \
+            -o package/object-share ./
+          cp README.md LICENSE config.json.example package/
+          touch -t 198001010000 package/*
+          archive="object-share-${ASSET}.zip"
+          (
+            cd package
+            zip -9 -X "../dist/${archive}" ./*
+          )
+          (
+            cd dist
+            sha256sum "$archive" > "${archive}.sha256"
+            openssl dgst -sha3-256 "$archive" > "${archive}.sha3-256"
+          )
+      - name: Upload binary artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: object-share-${{ matrix.asset }}
+          path: dist/*
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
+
+  release:
+    name: Attach binaries to release
+    if: github.event_name == 'release'
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      actions: read
+      contents: write
+    steps:
+      - name: Download binary artifacts
+        uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
+        with:
+          pattern: object-share-*
+          path: release-assets
+          merge-multiple: true
+      - name: Upload assets to GitHub Release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
         run: |
-          pushd build_assets || exit 1
-          touch -mt $(date +%Y01010000) *
-          zip -9vr ../object-share-$ASSET_NAME.zip .
-          popd || exit 1
-          FILE=./object-share-$ASSET_NAME.zip
-          DGST=$FILE.hash.txt
-          openssl dgst -sha256    $FILE | sed 's/([^)]*)//g' >>$DGST
-          openssl dgst -sha3-256  $FILE | sed 's/([^)]*)//g' >>$DGST
-          mv build_assets object-share-$ASSET_NAME
-      - name: Upload files to artifacts
-        uses: actions/upload-artifact@v5
-        with:
-          name: object-share-${{ steps.get_filename.outputs.ASSET_NAME }}
-          path: |
-            ./object-share-${{ steps.get_filename.outputs.ASSET_NAME }}/*
-      - name: Upload files to release
-        uses: svenstaro/upload-release-action@v2
-        if: ${{ github.event_name == 'release' }}
-        with:
-          repo_token: ${{ secrets.GITHUB_TOKEN }}
-          file: ./object-share-${{ steps.get_filename.outputs.ASSET_NAME }}.zip*
-          tag: ${{ github.ref }}
-          file_glob: true
+          set -euo pipefail
+          gh release upload "$RELEASE_TAG" release-assets/* --clobber

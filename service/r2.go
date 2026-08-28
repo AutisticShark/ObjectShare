@@ -1,133 +1,103 @@
 package service
 
 import (
-	"ObjectShare/config"
 	"context"
-	"errors"
 	"fmt"
 	"io"
-	"mime/multipart"
-	"os"
-	"time"
+	"mime"
 
+	"github.com/AutisticShark/ObjectShare/config"
 	"github.com/aws/aws-sdk-go-v2/aws"
-	awsConfig "github.com/aws/aws-sdk-go-v2/config"
+	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 )
 
-func r2ClientGenerator() (*s3.Client, error) {
-	bucketName := config.Config.R2.BucketName
-	accountID := config.Config.R2.AccountID
-	secretID := config.Config.R2.SecretID
-	secretKey := config.Config.R2.SecretKey
-
-	if bucketName == "" || accountID == "" || secretID == "" || secretKey == "" {
-		return nil, errors.New("r2 config is not set")
-	}
-
-	r2Resolver := aws.EndpointResolverWithOptionsFunc(func(service, region string, options ...interface{}) (aws.Endpoint, error) {
-		return aws.Endpoint{
-			URL: fmt.Sprintf("https://%s.r2.cloudflarestorage.com", accountID),
-		}, nil
-	})
-
-	r2Config, err := awsConfig.LoadDefaultConfig(
-		context.TODO(),
-		awsConfig.WithEndpointResolverWithOptions(r2Resolver),
-		awsConfig.WithCredentialsProvider(
-			credentials.NewStaticCredentialsProvider(secretID, secretKey, "")),
-		awsConfig.WithRegion("auto"))
-
-	if err != nil {
-		return nil, err
-	}
-
-	r2Client := s3.NewFromConfig(r2Config)
-
-	return r2Client, nil
+type R2 struct {
+	bucket          string
+	client          *s3.Client
+	presign         *s3.PresignClient
+	downloadTimeout config.Duration
+	uploadTimeout   config.Duration
 }
 
-func UploadToR2(file multipart.File, fileId string, fileName string) error {
-	r2Client, err := r2ClientGenerator()
+func NewR2(settings *config.R2Config) (*R2, error) {
+	awsCfg, err := awsconfig.LoadDefaultConfig(context.Background(),
+		awsconfig.WithCredentialsProvider(credentials.NewStaticCredentialsProvider(settings.AccessKeyID, settings.SecretAccessKey, "")),
+		awsconfig.WithRegion(settings.Region),
+	)
 	if err != nil {
-		return err
+		return nil, fmt.Errorf("load R2 client config: %w", err)
 	}
+	endpoint := settings.Endpoint
+	if endpoint == "" {
+		endpoint = fmt.Sprintf("https://%s.r2.cloudflarestorage.com", settings.AccountID)
+	}
+	client := s3.NewFromConfig(awsCfg, func(options *s3.Options) {
+		options.BaseEndpoint = aws.String(endpoint)
+	})
+	return &R2{
+		bucket: settings.BucketName, client: client, presign: s3.NewPresignClient(client),
+		downloadTimeout: settings.PresignLinkTimeout, uploadTimeout: settings.PresignUploadTimeout,
+	}, nil
+}
 
-	_, err = r2Client.PutObject(context.TODO(), &s3.PutObjectInput{
-		Bucket: aws.String(config.Config.R2.BucketName),
-		Key:    aws.String(fileId + "/" + fileName),
-		Body:   file,
+func (store *R2) Put(ctx context.Context, key string, body io.Reader, size int64, contentType string) error {
+	_, err := store.client.PutObject(ctx, &s3.PutObjectInput{
+		Bucket: aws.String(store.bucket), Key: aws.String(key), Body: body,
+		ContentLength: aws.Int64(size), ContentType: aws.String(contentType),
 	})
 	if err != nil {
-		return err
+		return fmt.Errorf("put R2 object: %w", err)
 	}
-
 	return nil
 }
 
-func DownloadFromR2(filePath string) (*os.File, error) {
-	r2Client, err := r2ClientGenerator()
+func (store *R2) Open(ctx context.Context, key string) (io.ReadCloser, error) {
+	output, err := store.client.GetObject(ctx, &s3.GetObjectInput{Bucket: aws.String(store.bucket), Key: aws.String(key)})
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("get R2 object: %w", err)
 	}
+	return output.Body, nil
+}
 
-	fileObject := &os.File{}
+func (store *R2) Delete(ctx context.Context, key string) error {
+	_, err := store.client.DeleteObject(ctx, &s3.DeleteObjectInput{Bucket: aws.String(store.bucket), Key: aws.String(key)})
+	if err != nil {
+		return fmt.Errorf("delete R2 object: %w", err)
+	}
+	return nil
+}
 
-	output, err := r2Client.GetObject(context.TODO(), &s3.GetObjectInput{
-		Bucket: aws.String(config.Config.R2.BucketName),
-		Key:    aws.String(filePath),
+func (store *R2) PresignGet(ctx context.Context, key, fileName string) (string, error) {
+	disposition := mime.FormatMediaType("attachment", map[string]string{"filename": fileName})
+	result, err := store.presign.PresignGetObject(ctx, &s3.GetObjectInput{
+		Bucket: aws.String(store.bucket), Key: aws.String(key), ResponseContentDisposition: aws.String(disposition),
+	}, func(options *s3.PresignOptions) { options.Expires = store.downloadTimeout.Duration() })
+	if err != nil {
+		return "", fmt.Errorf("presign R2 object: %w", err)
+	}
+	return result.URL, nil
+}
+
+func (store *R2) PresignPut(ctx context.Context, key string, size int64, contentType string) (string, error) {
+	result, err := store.presign.PresignPutObject(ctx, &s3.PutObjectInput{
+		Bucket: aws.String(store.bucket), Key: aws.String(key), ContentLength: aws.Int64(size), ContentType: aws.String(contentType),
+	}, func(options *s3.PresignOptions) { options.Expires = store.uploadTimeout.Duration() })
+	if err != nil {
+		return "", fmt.Errorf("presign R2 upload: %w", err)
+	}
+	return result.URL, nil
+}
+
+func (store *R2) Stat(ctx context.Context, key string) (*ObjectInfo, error) {
+	output, err := store.client.HeadObject(ctx, &s3.HeadObjectInput{
+		Bucket: aws.String(store.bucket), Key: aws.String(key),
 	})
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("head R2 object: %w", err)
 	}
-	defer output.Body.Close()
-
-	fileObject, err = os.Create(filePath)
-	if err != nil {
-		return nil, err
-	}
-	defer fileObject.Close()
-
-	_, err = io.Copy(fileObject, output.Body)
-	if err != nil {
-		return nil, err
-	}
-
-	return fileObject, err
+	return &ObjectInfo{Size: aws.ToInt64(output.ContentLength), ContentType: aws.ToString(output.ContentType)}, nil
 }
 
-func DeleteFromR2(filePath string) error {
-	r2Client, err := r2ClientGenerator()
-	if err != nil {
-		return err
-	}
-
-	_, err = r2Client.DeleteObject(context.TODO(), &s3.DeleteObjectInput{
-		Bucket: aws.String(config.Config.R2.BucketName),
-		Key:    aws.String(filePath),
-	})
-
-	return err
-}
-
-func GenerateR2PreSignedDownloadURL(fileId string, fileName string) (string, error) {
-	r2Client, err := r2ClientGenerator()
-	if err != nil {
-		return "", err
-	}
-
-	presignR2Client := s3.NewPresignClient(r2Client)
-
-	url, err := presignR2Client.PresignGetObject(
-		context.TODO(),
-		&s3.GetObjectInput{
-			Bucket: aws.String(config.Config.R2.BucketName),
-			Key:    aws.String(fileId + "/" + fileName),
-		},
-		func(opts *s3.PresignOptions) {
-			opts.Expires = time.Duration(config.Config.R2.PresignLinkTimeout * int64(time.Second))
-		})
-
-	return url.URL, err
-}
+var _ DirectUploader = (*R2)(nil)

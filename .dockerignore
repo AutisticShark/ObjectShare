@@ -1,0 +1,15 @@
+.git
+.github
+.idea
+.vscode
+.tmp
+build
+data
+vendor
+config.json
+*.exe
+*.test
+*.out
+Dockerfile*
+compose*.yaml
+README.md
