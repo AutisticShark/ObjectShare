@@ -37,6 +37,10 @@ does not repeat them. It is a repository-local memory and should remain alongsid
 12. The container workflow was linted but the most important optional-config
     branch was not behaviorally validated before handoff. Future validation must
     cover both GHCR-only and GHCR-plus-Docker-Hub cases.
+13. The release asset job ran `gh release upload` without either checking out the
+    repository or passing `--repo`. GitHub CLI tried to infer the repository from
+    `.git` and failed. Non-checkout jobs must always provide repository context
+    explicitly to `gh` commands.
 
 ## Standing decisions
 

@@ -38,6 +38,9 @@ These instructions apply to every change in this repository.
   such as `name=,enable=false` is invalid because the empty name is still parsed.
 - Normalize the GHCR repository path to lowercase before using it as a Docker image
   name.
+- Jobs that use GitHub CLI without checking out the repository must pass
+  `--repo "$GITHUB_REPOSITORY"` (or the command-specific equivalent). Do not rely
+  on `gh` discovering a repository from `.git` when no checkout step exists.
 - Validate workflow edits with `actionlint` and test important configuration
   branches, especially the zero-secret/default path, not only the fully configured
   path.
