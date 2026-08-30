@@ -76,6 +76,16 @@ func defaults() *ServiceConfig {
 			PresignLinkTimeout:   Duration(10 * time.Minute),
 			PresignUploadTimeout: Duration(time.Hour),
 		},
+		S3:  &S3Config{S3CompatibleConfig: *defaultS3CompatibleConfig("")},
+		B2:  defaultS3CompatibleConfig(""),
+		OSS: defaultS3CompatibleConfig(""),
+		COS: defaultS3CompatibleConfig(""),
+	}
+}
+
+func defaultS3CompatibleConfig(region string) *S3CompatibleConfig {
+	return &S3CompatibleConfig{
+		Region: region, PresignLinkTimeout: Duration(10 * time.Minute), PresignUploadTimeout: Duration(time.Hour),
 	}
 }
 
@@ -142,7 +152,37 @@ func applyEnvironment(cfg *ServiceConfig) error {
 	setString("OBJECTSHARE_R2_REGION", &cfg.R2.Region)
 	problems = append(problems, setDuration("OBJECTSHARE_R2_PRESIGN_TIMEOUT", &cfg.R2.PresignLinkTimeout))
 	problems = append(problems, setDuration("OBJECTSHARE_R2_UPLOAD_PRESIGN_TIMEOUT", &cfg.R2.PresignUploadTimeout))
+
+	if cfg.S3 == nil {
+		cfg.S3 = &S3Config{S3CompatibleConfig: *defaultS3CompatibleConfig("")}
+	}
+	applyS3Environment("S3", &cfg.S3.S3CompatibleConfig, &problems)
+	setString("OBJECTSHARE_S3_SESSION_TOKEN", &cfg.S3.SessionToken)
+	problems = append(problems, setBool("OBJECTSHARE_S3_USE_PATH_STYLE", &cfg.S3.UsePathStyle))
+	if cfg.B2 == nil {
+		cfg.B2 = defaultS3CompatibleConfig("")
+	}
+	applyS3Environment("B2", cfg.B2, &problems)
+	if cfg.OSS == nil {
+		cfg.OSS = defaultS3CompatibleConfig("")
+	}
+	applyS3Environment("OSS", cfg.OSS, &problems)
+	if cfg.COS == nil {
+		cfg.COS = defaultS3CompatibleConfig("")
+	}
+	applyS3Environment("COS", cfg.COS, &problems)
 	return errors.Join(problems...)
+}
+
+func applyS3Environment(prefix string, settings *S3CompatibleConfig, problems *[]error) {
+	base := "OBJECTSHARE_" + prefix + "_"
+	setString(base+"BUCKET_NAME", &settings.BucketName)
+	setString(base+"ENDPOINT", &settings.Endpoint)
+	setString(base+"ACCESS_KEY_ID", &settings.AccessKeyID)
+	setString(base+"SECRET_ACCESS_KEY", &settings.SecretAccessKey)
+	setString(base+"REGION", &settings.Region)
+	*problems = append(*problems, setDuration(base+"PRESIGN_TIMEOUT", &settings.PresignLinkTimeout))
+	*problems = append(*problems, setDuration(base+"UPLOAD_PRESIGN_TIMEOUT", &settings.PresignUploadTimeout))
 }
 
 func (cfg *ServiceConfig) Validate() error {
@@ -201,8 +241,8 @@ func (cfg *ServiceConfig) Validate() error {
 		}
 		if cfg.R2.Endpoint != "" {
 			endpoint, err := url.Parse(cfg.R2.Endpoint)
-			if err != nil || endpoint.Scheme != "https" || endpoint.Host == "" {
-				return errors.New("r2 endpoint must be an absolute HTTPS URL")
+			if err != nil || endpoint.Scheme != "https" || endpoint.Host == "" || endpoint.User != nil || endpoint.RawQuery != "" || endpoint.Fragment != "" {
+				return errors.New("r2 endpoint must be an absolute HTTPS URL without credentials, query, or fragment")
 			}
 		}
 		if cfg.R2.PresignLinkTimeout.Duration() < time.Second || cfg.R2.PresignLinkTimeout.Duration() > 7*24*time.Hour {
@@ -210,6 +250,28 @@ func (cfg *ServiceConfig) Validate() error {
 		}
 		if cfg.R2.PresignUploadTimeout.Duration() < time.Minute || cfg.R2.PresignUploadTimeout.Duration() > 7*24*time.Hour {
 			return errors.New("r2 upload presign timeout must be between 1 minute and 7 days")
+		}
+	case "s3":
+		if cfg.S3 == nil {
+			return errors.New("s3 configuration is required")
+		}
+		if err := validateS3Compatible("s3", &cfg.S3.S3CompatibleConfig, false); err != nil {
+			return err
+		}
+		if cfg.S3.SessionToken != "" && cfg.S3.AccessKeyID == "" {
+			return errors.New("s3 session_token requires access_key_id and secret_access_key")
+		}
+	case "b2":
+		if err := validateS3Compatible("b2", cfg.B2, true); err != nil {
+			return err
+		}
+	case "oss":
+		if err := validateS3Compatible("oss", cfg.OSS, true); err != nil {
+			return err
+		}
+	case "cos":
+		if err := validateS3Compatible("cos", cfg.COS, true); err != nil {
+			return err
 		}
 	default:
 		return fmt.Errorf("unsupported storage service %q", cfg.StorageService)
@@ -226,6 +288,34 @@ func (cfg *ServiceConfig) Validate() error {
 		if cfg.MaxFileSize > 128 {
 			return errors.New("max_file_size cannot exceed 128 MiB when encryption is enabled")
 		}
+	}
+	return nil
+}
+
+func validateS3Compatible(name string, settings *S3CompatibleConfig, requireCredentials bool) error {
+	if settings == nil {
+		return fmt.Errorf("%s configuration is required", name)
+	}
+	if settings.BucketName == "" || settings.Region == "" {
+		return fmt.Errorf("%s bucket_name and region are required", name)
+	}
+	if (settings.AccessKeyID == "") != (settings.SecretAccessKey == "") {
+		return fmt.Errorf("%s access_key_id and secret_access_key must be provided together", name)
+	}
+	if requireCredentials && settings.AccessKeyID == "" {
+		return fmt.Errorf("%s access_key_id and secret_access_key are required", name)
+	}
+	if settings.Endpoint != "" {
+		endpoint, err := url.Parse(settings.Endpoint)
+		if err != nil || endpoint.Scheme != "https" || endpoint.Host == "" || endpoint.User != nil || endpoint.RawQuery != "" || endpoint.Fragment != "" {
+			return fmt.Errorf("%s endpoint must be an absolute HTTPS URL without credentials, query, or fragment", name)
+		}
+	}
+	if settings.PresignLinkTimeout.Duration() < time.Second || settings.PresignLinkTimeout.Duration() > 7*24*time.Hour {
+		return fmt.Errorf("%s presign timeout must be between 1 second and 7 days", name)
+	}
+	if settings.PresignUploadTimeout.Duration() < time.Minute || settings.PresignUploadTimeout.Duration() > 7*24*time.Hour {
+		return fmt.Errorf("%s upload presign timeout must be between 1 minute and 7 days", name)
 	}
 	return nil
 }

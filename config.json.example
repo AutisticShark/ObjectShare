@@ -34,5 +34,43 @@
     "region": "auto",
     "presign_link_timeout": "10m",
     "presign_upload_timeout": "1h"
+  },
+  "s3": {
+    "bucket_name": "",
+    "region": "us-east-1",
+    "endpoint": "",
+    "access_key_id": "",
+    "secret_access_key": "",
+    "session_token": "",
+    "use_path_style": false,
+    "presign_link_timeout": "10m",
+    "presign_upload_timeout": "1h"
+  },
+  "b2": {
+    "bucket_name": "",
+    "region": "us-west-004",
+    "endpoint": "",
+    "access_key_id": "",
+    "secret_access_key": "",
+    "presign_link_timeout": "10m",
+    "presign_upload_timeout": "1h"
+  },
+  "oss": {
+    "bucket_name": "",
+    "region": "cn-hangzhou",
+    "endpoint": "",
+    "access_key_id": "",
+    "secret_access_key": "",
+    "presign_link_timeout": "10m",
+    "presign_upload_timeout": "1h"
+  },
+  "cos": {
+    "bucket_name": "",
+    "region": "ap-guangzhou",
+    "endpoint": "",
+    "access_key_id": "",
+    "secret_access_key": "",
+    "presign_link_timeout": "10m",
+    "presign_upload_timeout": "1h"
   }
 }

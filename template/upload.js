@@ -36,7 +36,7 @@
       if (upload.status >= 200 && upload.status < 300) resolve();
       else reject(new Error(`Object storage rejected the upload with HTTP ${upload.status}.`));
     });
-    upload.addEventListener("error", () => reject(new Error("The direct upload could not reach object storage. Check the R2 CORS policy.")));
+    upload.addEventListener("error", () => reject(new Error("The direct upload could not reach object storage. Check the bucket CORS policy.")));
     upload.addEventListener("abort", () => reject(new Error("Upload cancelled.")));
     upload.send(file);
   });

@@ -17,7 +17,7 @@ func Router(handler *htmx.Handler, logger *slog.Logger) http.Handler {
 	router.Use(middleware.RequestID)
 	router.Use(accessLog(logger))
 	router.Use(middleware.Recoverer)
-	router.Use(securityHeaders)
+	router.Use(securityHeaders(handler.DirectUploadConnectSources()...))
 
 	router.Get("/", handler.Index)
 	router.Get("/assets/upload.js", handler.UploadScript)
@@ -51,15 +51,21 @@ func accessLog(logger *slog.Logger) func(http.Handler) http.Handler {
 	}
 }
 
-func securityHeaders(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		writer.Header().Set("Content-Security-Policy", "default-src 'none'; script-src 'self' https://cdn.jsdelivr.net; connect-src 'self' https://*.r2.cloudflarestorage.com; style-src 'self' https://cdn.jsdelivr.net; font-src https://cdn.jsdelivr.net; img-src 'self' data:; form-action 'self'; base-uri 'none'; frame-ancestors 'none'")
-		writer.Header().Set("Permissions-Policy", "camera=(), geolocation=(), microphone=()")
-		writer.Header().Set("Referrer-Policy", "no-referrer")
-		writer.Header().Set("X-Content-Type-Options", "nosniff")
-		writer.Header().Set("X-Frame-Options", "DENY")
-		next.ServeHTTP(writer, request)
-	})
+func securityHeaders(connectSources ...string) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+			connectSource := "'self'"
+			if len(connectSources) > 0 {
+				connectSource += " " + strings.Join(connectSources, " ")
+			}
+			writer.Header().Set("Content-Security-Policy", "default-src 'none'; script-src 'self' https://cdn.jsdelivr.net; connect-src "+connectSource+"; style-src 'self' https://cdn.jsdelivr.net; font-src https://cdn.jsdelivr.net; img-src 'self' data:; form-action 'self'; base-uri 'none'; frame-ancestors 'none'")
+			writer.Header().Set("Permissions-Policy", "camera=(), geolocation=(), microphone=()")
+			writer.Header().Set("Referrer-Policy", "no-referrer")
+			writer.Header().Set("X-Content-Type-Options", "nosniff")
+			writer.Header().Set("X-Frame-Options", "DENY")
+			next.ServeHTTP(writer, request)
+		})
+	}
 }
 
 func requireSameOrigin(next http.Handler) http.Handler {

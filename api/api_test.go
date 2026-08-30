@@ -3,17 +3,30 @@ package api
 import (
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
 func TestSecurityHeaders(t *testing.T) {
-	handler := securityHeaders(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) { writer.WriteHeader(http.StatusNoContent) }))
+	handler := securityHeaders()(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) { writer.WriteHeader(http.StatusNoContent) }))
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/", nil))
 	for _, name := range []string{"Content-Security-Policy", "Permissions-Policy", "Referrer-Policy", "X-Content-Type-Options", "X-Frame-Options"} {
 		if response.Header().Get(name) == "" {
 			t.Errorf("%s is missing", name)
 		}
+	}
+}
+
+func TestSecurityHeadersIncludeConfiguredObjectStorageOrigin(t *testing.T) {
+	handler := securityHeaders("https://bucket.s3.example.com")(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		writer.WriteHeader(http.StatusNoContent)
+	}))
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/", nil))
+	policy := response.Header().Get("Content-Security-Policy")
+	if !strings.Contains(policy, "connect-src 'self' https://bucket.s3.example.com;") {
+		t.Fatalf("unexpected CSP: %s", policy)
 	}
 }
 

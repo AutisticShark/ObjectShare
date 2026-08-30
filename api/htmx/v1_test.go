@@ -104,6 +104,9 @@ type directMemoryStorage struct{ *memoryStorage }
 func (*directMemoryStorage) PresignPut(context.Context, string, int64, string) (string, error) {
 	return "https://example.r2.cloudflarestorage.com/upload", nil
 }
+func (*directMemoryStorage) DirectUploadPolicy() service.DirectUploadPolicy {
+	return service.DirectUploadPolicy{Expires: time.Hour, MaxSize: service.MaxSinglePartUploadSize, ConnectSources: []string{"https://example.r2.cloudflarestorage.com"}}
+}
 func (storage *directMemoryStorage) Stat(_ context.Context, key string) (*service.ObjectInfo, error) {
 	data, ok := storage.objects[key]
 	if !ok {
@@ -226,7 +229,6 @@ func TestDirectUploadRequiresTokenAndVerifiesObject(t *testing.T) {
 	storage := &directMemoryStorage{&memoryStorage{objects: make(map[string][]byte)}}
 	cfg := &config.ServiceConfig{
 		MaxFileSize: 10, StorageService: "r2", Encryption: &config.EncryptionConfig{},
-		R2: &config.R2Config{PresignUploadTimeout: config.Duration(time.Hour)},
 	}
 	handler := newTestHandlerConfig(t, cfg, repository, storage)
 	beginRequest := httptest.NewRequest(http.MethodPost, "/api/v1/uploads/direct", strings.NewReader(

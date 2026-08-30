@@ -34,15 +34,16 @@ import (
 const mebibyte = int64(1024 * 1024)
 
 type Handler struct {
-	config     *config.ServiceConfig
-	repository db.Repository
-	storage    service.ObjectStore
-	direct     service.DirectUploader
-	templates  *template.Template
-	uploadJS   []byte
-	cipher     *appcrypto.Cipher
-	cipherSlot chan struct{}
-	logger     *slog.Logger
+	config       *config.ServiceConfig
+	repository   db.Repository
+	storage      service.ObjectStore
+	direct       service.DirectUploader
+	directPolicy service.DirectUploadPolicy
+	templates    *template.Template
+	uploadJS     []byte
+	cipher       *appcrypto.Cipher
+	cipherSlot   chan struct{}
+	logger       *slog.Logger
 }
 
 func New(cfg *config.ServiceConfig, repository db.Repository, storage service.ObjectStore, templates fs.FS, logger *slog.Logger) (*Handler, error) {
@@ -67,20 +68,30 @@ func New(cfg *config.ServiceConfig, repository db.Repository, storage service.Ob
 		handler.cipherSlot = make(chan struct{}, 1)
 	} else {
 		handler.direct, _ = storage.(service.DirectUploader)
+		if handler.direct != nil {
+			handler.directPolicy = handler.direct.DirectUploadPolicy()
+			if handler.directPolicy.Expires <= 0 || handler.directPolicy.MaxSize <= 0 {
+				return nil, errors.New("object storage returned an invalid direct-upload policy")
+			}
+		}
 	}
 	return handler, nil
 }
 
 func (handler *Handler) Index(writer http.ResponseWriter, _ *http.Request) {
 	maxFileSize := handler.config.MaxFileSize
-	if handler.direct != nil && maxFileSize*mebibyte > service.MaxSinglePartUploadSize {
-		maxFileSize = service.MaxSinglePartUploadSize / mebibyte
+	if handler.direct != nil && maxFileSize*mebibyte > handler.directPolicy.MaxSize {
+		maxFileSize = handler.directPolicy.MaxSize / mebibyte
 	}
 	handler.render(writer, "index.html", struct {
 		Version      string
 		MaxFileSize  int64
 		DirectUpload bool
 	}{config.GetVersion(), maxFileSize, handler.direct != nil})
+}
+
+func (handler *Handler) DirectUploadConnectSources() []string {
+	return append([]string(nil), handler.directPolicy.ConnectSources...)
 }
 
 func (handler *Handler) UploadScript(writer http.ResponseWriter, request *http.Request) {

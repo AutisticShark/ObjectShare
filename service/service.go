@@ -6,14 +6,16 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"time"
 
 	"github.com/AutisticShark/ObjectShare/config"
 )
 
 var ErrPresignUnsupported = errors.New("presigned downloads are not supported")
 
-// MaxSinglePartUploadSize is R2's documented limit for a single PUT request.
-// Larger objects require the S3 multipart API.
+// MaxSinglePartUploadSize is the common maximum used for a single PUT across
+// the supported S3-compatible services. Larger objects require multipart
+// upload support.
 const MaxSinglePartUploadSize = int64(5 * 1024 * 1024 * 1024)
 
 type ObjectInfo struct {
@@ -27,6 +29,13 @@ type ObjectInfo struct {
 type DirectUploader interface {
 	PresignPut(context.Context, string, int64, string) (string, error)
 	Stat(context.Context, string) (*ObjectInfo, error)
+	DirectUploadPolicy() DirectUploadPolicy
+}
+
+type DirectUploadPolicy struct {
+	Expires        time.Duration
+	MaxSize        int64
+	ConnectSources []string
 }
 
 type ObjectStore interface {
@@ -42,6 +51,14 @@ func New(cfg *config.ServiceConfig) (ObjectStore, error) {
 		return NewFileSystem(cfg.StoragePath)
 	case "r2":
 		return NewR2(cfg.R2)
+	case "s3":
+		return NewS3(cfg.S3)
+	case "b2":
+		return NewB2(cfg.B2)
+	case "oss":
+		return NewOSS(cfg.OSS)
+	case "cos":
+		return NewCOS(cfg.COS)
 	default:
 		return nil, fmt.Errorf("unsupported storage service %q", cfg.StorageService)
 	}

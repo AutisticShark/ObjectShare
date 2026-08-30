@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/AutisticShark/ObjectShare/db"
-	"github.com/AutisticShark/ObjectShare/service"
 	"github.com/google/uuid"
 )
 
@@ -45,8 +44,8 @@ func (handler *Handler) BeginDirectUpload(writer http.ResponseWriter, request *h
 		return
 	}
 	maxBytes := handler.config.MaxFileSize * mebibyte
-	if maxBytes > service.MaxSinglePartUploadSize {
-		maxBytes = service.MaxSinglePartUploadSize
+	if maxBytes > handler.directPolicy.MaxSize {
+		maxBytes = handler.directPolicy.MaxSize
 	}
 	if input.FileSize <= 0 || input.FileSize > maxBytes {
 		http.Error(writer, fmt.Sprintf("File size must be between 1 byte and %s.", humanSize(maxBytes)), http.StatusRequestEntityTooLarge)
@@ -68,7 +67,7 @@ func (handler *Handler) BeginDirectUpload(writer http.ResponseWriter, request *h
 	}
 	fileID := uuid.NewString()
 	now := time.Now().UTC()
-	expiresAt := now.Add(handler.config.R2.PresignUploadTimeout.Duration())
+	expiresAt := now.Add(handler.directPolicy.Expires)
 	record := &db.FileList{
 		AnonymousSessionToken: tokenHash, FileID: fileID, FileName: fileName, FileSize: input.FileSize,
 		ContentType: contentType, IsAnonymousUpload: true, StorageService: handler.config.StorageService,

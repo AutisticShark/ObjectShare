@@ -48,6 +48,10 @@ type ServiceConfig struct {
 	Db              *DatabaseConfig    `json:"db"`
 	Encryption      *EncryptionConfig  `json:"encryption"`
 	R2              *R2Config          `json:"r2,omitempty"`
+	S3              *S3Config          `json:"s3,omitempty"`
+	B2              *B2Config          `json:"b2,omitempty"`
+	OSS             *OSSConfig         `json:"oss,omitempty"`
+	COS             *COSConfig         `json:"cos,omitempty"`
 }
 
 type UploadCacheConfig struct {
@@ -96,3 +100,27 @@ type R2Config struct {
 	PresignLinkTimeout   Duration `json:"presign_link_timeout"`
 	PresignUploadTimeout Duration `json:"presign_upload_timeout"`
 }
+
+// S3CompatibleConfig contains the settings shared by Amazon S3 and the
+// S3-compatible APIs exposed by Backblaze B2, Alibaba Cloud OSS, and Tencent
+// Cloud COS. Endpoint is optional for providers whose public endpoint can be
+// derived from the region.
+type S3CompatibleConfig struct {
+	BucketName           string   `json:"bucket_name"`
+	Endpoint             string   `json:"endpoint,omitempty"`
+	AccessKeyID          string   `json:"access_key_id"`
+	SecretAccessKey      string   `json:"secret_access_key"`
+	Region               string   `json:"region"`
+	PresignLinkTimeout   Duration `json:"presign_link_timeout"`
+	PresignUploadTimeout Duration `json:"presign_upload_timeout"`
+}
+
+type S3Config struct {
+	S3CompatibleConfig
+	SessionToken string `json:"session_token,omitempty"`
+	UsePathStyle bool   `json:"use_path_style,omitempty"`
+}
+
+type B2Config = S3CompatibleConfig
+type OSSConfig = S3CompatibleConfig
+type COSConfig = S3CompatibleConfig
