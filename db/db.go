@@ -16,7 +16,12 @@ import (
 	"gorm.io/gorm"
 )
 
-var ErrNotFound = errors.New("file not found")
+var (
+	ErrNotFound    = errors.New("record not found")
+	ErrConflict    = errors.New("record already exists")
+	ErrAdminExists = errors.New("an administrator already exists")
+	ErrLastAdmin   = errors.New("the final active administrator must be preserved")
+)
 
 type Repository interface {
 	Create(context.Context, *FileList) error
@@ -26,6 +31,26 @@ type Repository interface {
 	Rename(context.Context, string, string) error
 	Delete(context.Context, string) error
 	Ping(context.Context) error
+}
+
+type AuthRepository interface {
+	AdminCount(context.Context) (int64, error)
+	BootstrapAdmin(context.Context, *User) error
+	CreateUser(context.Context, *User) error
+	UserByEmail(context.Context, string) (*User, error)
+	UserByID(context.Context, string) (*User, error)
+	ListUsers(context.Context) ([]User, error)
+	UpdateProfile(context.Context, string, string, string) error
+	UpdatePassword(context.Context, string, string) (*User, error)
+	AdminUpdateUser(context.Context, string, string, bool) error
+	DeleteUser(context.Context, string) error
+	ListFilesByOwner(context.Context, string) ([]FileList, error)
+	RecordLogin(context.Context, string, time.Time) error
+	RevokeToken(context.Context, string, time.Time, time.Time) error
+	TokenRevoked(context.Context, string, time.Time) (bool, error)
+	LoginAllowed(context.Context, string, time.Time) (bool, time.Time, error)
+	RecordLoginFailure(context.Context, string, time.Time) error
+	ClearLoginFailures(context.Context, string) error
 }
 
 type GormRepository struct{ connection *gorm.DB }
@@ -83,10 +108,15 @@ func Open(ctx context.Context, cfg *config.DatabaseConfig) (*GormRepository, err
 			return nil, fmt.Errorf("remove legacy uniqueness: %w", err)
 		}
 	}
-	if err := migration.AutoMigrate(&FileList{}); err != nil {
+	if err := migration.AutoMigrate(&User{}, &RevokedToken{}, &LoginThrottle{}, &FileList{}); err != nil {
 		_ = migration.Rollback().Error
 		_ = sqlDB.Close()
 		return nil, fmt.Errorf("migrate PostgreSQL: %w", err)
+	}
+	if err := migration.Exec("DROP TABLE IF EXISTS sessions").Error; err != nil {
+		_ = migration.Rollback().Error
+		_ = sqlDB.Close()
+		return nil, fmt.Errorf("remove legacy server sessions: %w", err)
 	}
 	if err := migration.Commit().Error; err != nil {
 		_ = sqlDB.Close()

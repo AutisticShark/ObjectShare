@@ -6,18 +6,22 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
 	"github.com/AutisticShark/ObjectShare/api"
 	"github.com/AutisticShark/ObjectShare/api/htmx"
+	appauth "github.com/AutisticShark/ObjectShare/auth"
 	"github.com/AutisticShark/ObjectShare/config"
 	"github.com/AutisticShark/ObjectShare/db"
 	"github.com/AutisticShark/ObjectShare/service"
+	"github.com/google/uuid"
 )
 
 //go:embed template/*
@@ -34,6 +38,11 @@ func run() error {
 	configPath := flag.String("config", "", "path to a JSON configuration file")
 	healthcheck := flag.Bool("healthcheck", false, "check the local live endpoint and exit")
 	showVersion := flag.Bool("version", false, "print the version and exit")
+	createAdmin := flag.Bool("create-admin", false, "create the initial administrator and exit")
+	adminEmail := flag.String("admin-email", "", "email address for -create-admin")
+	adminName := flag.String("admin-name", "", "display name for -create-admin")
+	adminPasswordFile := flag.String("admin-password-file", "", "file containing the password for -create-admin")
+	adminPasswordStdin := flag.Bool("admin-password-stdin", false, "read the password from standard input for -create-admin")
 	flag.Parse()
 	if *showVersion {
 		fmt.Println(config.GetVersion())
@@ -57,6 +66,9 @@ func run() error {
 		return err
 	}
 	defer repository.Close()
+	if *createAdmin {
+		return createInitialAdmin(startupContext, repository, *adminEmail, *adminName, *adminPasswordFile, *adminPasswordStdin)
+	}
 	objectStore, err := service.New(cfg)
 	if err != nil {
 		return fmt.Errorf("initialize object storage: %w", err)
@@ -96,6 +108,47 @@ func run() error {
 		}
 		return nil
 	}
+}
+
+func createInitialAdmin(ctx context.Context, repository db.AuthRepository, emailValue, nameValue, passwordFile string, passwordStdin bool) error {
+	email, err := appauth.NormalizeEmail(emailValue)
+	if err != nil {
+		return fmt.Errorf("invalid administrator email: %w", err)
+	}
+	name, err := appauth.ValidateDisplayName(nameValue)
+	if err != nil {
+		return fmt.Errorf("invalid administrator display name: %w", err)
+	}
+	password := os.Getenv("OBJECTSHARE_ADMIN_PASSWORD")
+	if passwordFile != "" && passwordStdin {
+		return errors.New("provide only one of -admin-password-file or -admin-password-stdin")
+	}
+	if passwordFile != "" {
+		data, err := os.ReadFile(passwordFile)
+		if err != nil {
+			return fmt.Errorf("read administrator password file: %w", err)
+		}
+		password = strings.TrimRight(string(data), "\r\n")
+	} else if passwordStdin {
+		data, err := io.ReadAll(io.LimitReader(os.Stdin, 513))
+		if err != nil {
+			return fmt.Errorf("read administrator password from standard input: %w", err)
+		}
+		password = strings.TrimRight(string(data), "\r\n")
+	}
+	if password == "" {
+		return errors.New("provide -admin-password-file, -admin-password-stdin, or OBJECTSHARE_ADMIN_PASSWORD")
+	}
+	hash, err := appauth.HashPassword(password)
+	if err != nil {
+		return fmt.Errorf("invalid administrator password: %w", err)
+	}
+	user := &db.User{ID: uuid.NewString(), Email: email, DisplayName: name, PasswordHash: hash, Role: db.RoleAdmin, Active: true, TokenVersion: 1}
+	if err := repository.BootstrapAdmin(ctx, user); err != nil {
+		return fmt.Errorf("create initial administrator: %w", err)
+	}
+	fmt.Printf("Initial administrator created for %s.\n", email)
+	return nil
 }
 
 func runHealthcheck() error {

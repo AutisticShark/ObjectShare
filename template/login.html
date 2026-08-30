@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Log in · ObjectShare</title>{{template "tabler-head" .}}
+</head>
+<body class="d-flex flex-column">
+  <div class="page page-center">
+    <div class="container container-tight py-4">
+      <div class="text-center mb-4"><a href="/" class="navbar-brand navbar-brand-autodark justify-content-center">ObjectShare</a></div>
+      <form class="card card-md" action="/login" method="post" hx-post="/login" hx-disabled-elt="button">
+        <input type="hidden" name="csrf_token" value="{{.CSRF}}"><input type="hidden" name="next" value="{{.Next}}">
+        <div class="card-body">
+          <h2 class="h2 text-center mb-4">Log in to your account</h2>
+          {{if .Error}}<div class="alert alert-danger" role="alert">{{.Error}}</div>{{end}}
+          <div class="mb-3"><label class="form-label" for="email">Email address</label><input class="form-control" id="email" name="email" type="email" value="{{.Email}}" autocomplete="email" maxlength="320" required autofocus></div>
+          <div class="mb-2"><label class="form-label" for="password">Password</label><input class="form-control" id="password" name="password" type="password" autocomplete="current-password" maxlength="512" required></div>
+          <div class="form-footer"><button class="btn btn-primary w-100" type="submit">Log in</button></div>
+        </div>
+      </form>
+      {{if .SignupEnabled}}<div class="text-center text-secondary mt-3">New here? <a href="/signup">Create an account</a></div>{{end}}
+    </div>
+  </div>
+  {{template "footer" .}}
+</body>
+</html>

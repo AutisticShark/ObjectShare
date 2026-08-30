@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Sign up · ObjectShare</title>{{template "tabler-head" .}}
+</head>
+<body class="d-flex flex-column">
+  <div class="page page-center"><div class="container container-tight py-4">
+    <div class="text-center mb-4"><a href="/" class="navbar-brand navbar-brand-autodark justify-content-center">ObjectShare</a></div>
+    <form class="card card-md" action="/signup" method="post" hx-post="/signup" hx-disabled-elt="button">
+      <input type="hidden" name="csrf_token" value="{{.CSRF}}">
+      <div class="card-body">
+        <h2 class="h2 text-center mb-4">Create your account</h2>
+        {{if .Error}}<div class="alert alert-danger" role="alert">{{.Error}}</div>{{end}}
+        <div class="mb-3"><label class="form-label" for="display-name">Display name</label><input class="form-control" id="display-name" name="display_name" value="{{.DisplayName}}" autocomplete="name" maxlength="100" required autofocus></div>
+        <div class="mb-3"><label class="form-label" for="email">Email address</label><input class="form-control" id="email" name="email" type="email" value="{{.Email}}" autocomplete="email" maxlength="320" required></div>
+        <div class="mb-3"><label class="form-label" for="password">Password</label><input class="form-control" id="password" name="password" type="password" autocomplete="new-password" minlength="12" maxlength="512" required><small class="form-hint">Use 12 to 128 characters.</small></div>
+        <div class="mb-3"><label class="form-label" for="password-confirm">Confirm password</label><input class="form-control" id="password-confirm" name="password_confirm" type="password" autocomplete="new-password" minlength="12" maxlength="512" required></div>
+        <div class="form-footer"><button class="btn btn-primary w-100" type="submit">Create account</button></div>
+      </div>
+    </form>
+    <div class="text-center text-secondary mt-3">Already registered? <a href="/login">Log in</a></div>
+  </div></div>
+  {{template "footer" .}}
+</body>
+</html>

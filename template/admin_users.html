@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>User management · ObjectShare</title>{{template "tabler-head" .}}
+</head>
+<body><div class="page">{{template "app-nav" .}}<div class="page-wrapper">
+  <div class="page-header d-print-none"><div class="container-xl"><div class="row g-2 align-items-center"><div class="col"><div class="page-pretitle">Administration</div><h2 class="page-title">User management</h2></div></div></div></div>
+  <div class="page-body"><div class="container-xl">
+    {{if .Message}}<div class="alert alert-success" role="alert">{{.Message}}</div>{{end}}{{if .Error}}<div class="alert alert-danger" role="alert">{{.Error}}</div>{{end}}
+    <div class="row row-cards">
+      <div class="col-12 col-xl-4"><form class="card" action="/admin/users" method="post" hx-post="/admin/users" hx-disabled-elt="button">
+        <input type="hidden" name="csrf_token" value="{{.CSRF}}"><div class="card-header"><h3 class="card-title">Create user</h3></div><div class="card-body">
+          <div class="mb-3"><label class="form-label" for="new-display-name">Display name</label><input class="form-control" id="new-display-name" name="display_name" maxlength="100" required></div>
+          <div class="mb-3"><label class="form-label" for="new-email">Email</label><input class="form-control" id="new-email" name="email" type="email" maxlength="320" required></div>
+          <div class="mb-3"><label class="form-label" for="new-role">Role</label><select class="form-select" id="new-role" name="role"><option value="user">Normal user</option><option value="admin">Administrator</option></select></div>
+          <div class="mb-3"><label class="form-label" for="new-password">Initial password</label><input class="form-control" id="new-password" name="password" type="password" autocomplete="new-password" minlength="12" maxlength="512" required></div>
+          <div><label class="form-label" for="new-password-confirm">Confirm password</label><input class="form-control" id="new-password-confirm" name="password_confirm" type="password" autocomplete="new-password" minlength="12" maxlength="512" required></div>
+        </div><div class="card-footer text-end"><button class="btn btn-primary" type="submit">Create user</button></div>
+      </form></div>
+      <div class="col-12 col-xl-8"><div class="card"><div class="card-header"><h3 class="card-title">Users</h3><div class="card-actions"><span class="badge bg-blue-lt">{{len .Users}}</span></div></div>
+        <div class="table-responsive"><table class="table table-vcenter card-table"><thead><tr><th>User</th><th>Access</th><th>Activity</th><th class="w-1"></th></tr></thead><tbody>
+        {{range .Users}}<tr><td><div class="fw-bold">{{.DisplayName}} {{if .IsCurrent}}<span class="badge bg-azure-lt">You</span>{{end}}</div><div class="text-secondary small">{{.Email}}</div></td>
+          <td><form class="d-flex gap-2 align-items-center" action="/admin/users/{{.ID}}/access" method="post" hx-post="/admin/users/{{.ID}}/access" hx-disabled-elt="button"><input type="hidden" name="csrf_token" value="{{$.CSRF}}"><select class="form-select form-select-sm" name="role" aria-label="Role for {{.Email}}"><option value="user" {{if eq .Role "user"}}selected{{end}}>User</option><option value="admin" {{if eq .Role "admin"}}selected{{end}}>Admin</option></select><select class="form-select form-select-sm" name="active" aria-label="Status for {{.Email}}"><option value="true" {{if .Active}}selected{{end}}>Active</option><option value="false" {{if not .Active}}selected{{end}}>Disabled</option></select><button class="btn btn-sm" type="submit">Save</button></form></td>
+          <td><div class="small">Created {{.CreatedAt}}</div><div class="small text-secondary">Last login: {{.LastLogin}}</div></td>
+          <td><details class="dropdown"><summary class="btn btn-sm btn-outline-secondary">More</summary><div class="dropdown-menu dropdown-menu-end show p-3">
+            <form action="/admin/users/{{.ID}}/password" method="post" hx-post="/admin/users/{{.ID}}/password" hx-disabled-elt="button"><input type="hidden" name="csrf_token" value="{{$.CSRF}}"><label class="form-label" for="password-{{.ID}}">Reset password</label><input class="form-control form-control-sm mb-2" id="password-{{.ID}}" name="password" type="password" minlength="12" maxlength="512" required placeholder="New password"><input class="form-control form-control-sm mb-2" name="password_confirm" type="password" minlength="12" maxlength="512" required placeholder="Confirm password"><button class="btn btn-sm w-100" type="submit">Reset and invalidate JWTs</button></form>
+            <form class="mt-3" action="/admin/users/{{.ID}}/delete" method="post" hx-post="/admin/users/{{.ID}}/delete" hx-disabled-elt="button" hx-confirm="Delete {{.Email}}? Their uploads will remain available but become anonymous."><input type="hidden" name="csrf_token" value="{{$.CSRF}}"><button class="btn btn-danger btn-sm w-100" type="submit">Delete user</button></form>
+          </div></details></td></tr>{{end}}
+        </tbody></table></div>
+      </div></div>
+    </div>
+  </div></div>{{template "footer" .}}
+</div></div></body></html>

@@ -42,6 +42,7 @@ type ServiceConfig struct {
 	ShutdownTimeout Duration           `json:"shutdown_timeout"`
 	MaxFileSize     int64              `json:"max_file_size"`
 	SecureCookies   bool               `json:"secure_cookies"`
+	Auth            *AuthConfig        `json:"auth"`
 	StorageService  string             `json:"storage_service"`
 	StoragePath     string             `json:"storage_path"`
 	UploadCache     *UploadCacheConfig `json:"upload_cache,omitempty"`
@@ -52,6 +53,12 @@ type ServiceConfig struct {
 	B2              *B2Config          `json:"b2,omitempty"`
 	OSS             *OSSConfig         `json:"oss,omitempty"`
 	COS             *COSConfig         `json:"cos,omitempty"`
+}
+
+type AuthConfig struct {
+	SignupEnabled bool     `json:"signup_enabled"`
+	JWTSecret     string   `json:"jwt_secret"`
+	TokenLifetime Duration `json:"token_lifetime"`
 }
 
 type UploadCacheConfig struct {

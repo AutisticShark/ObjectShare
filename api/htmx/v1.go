@@ -23,6 +23,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	appauth "github.com/AutisticShark/ObjectShare/auth"
 	"github.com/AutisticShark/ObjectShare/config"
 	"github.com/AutisticShark/ObjectShare/db"
 	appcrypto "github.com/AutisticShark/ObjectShare/encryption"
@@ -44,6 +45,9 @@ type Handler struct {
 	cipher       *appcrypto.Cipher
 	cipherSlot   chan struct{}
 	logger       *slog.Logger
+	users        db.AuthRepository
+	jwt          *appauth.JWTManager
+	csrfSecret   []byte
 }
 
 func New(cfg *config.ServiceConfig, repository db.Repository, storage service.ObjectStore, templates fs.FS, logger *slog.Logger) (*Handler, error) {
@@ -55,7 +59,21 @@ func New(cfg *config.ServiceConfig, repository db.Repository, storage service.Ob
 	if err != nil {
 		return nil, fmt.Errorf("read upload script: %w", err)
 	}
-	handler := &Handler{config: cfg, repository: repository, storage: storage, templates: parsed, uploadJS: uploadJS, logger: logger}
+	csrfSecret := make([]byte, 32)
+	if _, err := rand.Read(csrfSecret); err != nil {
+		return nil, fmt.Errorf("generate CSRF secret: %w", err)
+	}
+	userRepository, _ := repository.(db.AuthRepository)
+	handler := &Handler{config: cfg, repository: repository, users: userRepository, storage: storage, templates: parsed, uploadJS: uploadJS, logger: logger, csrfSecret: csrfSecret}
+	if userRepository != nil {
+		if cfg.Auth == nil {
+			return nil, errors.New("authentication configuration is required")
+		}
+		handler.jwt, err = appauth.NewJWTManager(cfg.Auth.JWTSecret, cfg.Auth.TokenLifetime.Duration())
+		if err != nil {
+			return nil, fmt.Errorf("configure JWT authentication: %w", err)
+		}
+	}
 	if cfg.Encryption != nil && cfg.Encryption.Enabled {
 		key, err := config.DecodeEncryptionKey(cfg.Encryption.Key)
 		if err != nil {
@@ -78,16 +96,19 @@ func New(cfg *config.ServiceConfig, repository db.Repository, storage service.Ob
 	return handler, nil
 }
 
-func (handler *Handler) Index(writer http.ResponseWriter, _ *http.Request) {
+func (handler *Handler) Index(writer http.ResponseWriter, request *http.Request) {
 	maxFileSize := handler.config.MaxFileSize
 	if handler.direct != nil && maxFileSize*mebibyte > handler.directPolicy.MaxSize {
 		maxFileSize = handler.directPolicy.MaxSize / mebibyte
 	}
 	handler.render(writer, "index.html", struct {
-		Version      string
-		MaxFileSize  int64
-		DirectUpload bool
-	}{config.GetVersion(), maxFileSize, handler.direct != nil})
+		Version       string
+		MaxFileSize   int64
+		DirectUpload  bool
+		SignupEnabled bool
+		User          *db.User
+		CSRF          string
+	}{config.GetVersion(), maxFileSize, handler.direct != nil, handler.config.Auth.SignupEnabled, identityUser(request), identityCSRF(request)})
 }
 
 func (handler *Handler) DirectUploadConnectSources() []string {
@@ -122,18 +143,26 @@ func (handler *Handler) FileView(writer http.ResponseWriter, request *http.Reque
 	handler.render(writer, "file_view.html", struct {
 		Version, FileID, FileName, FileSize, FileSHA256, FileSHA3, CreatedAt, UpdatedAt string
 		CanManage, Encrypted, ChecksumsVerified                                         bool
+		SignupEnabled                                                                   bool
+		User                                                                            *db.User
+		CSRF                                                                            string
 	}{
 		Version: config.GetVersion(), FileID: file.FileID, FileName: file.FileName,
 		FileSize: humanSize(file.FileSize), FileSHA256: file.FileSHA256, FileSHA3: file.FileSHA3,
 		CreatedAt: file.CreatedAt.UTC().Format(time.RFC3339), UpdatedAt: file.UpdatedAt.UTC().Format(time.RFC3339),
 		CanManage: handler.isOwner(request, file), Encrypted: file.IsEncrypted,
 		ChecksumsVerified: file.ChecksumStatus == "verified",
+		SignupEnabled:     handler.config.Auth.SignupEnabled,
+		User:              identityUser(request), CSRF: identityCSRF(request),
 	})
 }
 
 func (handler *Handler) Upload(writer http.ResponseWriter, request *http.Request) {
 	maxBytes := handler.config.MaxFileSize * mebibyte
 	request.Body = http.MaxBytesReader(writer, request.Body, maxBytes+mebibyte)
+	if !handler.verifyAuthenticatedMutationCSRF(writer, request) {
+		return
+	}
 	fileObject, header, err := request.FormFile("file")
 	if request.MultipartForm != nil {
 		defer request.MultipartForm.RemoveAll()
@@ -210,6 +239,10 @@ func (handler *Handler) Upload(writer http.ResponseWriter, request *http.Request
 		ContentType: contentType, IsAnonymousUpload: true, IsEncrypted: handler.cipher != nil,
 		StorageService: handler.config.StorageService, UploadStatus: "complete", ChecksumStatus: "verified",
 		CreatedAt: now, UpdatedAt: now,
+	}
+	if identity := currentIdentity(request); identity != nil {
+		record.FileOwner = &identity.User.ID
+		record.IsAnonymousUpload = false
 	}
 	if handler.cipher != nil {
 		record.EncryptionMethod = "aes-256-gcm"
@@ -291,6 +324,9 @@ func (handler *Handler) Download(writer http.ResponseWriter, request *http.Reque
 }
 
 func (handler *Handler) Delete(writer http.ResponseWriter, request *http.Request) {
+	if !handler.verifyAuthenticatedMutationCSRF(writer, request) {
+		return
+	}
 	fileID, ok := validFileID(request)
 	if !ok {
 		http.NotFound(writer, request)
@@ -326,6 +362,9 @@ func (handler *Handler) Delete(writer http.ResponseWriter, request *http.Request
 }
 
 func (handler *Handler) Update(writer http.ResponseWriter, request *http.Request) {
+	if !handler.verifyAuthenticatedMutationCSRF(writer, request) {
+		return
+	}
 	fileID, ok := validFileID(request)
 	if !ok {
 		http.NotFound(writer, request)
@@ -406,11 +445,28 @@ func (handler *Handler) redirect(writer http.ResponseWriter, request *http.Reque
 }
 
 func (handler *Handler) isOwner(request *http.Request, file *db.FileList) bool {
+	if identity := currentIdentity(request); identity != nil && file.FileOwner != nil && *file.FileOwner == identity.User.ID {
+		return true
+	}
 	cookie, err := request.Cookie(ownerCookieName(file.FileID))
 	if err != nil {
 		return false
 	}
 	return ownerTokenMatches(file, cookie.Value)
+}
+
+func identityUser(request *http.Request) *db.User {
+	if identity := currentIdentity(request); identity != nil {
+		return identity.User
+	}
+	return nil
+}
+
+func identityCSRF(request *http.Request) string {
+	if identity := currentIdentity(request); identity != nil {
+		return identity.Claims.CSRF
+	}
+	return ""
 }
 
 func ownerTokenMatches(file *db.FileList, token string) bool {

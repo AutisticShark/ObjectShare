@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"html/template"
 	"io"
 	"io/fs"
 	"log/slog"
@@ -176,6 +177,57 @@ func TestTemplatesKeepTablerHtmxAndAuthorCredit(t *testing.T) {
 			if !strings.Contains(page, expected) {
 				t.Errorf("%s no longer contains %q", name, expected)
 			}
+		}
+	}
+}
+
+func TestAllProductionTemplatesParse(t *testing.T) {
+	parsed, err := template.ParseFS(os.DirFS("../.."), "template/*.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"index.html", "file_view.html", "setup.html", "login.html", "signup.html", "account.html", "admin_users.html"} {
+		if parsed.Lookup(name) == nil {
+			t.Errorf("template %q is missing", name)
+		}
+	}
+	user := &db.User{ID: "user", Email: "user@example.com", DisplayName: "User", Role: db.RoleAdmin, Active: true}
+	renders := []struct {
+		name string
+		data any
+	}{
+		{"index.html", map[string]any{"Version": "test", "MaxFileSize": int64(1), "User": user, "CSRF": "csrf"}},
+		{"file_view.html", map[string]any{"Version": "test", "FileName": "file.txt", "User": user, "CSRF": "csrf"}},
+		{"setup.html", authPageData{Version: "test", CSRF: "csrf"}},
+		{"login.html", authPageData{Version: "test", CSRF: "csrf"}},
+		{"signup.html", authPageData{Version: "test", CSRF: "csrf"}},
+		{"account.html", accountPageData{Version: "test", CSRF: "csrf", User: user}},
+		{"admin_users.html", adminPageData{Version: "test", CSRF: "csrf", User: user}},
+	}
+	for _, render := range renders {
+		if err := parsed.ExecuteTemplate(io.Discard, render.name, render.data); err != nil {
+			t.Errorf("render %s: %v", render.name, err)
+		}
+	}
+	for _, name := range []string{"account.html", "admin_users.html"} {
+		contents, err := os.ReadFile("../../template/" + name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		page := string(contents)
+		for _, expected := range []string{"hx-", "{{template"} {
+			if !strings.Contains(page, expected) {
+				t.Errorf("%s no longer contains %q", name, expected)
+			}
+		}
+	}
+	partial, err := os.ReadFile("../../template/partials.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, expected := range []string{"@tabler/core@1.4.0", "htmx.org@2.0.10", "Made with", "by Cat"} {
+		if !strings.Contains(string(partial), expected) {
+			t.Errorf("partials.html no longer contains %q", expected)
 		}
 	}
 }

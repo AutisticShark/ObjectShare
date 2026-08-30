@@ -6,6 +6,11 @@
   "shutdown_timeout": "15s",
   "max_file_size": 100,
   "secure_cookies": false,
+  "auth": {
+    "signup_enabled": true,
+    "jwt_secret": "replace-with-at-least-32-random-bytes",
+    "token_lifetime": "12h"
+  },
   "storage_service": "filesystem",
   "storage_path": "/var/lib/objectshare/objects",
   "db": {

@@ -59,6 +59,10 @@ These instructions apply to every change in this repository.
 
 ## Product constraints
 
+- Use JWT exclusively for account authentication in this project. Do not add an
+  opaque server-side login-session mechanism. Keep strict algorithm and claim
+  validation, short token lifetimes, token-version invalidation, `jti` revocation,
+  hardened browser cookies with CSRF protection, and bearer-token API support.
 - When deployed behind Cloudflare, large uploads must use the supported direct-to-
   object-storage flow so request bodies do not traverse the proxied application
   endpoint. Do not describe evasion of provider limits as a production design.

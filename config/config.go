@@ -56,8 +56,11 @@ func defaults() *ServiceConfig {
 		IdleTimeout:     Duration(60 * time.Second),
 		ShutdownTimeout: Duration(15 * time.Second),
 		MaxFileSize:     100,
-		StorageService:  "filesystem",
-		StoragePath:     "data/objects",
+		Auth: &AuthConfig{
+			SignupEnabled: true, TokenLifetime: Duration(12 * time.Hour),
+		},
+		StorageService: "filesystem",
+		StoragePath:    "data/objects",
 		Db: &DatabaseConfig{
 			Type:            "postgres",
 			Host:            "127.0.0.1",
@@ -117,6 +120,12 @@ func applyEnvironment(cfg *ServiceConfig) error {
 	problems = append(problems, setDuration("OBJECTSHARE_SHUTDOWN_TIMEOUT", &cfg.ShutdownTimeout))
 	problems = append(problems, setInt64("OBJECTSHARE_MAX_FILE_SIZE_MB", &cfg.MaxFileSize))
 	problems = append(problems, setBool("OBJECTSHARE_SECURE_COOKIES", &cfg.SecureCookies))
+	if cfg.Auth == nil {
+		cfg.Auth = &AuthConfig{SignupEnabled: true, TokenLifetime: Duration(12 * time.Hour)}
+	}
+	problems = append(problems, setBool("OBJECTSHARE_SIGNUP_ENABLED", &cfg.Auth.SignupEnabled))
+	setString("OBJECTSHARE_JWT_SECRET", &cfg.Auth.JWTSecret)
+	problems = append(problems, setDuration("OBJECTSHARE_JWT_LIFETIME", &cfg.Auth.TokenLifetime))
 	setString("OBJECTSHARE_STORAGE_SERVICE", &cfg.StorageService)
 	setString("OBJECTSHARE_STORAGE_PATH", &cfg.StoragePath)
 
@@ -200,6 +209,15 @@ func (cfg *ServiceConfig) Validate() error {
 	}
 	if cfg.ReadTimeout <= 0 || cfg.WriteTimeout <= 0 || cfg.IdleTimeout <= 0 || cfg.ShutdownTimeout <= 0 {
 		return errors.New("all server timeouts must be positive")
+	}
+	if cfg.Auth == nil {
+		cfg.Auth = &AuthConfig{SignupEnabled: true, TokenLifetime: Duration(12 * time.Hour)}
+	}
+	if len(cfg.Auth.JWTSecret) < 32 || cfg.Auth.JWTSecret == "replace-with-at-least-32-random-bytes" {
+		return errors.New("auth jwt_secret must contain at least 32 non-placeholder bytes")
+	}
+	if cfg.Auth.TokenLifetime.Duration() < 5*time.Minute || cfg.Auth.TokenLifetime.Duration() > 24*time.Hour {
+		return errors.New("auth token_lifetime must be between 5 minutes and 24 hours")
 	}
 	if cfg.Db == nil || cfg.Db.Host == "" || cfg.Db.Port <= 0 || cfg.Db.User == "" || cfg.Db.Database == "" {
 		return errors.New("complete PostgreSQL configuration is required")

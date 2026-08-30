@@ -20,10 +20,15 @@
         <div class="navbar-brand navbar-brand-autodark">
           <a href="/" class="text-decoration-none">ObjectShare</a>
         </div>
-        <div class="navbar-nav flex-row order-md-last">
-          <a href="https://github.com/AutisticShark/ObjectShare"
-             class="nav-link"
-             rel="noopener noreferrer">GitHub</a>
+        <div class="navbar-nav flex-row order-md-last align-items-center gap-2">
+          {{if .User}}
+          {{if eq .User.Role "admin"}}<a class="nav-link" href="/admin/users">Users</a>{{end}}
+          <a class="nav-link" href="/account">{{.User.DisplayName}}</a>
+          <form action="/logout" method="post" hx-post="/logout" hx-disabled-elt="button"><input type="hidden" name="csrf_token" value="{{.CSRF}}"><button class="btn btn-outline-secondary btn-sm" type="submit">Log out</button></form>
+          {{else}}
+          <a class="nav-link" href="/login">Log in</a>{{if .SignupEnabled}}<a class="btn btn-primary btn-sm" href="/signup">Sign up</a>{{end}}
+          {{end}}
+          <a href="https://github.com/AutisticShark/ObjectShare" class="nav-link" rel="noopener noreferrer">GitHub</a>
         </div>
       </div>
     </header>
@@ -50,10 +55,10 @@
                 </div>
                 <form id="upload-form" action="/api/v1/upload" method="post" enctype="multipart/form-data"
                       {{if .DirectUpload}}data-direct-upload="true"{{else}}hx-post="/api/v1/upload" hx-encoding="multipart/form-data" hx-disabled-elt="#upload-button"{{end}}>
+                  {{if .User}}<input type="hidden" name="csrf_token" value="{{.CSRF}}">{{end}}
                   <div class="card-body">
                     <p class="text-secondary">
-                      Files are shared through an unlisted link. This browser receives an
-                      owner token that permits rename and deletion.
+                      Files are shared through an unlisted link. {{if .User}}Uploads are saved to your account so you can manage them later.{{else}}This browser receives an owner token that permits rename and deletion.{{end}}
                     </p>
                     <div class="mb-3">
                       <label class="form-label" for="file">Choose a file</label>

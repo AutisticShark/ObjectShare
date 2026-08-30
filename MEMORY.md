@@ -52,6 +52,12 @@ does not repeat them. It is a repository-local memory and should remain alongsid
   configured.
 - Preserve real configuration values during schema migrations without exposing
   secrets.
+- Use JWT authentication only in ObjectShare and in new projects going forward;
+  do not substitute opaque server-side login sessions. A secure JWT design still
+  requires an explicit algorithm allowlist, issuer/audience and temporal claim
+  validation, short expirations, token-version invalidation for account changes,
+  hashed `jti` revocation for logout, hardened browser cookies with CSRF
+  protection, and bearer-token API support.
 
 When a future request conflicts with one of these decisions, follow the user's new
 explicit instruction and update this memory so it remains accurate.

@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>My account · ObjectShare</title>{{template "tabler-head" .}}
+</head>
+<body><div class="page">{{template "app-nav" .}}<div class="page-wrapper">
+  <div class="page-header d-print-none"><div class="container-xl"><div class="row g-2 align-items-center"><div class="col"><div class="page-pretitle">Account</div><h2 class="page-title">My account</h2></div><div class="col-auto ms-auto"><a class="btn btn-primary" href="/">Upload a file</a></div></div></div></div>
+  <div class="page-body"><div class="container-xl">
+    {{if .Message}}<div class="alert alert-success" role="alert">{{.Message}}</div>{{end}}{{if .Error}}<div class="alert alert-danger" role="alert">{{.Error}}</div>{{end}}
+    <div class="row row-cards">
+      <div class="col-12 col-lg-6"><form class="card" action="/account/profile" method="post" hx-post="/account/profile" hx-disabled-elt="button">
+        <input type="hidden" name="csrf_token" value="{{.CSRF}}"><div class="card-header"><h3 class="card-title">Profile</h3></div><div class="card-body">
+          <div class="mb-3"><label class="form-label" for="display-name">Display name</label><input class="form-control" id="display-name" name="display_name" value="{{.User.DisplayName}}" maxlength="100" required></div>
+          <div><label class="form-label" for="email">Email</label><input class="form-control" id="email" name="email" type="email" value="{{.User.Email}}" maxlength="320" required></div>
+        </div><div class="card-footer text-end"><button class="btn btn-primary" type="submit">Save profile</button></div>
+      </form></div>
+      <div class="col-12 col-lg-6"><form class="card" action="/account/password" method="post" hx-post="/account/password" hx-disabled-elt="button">
+        <input type="hidden" name="csrf_token" value="{{.CSRF}}"><div class="card-header"><h3 class="card-title">Change password</h3></div><div class="card-body">
+          <div class="mb-3"><label class="form-label" for="current-password">Current password</label><input class="form-control" id="current-password" name="current_password" type="password" autocomplete="current-password" required></div>
+          <div class="mb-3"><label class="form-label" for="password">New password</label><input class="form-control" id="password" name="password" type="password" autocomplete="new-password" minlength="12" maxlength="512" required></div>
+          <div><label class="form-label" for="password-confirm">Confirm new password</label><input class="form-control" id="password-confirm" name="password_confirm" type="password" autocomplete="new-password" minlength="12" maxlength="512" required></div>
+        </div><div class="card-footer text-end"><button class="btn btn-primary" type="submit">Change password</button></div>
+      </form></div>
+      <div class="col-12"><div class="card"><div class="card-header"><h3 class="card-title">My uploads</h3><div class="card-actions"><span class="badge bg-blue-lt">{{len .Files}}</span></div></div>
+        {{if .Files}}<div class="table-responsive"><table class="table table-vcenter card-table"><thead><tr><th>Name</th><th>Size</th><th>Uploaded</th><th></th></tr></thead><tbody>{{range .Files}}<tr><td><a href="/file/{{.ID}}">{{.Name}}</a></td><td class="text-secondary">{{.Size}}</td><td class="text-secondary">{{.CreatedAt}}</td><td class="text-end"><a class="btn btn-sm" href="/file/{{.ID}}">Manage</a></td></tr>{{end}}</tbody></table></div>{{else}}<div class="empty"><div class="empty-header">0</div><p class="empty-title">No account uploads yet</p><p class="empty-subtitle text-secondary">Files uploaded while logged in will appear here.</p><div class="empty-action"><a href="/" class="btn btn-primary">Upload a file</a></div></div>{{end}}
+      </div></div>
+    </div>
+  </div></div>{{template "footer" .}}
+</div></div></body></html>

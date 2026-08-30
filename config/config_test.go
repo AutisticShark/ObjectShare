@@ -7,6 +7,14 @@ import (
 	"time"
 )
 
+const testJWTSecret = "test-only-jwt-secret-with-at-least-32-bytes"
+
+func testDefaults() *ServiceConfig {
+	cfg := defaults()
+	cfg.Auth.JWTSecret = testJWTSecret
+	return cfg
+}
+
 func TestDurationAcceptsStringAndLegacySeconds(t *testing.T) {
 	for _, test := range []struct {
 		input string
@@ -25,7 +33,7 @@ func TestDurationAcceptsStringAndLegacySeconds(t *testing.T) {
 }
 
 func TestS3SessionTokenRequiresExplicitCredentials(t *testing.T) {
-	cfg := defaults()
+	cfg := testDefaults()
 	cfg.StorageService = "s3"
 	cfg.S3 = &S3Config{
 		S3CompatibleConfig: S3CompatibleConfig{
@@ -42,7 +50,7 @@ func TestS3SessionTokenRequiresExplicitCredentials(t *testing.T) {
 func TestSupportedObjectStorageConfigurations(t *testing.T) {
 	for _, storage := range []string{"s3", "b2", "oss", "cos"} {
 		t.Run(storage, func(t *testing.T) {
-			cfg := defaults()
+			cfg := testDefaults()
 			cfg.StorageService = storage
 			settings := &S3CompatibleConfig{
 				BucketName: "bucket", Region: "region-1", AccessKeyID: "key", SecretAccessKey: "secret",
@@ -75,7 +83,7 @@ func TestObjectStorageRejectsIncompleteCredentialsAndInsecureEndpoint(t *testing
 		{"insecure endpoint", &S3CompatibleConfig{BucketName: "bucket", Region: "region", Endpoint: "http://storage.example.com", PresignLinkTimeout: Duration(time.Minute), PresignUploadTimeout: Duration(time.Minute)}, "absolute HTTPS URL"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			cfg := defaults()
+			cfg := testDefaults()
 			cfg.StorageService = "s3"
 			cfg.S3 = &S3Config{S3CompatibleConfig: *test.settings}
 			err := cfg.Validate()
@@ -96,7 +104,7 @@ func TestObjectStorageEnvironmentOverrides(t *testing.T) {
 	t.Setenv("OBJECTSHARE_COS_PRESIGN_TIMEOUT", "15m")
 	t.Setenv("OBJECTSHARE_COS_UPLOAD_PRESIGN_TIMEOUT", "45m")
 
-	cfg := defaults()
+	cfg := testDefaults()
 	if err := applyEnvironment(cfg); err != nil {
 		t.Fatal(err)
 	}
@@ -110,12 +118,43 @@ func TestObjectStorageEnvironmentOverrides(t *testing.T) {
 
 func TestDefaultsValidate(t *testing.T) {
 	cfg := defaults()
-	if err := cfg.Validate(); err != nil {
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "jwt_secret") {
+		t.Fatalf("defaults without a deployment JWT secret should fail: %v", err)
+	}
+	if err := testDefaults().Validate(); err != nil {
 		t.Fatal(err)
 	}
 }
 
+func TestAuthenticationEnvironmentAndLifetimeValidation(t *testing.T) {
+	t.Setenv("OBJECTSHARE_SIGNUP_ENABLED", "false")
+	t.Setenv("OBJECTSHARE_JWT_LIFETIME", "8h")
+	cfg := testDefaults()
+	if err := applyEnvironment(cfg); err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Auth.SignupEnabled || cfg.Auth.TokenLifetime.Duration() != 8*time.Hour {
+		t.Fatalf("authentication environment was not applied: %#v", cfg.Auth)
+	}
+	for _, lifetime := range []time.Duration{time.Minute, 31 * 24 * time.Hour} {
+		cfg := testDefaults()
+		cfg.Auth.TokenLifetime = Duration(lifetime)
+		if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "token_lifetime") {
+			t.Fatalf("lifetime %s error = %v", lifetime, err)
+		}
+	}
+}
+
+func TestAuthenticationRejectsDocumentedPlaceholderSecret(t *testing.T) {
+	cfg := testDefaults()
+	cfg.Auth.JWTSecret = "replace-with-at-least-32-random-bytes"
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "non-placeholder") {
+		t.Fatalf("placeholder JWT secret error = %v", err)
+	}
+}
+
 func TestExampleConfiguration(t *testing.T) {
+	t.Setenv("OBJECTSHARE_JWT_SECRET", testJWTSecret)
 	cfg, err := Load("../config.json.example")
 	if err != nil {
 		t.Fatal(err)
@@ -126,7 +165,7 @@ func TestExampleConfiguration(t *testing.T) {
 }
 
 func TestEncryptionMemoryLimit(t *testing.T) {
-	cfg := defaults()
+	cfg := testDefaults()
 	cfg.MaxFileSize = 129
 	cfg.Encryption.Enabled = true
 	cfg.Encryption.Key = "QkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkI="

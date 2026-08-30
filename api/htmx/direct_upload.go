@@ -31,6 +31,9 @@ func (handler *Handler) BeginDirectUpload(writer http.ResponseWriter, request *h
 		http.Error(writer, "Direct uploads are unavailable for this storage or encryption mode.", http.StatusNotFound)
 		return
 	}
+	if !handler.verifyAuthenticatedMutationCSRF(writer, request) {
+		return
+	}
 
 	handler.cleanupExpiredUploads(request)
 	var input directUploadRequest
@@ -74,6 +77,10 @@ func (handler *Handler) BeginDirectUpload(writer http.ResponseWriter, request *h
 		UploadStatus: "pending", ChecksumStatus: "unavailable", UploadExpiresAt: &expiresAt,
 		CreatedAt: now, UpdatedAt: now,
 	}
+	if identity := currentIdentity(request); identity != nil {
+		record.FileOwner = &identity.User.ID
+		record.IsAnonymousUpload = false
+	}
 	if err := handler.repository.Create(request.Context(), record); err != nil {
 		handler.internalError(writer, request, "create direct-upload intent", err)
 		return
@@ -94,6 +101,9 @@ func (handler *Handler) BeginDirectUpload(writer http.ResponseWriter, request *h
 }
 
 func (handler *Handler) CompleteDirectUpload(writer http.ResponseWriter, request *http.Request) {
+	if !handler.verifyAuthenticatedMutationCSRF(writer, request) {
+		return
+	}
 	file, token, ok := handler.directUploadIntent(writer, request)
 	if !ok {
 		return
@@ -119,6 +129,9 @@ func (handler *Handler) CompleteDirectUpload(writer http.ResponseWriter, request
 }
 
 func (handler *Handler) AbortDirectUpload(writer http.ResponseWriter, request *http.Request) {
+	if !handler.verifyAuthenticatedMutationCSRF(writer, request) {
+		return
+	}
 	file, _, ok := handler.directUploadIntent(writer, request)
 	if !ok {
 		return

@@ -9,6 +9,8 @@
   const status = document.querySelector("#upload-status");
   const progressWrap = document.querySelector("#upload-progress-wrap");
   const progress = document.querySelector("#upload-progress");
+  const csrfInput = form.querySelector("input[name='csrf_token']");
+  const csrfHeaders = csrfInput ? {"X-CSRF-Token": csrfInput.value} : {};
 
   const showStatus = (message, isError = false) => {
     status.textContent = message;
@@ -62,7 +64,7 @@
       showStatus("Authorizing a direct upload…");
       const begin = await fetch("/api/v1/uploads/direct", {
         method: "POST",
-        headers: {"Content-Type": "application/json"},
+        headers: {"Content-Type": "application/json", ...csrfHeaders},
         body: JSON.stringify({file_name: file.name, file_size: file.size, content_type: contentType})
       });
       if (!begin.ok) throw await responseError(begin);
@@ -73,7 +75,7 @@
       showStatus("Verifying the uploaded object…");
       const complete = await fetch(authorization.complete_url, {
         method: "POST",
-        headers: {"Content-Type": "application/json"},
+        headers: {"Content-Type": "application/json", ...csrfHeaders},
         body: JSON.stringify({token: authorization.token})
       });
       if (!complete.ok) throw await responseError(complete);
@@ -85,7 +87,7 @@
       if (authorization && !objectUploaded) {
         fetch(authorization.abort_url, {
           method: "POST",
-          headers: {"Content-Type": "application/json"},
+          headers: {"Content-Type": "application/json", ...csrfHeaders},
           body: JSON.stringify({token: authorization.token}),
           keepalive: true
         }).catch(() => {});

@@ -15,12 +15,14 @@ ObjectShare is a small self-hosted file sharing service written in Go. Files are
 - PostgreSQL metadata with bounded connection pools
 - Optional AES-256-GCM server-side encryption at rest
 - Owner-only rename and permanent deletion
+- Account signup and login with separate user and administrator management interfaces
+- One-time administrator bootstrap through the web setup or CLI
 - Graceful shutdown, health endpoints, secure response headers, and structured logs
 - Multi-stage, non-root, read-only container image
 - Docker Compose development/single-node deployment
 - CI, vulnerability scanning, SBOM/provenance, and multi-architecture publishing to Docker Hub and GHCR
 
-ObjectShare does not provide user accounts or access-controlled downloads. Anyone with a file URL can download it. Put it behind an authentication-aware reverse proxy if private sharing is required.
+Anyone with a file URL can still download it. Accounts provide persistent upload ownership and management, not private share links; put ObjectShare behind an authentication-aware reverse proxy if every download must require authentication.
 
 ## Roadmap
 
@@ -29,9 +31,9 @@ ObjectShare does not provide user accounts or access-controlled downloads. Anyon
 - [ ] Better upload UI
 - [ ] File sharing & permission
 - [x] File deletion
-- [ ] User management
-- [ ] User authentication
-- [ ] User authorization
+- [ ] Auto file deletion after days for guest and unpaid users
+- [x] User management
+- [ ] Thrid party OAuth login support
 - [x] Server-side encryption & decryption
 - [ ] Client-side encryption & decryption
 
@@ -52,11 +54,13 @@ HTMX is intentionally part of the frontend architecture. The native forms are ac
 
 ```sh
 cp .env.example .env
-# Edit .env and replace POSTGRES_PASSWORD.
+# Edit .env and replace POSTGRES_PASSWORD and OBJECTSHARE_JWT_SECRET.
 docker compose up --build -d
 ```
 
 Open <http://localhost:8080>. Compose uses PostgreSQL 18 and a persistent local object volume. Stop it with `docker compose down`; add `--volumes` only when you intentionally want to delete all stored data.
+
+The first visit redirects to the one-time setup page. Create the initial administrator there; after that, `/setup` is locked and administrators create additional users or administrators from **Users**. Public signup is enabled by default and creates normal users.
 
 For HTTPS deployments, terminate TLS at a reverse proxy and set `OBJECTSHARE_SECURE_COOKIES=true`. Back up both named volumes together so metadata and objects remain consistent.
 
@@ -79,11 +83,57 @@ Configuration is read from the optional JSON file and then overridden by `OBJECT
 | `OBJECTSHARE_STORAGE_SERVICE` | `filesystem` | `filesystem`, `r2`, `s3`, `b2`, `oss`, or `cos` |
 | `OBJECTSHARE_STORAGE_PATH` | `data/objects` | Filesystem object directory |
 | `OBJECTSHARE_DB_*` | varies | PostgreSQL connection and pool settings |
-| `OBJECTSHARE_SECURE_COOKIES` | `false` | Require HTTPS for owner cookies |
+| `OBJECTSHARE_SECURE_COOKIES` | `false` | Require HTTPS for login and owner cookies |
+| `OBJECTSHARE_SIGNUP_ENABLED` | `true` | Allow public signup for normal users |
+| `OBJECTSHARE_JWT_SECRET` | none (required) | JWT HMAC signing secret, at least 32 random bytes |
+| `OBJECTSHARE_JWT_LIFETIME` | `12h` | JWT lifetime (`5m` to `24h`) |
 | `OBJECTSHARE_ENCRYPTION_ENABLED` | `false` | Enable encryption at rest |
 | `OBJECTSHARE_ENCRYPTION_KEY` | empty | Base64/hex encoded 32-byte key |
 
-Generate an encryption key with `openssl rand -base64 32`. Losing or changing this key makes existing encrypted files unrecoverable. Encrypted objects are authenticated before download and are held in memory during encryption/decryption. To bound memory use, encrypted mode limits files to 128 MiB and permits one cryptographic operation per application replica at a time.
+Generate a JWT signing secret with `openssl rand -base64 48` and keep it stable across all application replicas. Rotating it immediately invalidates every issued JWT. Generate an encryption key separately with `openssl rand -base64 32`. Losing or changing the encryption key makes existing encrypted files unrecoverable. Encrypted objects are authenticated before download and are held in memory during encryption/decryption. To bound memory use, encrypted mode limits files to 128 MiB and permits one cryptographic operation per application replica at a time.
+
+### User and administrator management
+
+Normal users manage their profile, password, and account-owned uploads at `/account`. Administrators have a separate `/admin/users` interface where they can create normal users or administrators, change roles and active status, reset passwords, and delete accounts. The final active administrator cannot be disabled, demoted, or deleted. Disabling an account, changing its role, or resetting its password increments the account token version so every earlier JWT is rejected. Deleting an account keeps its existing shared files available and converts them to anonymous uploads.
+
+Public signup can be disabled with `OBJECTSHARE_SIGNUP_ENABLED=false` or with `auth.signup_enabled` in `config.json`. The JSON equivalents for JWT configuration are `auth.jwt_secret` and `auth.token_lifetime`.
+
+Account authentication uses signed HS256 JWTs only; there is no server-side login-session table. Tokens require the ObjectShare issuer and audience plus `sub`, `jti`, `iat`, `nbf`, `exp`, role, token-version, and CSRF claims. Browser login stores the JWT in an `HttpOnly`, `SameSite=Strict` cookie (and a `Secure` `__Host-` cookie when `OBJECTSHARE_SECURE_COOKIES=true`). Cookie-authenticated mutations require the CSRF value embedded in the signed token. Passwords are hashed with Argon2id, and login attempts are throttled after repeated failures.
+
+API clients can exchange credentials for a bearer JWT and revoke it on logout:
+
+```sh
+curl -sS -X POST http://localhost:8080/api/v1/auth/login \
+  -H 'Content-Type: application/json' \
+  -d '{"email":"user@example.com","password":"your password"}'
+
+curl -i -X POST http://localhost:8080/api/v1/auth/logout \
+  -H 'Authorization: Bearer <access_token>'
+```
+
+Logout stores only a SHA-256 hash of the JWT ID until that token expires. Requests also reload the account and reject revoked JWTs, disabled/deleted users, stale token versions, or role mismatches. Bearer tokens take precedence over cookies and are never returned in a cookie by the API login endpoint.
+
+To bootstrap the initial administrator from the CLI instead of the web page, provide the password through a mounted/readable file so it does not appear in shell history or the process list:
+
+```sh
+object-share -config config.json -create-admin \
+  -admin-email admin@example.com \
+  -admin-name "Site administrator" \
+  -admin-password-file /run/secrets/objectshare_admin_password
+```
+
+For Compose, read the password without echoing it and pipe it to the one-off command:
+
+```sh
+read -rsp "Administrator password: " OBJECTSHARE_BOOTSTRAP_PASSWORD && echo
+printf '%s' "$OBJECTSHARE_BOOTSTRAP_PASSWORD" | docker compose run --rm -T \
+  app -create-admin -admin-email admin@example.com \
+  -admin-name "Site administrator" \
+  -admin-password-stdin
+unset OBJECTSHARE_BOOTSTRAP_PASSWORD
+```
+
+The CLI bootstrap is intentionally one-time and refuses to create an administrator after one already exists. Further administrators must be created by an authenticated administrator. `OBJECTSHARE_ADMIN_PASSWORD` is also accepted for automation, but a password file or secret mount is preferred.
 
 ### Object storage
 
@@ -150,6 +200,8 @@ See Tencent Cloud's [S3-compatible configuration guide](https://intl.cloud.tence
 ## Production checklist
 
 - Put the service behind HTTPS and enable secure cookies.
+- Set one stable, high-entropy JWT secret on every replica and rotate it only when intentionally invalidating all tokens.
+- Disable public signup if accounts should be invitation-only.
 - Use a long, unique PostgreSQL password and TLS (`ssl_mode=require` or stronger) for external databases.
 - Keep the database private; only publish the application port.
 - Use an object-storage provider for horizontally scaled deployments. Filesystem storage is intended for a single application replica.
