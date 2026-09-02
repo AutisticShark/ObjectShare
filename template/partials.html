@@ -1,0 +1,66 @@
+{{define "auto-theme"}}<script src="/assets/theme.js"></script>{{end}}
+
+{{define "tabler-head"}}
+  <link rel="stylesheet"
+        href="https://cdn.jsdelivr.net/npm/@tabler/core@1.4.0/dist/css/tabler.min.css"
+        integrity="sha384-kz+I4+mczbNiZfLAJMxOlJaZmnbRYhARHNkR2k6tal4gz7OL33/0puDD3SvkiNX9"
+        crossorigin="anonymous">
+  <script defer src="https://cdn.jsdelivr.net/npm/htmx.org@2.0.10/dist/htmx.min.js"
+          integrity="sha384-H5SrcfygHmAuTDZphMHqBJLc3FhssKjG7w/CeCpFReSfwBWDTKpkzPP8c+cLsK+V"
+          crossorigin="anonymous"></script>
+{{end}}
+
+{{define "captcha-widget"}}{{if .}}<div class="mb-3"><div class="objectshare-turnstile" data-sitekey="{{.SiteKey}}" data-action="{{.Action}}"></div><small class="form-hint">Complete the security check to continue.</small></div>{{end}}{{end}}
+
+{{define "theme-toggle"}}
+<form class="ms-1" action="/account/theme" method="post" hx-post="/account/theme" hx-disabled-elt="button">
+  <input type="hidden" name="csrf_token" value="{{.CSRF}}">
+  <input type="hidden" name="theme" value="{{if .User.DarkMode}}light{{else}}dark{{end}}">
+  <button class="border-0 bg-transparent text-secondary p-1 d-inline-flex align-items-center justify-content-center rounded" type="submit" title="Switch to {{if .User.DarkMode}}light{{else}}dark{{end}} theme" aria-label="Switch to {{if .User.DarkMode}}light{{else}}dark{{end}} theme">
+    {{if .User.DarkMode}}
+    <svg xmlns="http://www.w3.org/2000/svg" class="icon" width="18" height="18" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path stroke="none" d="M0 0h24v24H0z" fill="none"></path><path d="M12 3v1m0 16v1m9 -9h-1m-16 0h-1m15.364 -6.364l-.707 .707m-11.314 11.314l-.707 .707m0 -12.728l.707 .707m11.314 11.314l.707 .707"></path><path d="M8 12a4 4 0 1 0 8 0a4 4 0 0 0 -8 0"></path></svg>
+    {{else}}
+    <svg xmlns="http://www.w3.org/2000/svg" class="icon" width="18" height="18" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path stroke="none" d="M0 0h24v24H0z" fill="none"></path><path d="M12 3c.132 0 .263 .002 .393 .008a9 9 0 1 0 8.599 8.599a7 7 0 0 1 -8.992 -8.607z"></path></svg>
+    {{end}}
+  </button>
+</form>
+{{end}}
+
+{{define "app-nav"}}
+<header class="navbar navbar-expand-md d-print-none">
+  <div class="container-xl">
+    <div class="navbar-brand navbar-brand-autodark"><a href="/" class="text-decoration-none">ObjectShare</a></div>
+    <div class="navbar-nav flex-row order-md-last align-items-center gap-2 ms-auto">
+      {{if eq .User.Role "admin"}}<a class="nav-link" href="/admin/settings">Configuration</a><a class="nav-link" href="/admin/users">Users</a>{{end}}
+      <a class="nav-link" href="/account">{{.User.DisplayName}}</a>
+      <form action="/logout" method="post" hx-post="/logout" hx-disabled-elt="button">
+        <input type="hidden" name="csrf_token" value="{{.CSRF}}">
+        <button class="btn btn-outline-secondary btn-sm" type="submit">Log out</button>
+      </form>
+      {{template "theme-toggle" .}}
+    </div>
+  </div>
+</header>
+{{end}}
+
+{{define "footer"}}
+<footer class="footer footer-transparent d-print-none">
+  <div class="container-xl">
+    <div class="row text-center align-items-center flex-row-reverse">
+      <div class="col-lg-auto ms-lg-auto">
+        <ul class="list-inline list-inline-dots mb-0">
+          <li class="list-inline-item">ObjectShare {{.Version}}</li>
+          <li class="list-inline-item">
+            Made with
+            <svg xmlns="http://www.w3.org/2000/svg" class="icon text-pink icon-filled icon-inline" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round" aria-label="love">
+              <path stroke="none" d="M0 0h24v24H0z" fill="none"></path>
+              <path d="M19.5 12.572l-7.5 7.428l-7.5 -7.428a5 5 0 1 1 7.5 -6.566a5 5 0 1 1 7.5 6.572"></path>
+            </svg>
+            by Cat
+          </li>
+        </ul>
+      </div>
+    </div>
+  </div>
+</footer>
+{{end}}

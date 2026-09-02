@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en"{{if .User.DarkMode}} data-bs-theme="dark"{{end}}>
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>User management · ObjectShare</title>{{template "tabler-head" .}}
+  <link rel="stylesheet" href="/assets/admin-users.css">
+  <script defer src="/assets/admin-users.js"></script>
+</head>
+<body><div class="page">{{template "app-nav" .}}<div class="page-wrapper">
+  <div class="page-header d-print-none"><div class="container-xl"><div class="row g-2 align-items-center"><div class="col"><div class="page-pretitle">Administration</div><h2 class="page-title">User management</h2></div></div></div></div>
+  <div class="page-body"><div class="container-xl">
+    {{if .Message}}<div class="alert alert-success" role="alert">{{.Message}}</div>{{end}}{{if .Error}}<div class="alert alert-danger" role="alert">{{.Error}}</div>{{end}}
+    <div class="row row-cards">
+      <div class="col-12 col-xl-4"><form class="card" action="/admin/users" method="post" hx-post="/admin/users" hx-target=".page" hx-select=".page" hx-swap="outerHTML" hx-disabled-elt="button">
+        <input type="hidden" name="csrf_token" value="{{.CSRF}}"><div class="card-header"><h3 class="card-title">Create user</h3></div><div class="card-body">
+          <div class="mb-3"><label class="form-label" for="new-display-name">Display name</label><input class="form-control" id="new-display-name" name="display_name" maxlength="100" required></div>
+          <div class="mb-3"><label class="form-label" for="new-email">Email</label><input class="form-control" id="new-email" name="email" type="email" maxlength="320" required></div>
+          <div class="mb-3"><label class="form-label" for="new-role">Role</label><select class="form-select" id="new-role" name="role"><option value="user">Normal user</option><option value="admin">Administrator</option></select></div>
+          <div class="mb-3"><label class="form-label" for="new-upload-quota">Upload quota (MiB)</label><input class="form-control" id="new-upload-quota" name="upload_quota_mib" type="number" min="0" step="1" value="0" required><div class="form-hint">Use 0 for unlimited. This entitlement is stored on the user account.</div></div>
+          <div class="mb-3"><label class="form-label" for="new-password">Initial password</label><input class="form-control" id="new-password" name="password" type="password" autocomplete="new-password" minlength="12" maxlength="512" required></div>
+          <div><label class="form-label" for="new-password-confirm">Confirm password</label><input class="form-control" id="new-password-confirm" name="password_confirm" type="password" autocomplete="new-password" minlength="12" maxlength="512" required></div>
+        </div><div class="card-footer text-end"><button class="btn btn-primary" type="submit">Create user</button></div>
+      </form></div>
+      <div class="col-12 col-xl-8"><div class="card"><div class="card-header"><h3 class="card-title">Users</h3><div class="card-actions d-flex align-items-center gap-3"><span class="text-secondary small">Total user storage: <strong class="text-reset">{{.TotalStorageUsed}}</strong></span><span class="badge bg-blue-lt">{{len .Users}}</span></div></div>
+        <div class="table-responsive"><table class="table table-vcenter card-table"><thead><tr><th>User</th><th>Access and quota</th><th>Activity and storage</th><th class="w-1"></th></tr></thead><tbody>
+        {{range .Users}}<tr><td><div class="fw-bold">{{.DisplayName}} {{if .IsCurrent}}<span class="badge bg-azure-lt">You</span>{{end}}</div><div class="text-secondary small">{{.Email}}</div></td>
+          <td><form class="d-flex gap-2 align-items-center" action="/admin/users/{{.ID}}/access" method="post" hx-post="/admin/users/{{.ID}}/access" hx-target=".page" hx-select=".page" hx-swap="outerHTML" hx-disabled-elt="button"><input type="hidden" name="csrf_token" value="{{$.CSRF}}"><select class="form-select form-select-sm" name="role" aria-label="Role for {{.Email}}"><option value="user" {{if eq .Role "user"}}selected{{end}}>User</option><option value="admin" {{if eq .Role "admin"}}selected{{end}}>Admin</option></select><select class="form-select form-select-sm" name="active" aria-label="Status for {{.Email}}"><option value="true" {{if .Active}}selected{{end}}>Active</option><option value="false" {{if not .Active}}selected{{end}}>Disabled</option></select><button class="btn btn-sm" type="submit">Save</button></form><form class="d-flex gap-2 align-items-center mt-2" action="/admin/users/{{.ID}}/quota" method="post" hx-post="/admin/users/{{.ID}}/quota" hx-target=".page" hx-select=".page" hx-swap="outerHTML" hx-disabled-elt="button"><input type="hidden" name="csrf_token" value="{{$.CSRF}}"><div class="input-group input-group-sm"><input class="form-control" name="upload_quota_mib" type="number" min="0" step="1" value="{{.UploadQuotaMiB}}" required aria-label="Upload quota in MiB for {{.Email}}"><span class="input-group-text">MiB</span></div><button class="btn btn-sm" type="submit">Set quota</button></form><div class="form-hint">0 is unlimited</div></td>
+          <td><div class="small">Created {{.CreatedAt}}</div><div class="small text-secondary">Last login: {{.LastLogin}}</div><div class="small mt-2"><span class="text-secondary">Storage used:</span> <strong>{{.StorageUsed}}</strong></div></td>
+          <td><button class="btn btn-sm btn-outline-secondary" type="button" data-user-dialog-open="user-actions-{{.ID}}" aria-haspopup="dialog" aria-controls="user-actions-{{.ID}}">Manage</button></td></tr>{{end}}
+        </tbody></table></div>
+      </div></div>
+    </div>
+    {{range .Users}}<dialog class="admin-user-dialog" id="user-actions-{{.ID}}" aria-labelledby="user-actions-title-{{.ID}}">
+      <div class="modal-dialog" role="document"><div class="modal-content">
+        <div class="modal-header"><div><h3 class="modal-title" id="user-actions-title-{{.ID}}">Manage {{.DisplayName}}</h3><div class="text-secondary small">{{.Email}}</div></div><button class="btn-close" type="button" data-user-dialog-close aria-label="Close user management"></button></div>
+        <div class="modal-body">{{if $.Error}}<div class="alert alert-danger" role="alert" aria-live="polite">{{$.Error}}</div>{{end}}<form action="/admin/users/{{.ID}}/password" method="post" hx-post="/admin/users/{{.ID}}/password" hx-target=".page" hx-select=".page" hx-swap="outerHTML" hx-disabled-elt="button" data-user-dialog-form="user-actions-{{.ID}}">
+          <input type="hidden" name="csrf_token" value="{{$.CSRF}}"><h4>Reset password</h4><p class="text-secondary small">Set a new password of at least 12 characters. Every existing JWT for this account will be invalidated.</p>
+          <div class="mb-3"><label class="form-label" for="password-{{.ID}}">New password</label><input class="form-control" id="password-{{.ID}}" name="password" type="password" autocomplete="new-password" minlength="12" maxlength="512" required></div>
+          <div class="mb-3"><label class="form-label" for="password-confirm-{{.ID}}">Confirm new password</label><input class="form-control" id="password-confirm-{{.ID}}" name="password_confirm" type="password" autocomplete="new-password" minlength="12" maxlength="512" required></div>
+          <button class="btn btn-primary w-100" type="submit">Reset password and invalidate JWTs</button>
+        </form></div>
+        <div class="modal-footer justify-content-between"><span class="text-secondary small">Uploads remain available after account deletion.</span><form action="/admin/users/{{.ID}}/delete" method="post" hx-post="/admin/users/{{.ID}}/delete" hx-target=".page" hx-select=".page" hx-swap="outerHTML" hx-disabled-elt="button" hx-confirm="Delete {{.Email}}? Their uploads will remain available but become anonymous."><input type="hidden" name="csrf_token" value="{{$.CSRF}}"><button class="btn btn-danger" type="submit">Delete user</button></form></div>
+      </div></div>
+    </dialog>{{end}}
+  </div></div>{{template "footer" .}}
+</div></div></body></html>

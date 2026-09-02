@@ -1,0 +1,146 @@
+<!doctype html>
+<html lang="en"{{if and .User .User.DarkMode}} data-bs-theme="dark"{{end}}>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{.FileName}} · ObjectShare</title>
+  <link rel="stylesheet"
+        href="https://cdn.jsdelivr.net/npm/@tabler/core@1.4.0/dist/css/tabler.min.css"
+        integrity="sha384-kz+I4+mczbNiZfLAJMxOlJaZmnbRYhARHNkR2k6tal4gz7OL33/0puDD3SvkiNX9"
+        crossorigin="anonymous">
+  <script defer src="https://cdn.jsdelivr.net/npm/htmx.org@2.0.10/dist/htmx.min.js"
+          integrity="sha384-H5SrcfygHmAuTDZphMHqBJLc3FhssKjG7w/CeCpFReSfwBWDTKpkzPP8c+cLsK+V"
+          crossorigin="anonymous"></script>
+  {{if .Captcha}}<script defer src="/assets/captcha.js"></script><script defer src="https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit&amp;onload=objectShareTurnstileReady"></script>{{end}}
+</head>
+<body>
+  <div class="page">
+    <header class="navbar navbar-expand-md d-print-none">
+      <div class="container-xl">
+        <div class="navbar-brand navbar-brand-autodark">
+          <a href="/" class="text-decoration-none">ObjectShare</a>
+        </div>
+        <div class="navbar-nav flex-row order-md-last align-items-center gap-2 ms-auto">
+          {{if .User}}
+          {{if eq .User.Role "admin"}}<a class="nav-link" href="/admin/users">Users</a>{{end}}
+          <a class="nav-link" href="/account">{{.User.DisplayName}}</a>
+          <form action="/logout" method="post" hx-post="/logout" hx-disabled-elt="button"><input type="hidden" name="csrf_token" value="{{.CSRF}}"><button class="btn btn-outline-secondary btn-sm" type="submit">Log out</button></form>
+          {{template "theme-toggle" .}}
+          {{else}}
+          <a class="nav-link" href="/login">Log in</a>{{if .SignupEnabled}}<a class="btn btn-primary btn-sm" href="/signup">Sign up</a>{{end}}
+          {{end}}
+        </div>
+      </div>
+    </header>
+
+    <div class="page-wrapper">
+      <div class="page-header d-print-none">
+        <div class="container-xl">
+          <div class="row g-2 align-items-center">
+            <div class="col">
+              <div class="page-pretitle">File details</div>
+              <h2 class="page-title">{{.FileName}}</h2>
+            </div>
+            <div class="col-auto ms-auto d-print-none">
+              {{if .Captcha}}<form action="/api/v1/download/{{.FileID}}" method="post">
+                {{template "captcha-widget" .Captcha}}
+                <button class="btn btn-primary" type="submit">Download</button>
+              </form>{{else}}<a class="btn btn-primary" href="/api/v1/download/{{.FileID}}">Download</a>{{end}}
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="page-body">
+        <div class="container-xl">
+          <div class="card">
+            <div class="card-body">
+              <div class="datagrid">
+                <div class="datagrid-item">
+                  <div class="datagrid-title">File ID</div>
+                  <div class="datagrid-content"><code>{{.FileID}}</code></div>
+                </div>
+                <div class="datagrid-item">
+                  <div class="datagrid-title">Size</div>
+                  <div class="datagrid-content">{{.FileSize}}</div>
+                </div>
+                <div class="datagrid-item">
+                  <div class="datagrid-title">Encryption</div>
+                  <div class="datagrid-content">
+                    {{if .Encrypted}}<span class="status status-green">AES-256-GCM</span>{{else}}<span class="status">None</span>{{end}}
+                  </div>
+                </div>
+                <div class="datagrid-item">
+                  <div class="datagrid-title">Created</div>
+                  <div class="datagrid-content">{{.CreatedAt}}</div>
+                </div>
+                <div class="datagrid-item">
+                  <div class="datagrid-title">Updated</div>
+                  <div class="datagrid-content">{{.UpdatedAt}}</div>
+                </div>
+                <div class="datagrid-item">
+                  <div class="datagrid-title">SHA-256</div>
+                  <div class="datagrid-content text-break">{{if .ChecksumsVerified}}<code>{{.FileSHA256}}</code>{{else}}<span class="text-secondary">Not calculated for direct upload</span>{{end}}</div>
+                </div>
+                <div class="datagrid-item">
+                  <div class="datagrid-title">SHA3-256</div>
+                  <div class="datagrid-content text-break">{{if .ChecksumsVerified}}<code>{{.FileSHA3}}</code>{{else}}<span class="text-secondary">Not calculated for direct upload</span>{{end}}</div>
+                </div>
+              </div>
+            </div>
+
+            {{if .CanManage}}
+            <div class="card-footer">
+              <div class="row g-3 align-items-end">
+                <div class="col-12 col-md">
+                  <form class="row g-2" action="/api/v1/update/{{.FileID}}" method="post"
+                        hx-post="/api/v1/update/{{.FileID}}" hx-disabled-elt="button">
+                    {{if .User}}<input type="hidden" name="csrf_token" value="{{.CSRF}}">{{end}}
+                    <div class="col">
+                      <label class="form-label" for="name">Rename file</label>
+                      <input class="form-control" id="name" name="name" value="{{.FileName}}" maxlength="255" required>
+                    </div>
+                    <div class="col-auto align-self-end">
+                      <button class="btn btn-secondary" type="submit">Rename</button>
+                    </div>
+                  </form>
+                </div>
+                <div class="col-auto">
+                  <form action="/api/v1/delete/{{.FileID}}" method="post"
+                        hx-post="/api/v1/delete/{{.FileID}}" hx-disabled-elt="button"
+                        hx-confirm="Permanently delete this file? This cannot be undone.">
+                    {{if .User}}<input type="hidden" name="csrf_token" value="{{.CSRF}}">{{end}}
+                    <button class="btn btn-danger" type="submit">Delete permanently</button>
+                  </form>
+                </div>
+              </div>
+            </div>
+            {{end}}
+          </div>
+        </div>
+      </div>
+
+      <footer class="footer footer-transparent d-print-none">
+        <div class="container-xl">
+          <div class="row text-center align-items-center flex-row-reverse">
+            <div class="col-lg-auto ms-lg-auto">
+              <ul class="list-inline list-inline-dots mb-0">
+                <li class="list-inline-item"><a href="/">Upload another file</a></li>
+                <li class="list-inline-item">ObjectShare {{.Version}}</li>
+                <li class="list-inline-item">
+                  Made with
+                  <svg xmlns="http://www.w3.org/2000/svg" class="icon text-pink icon-filled icon-inline" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round" aria-label="love">
+                    <path stroke="none" d="M0 0h24v24H0z" fill="none"></path>
+                    <path d="M19.5 12.572l-7.5 7.428l-7.5 -7.428a5 5 0 1 1 7.5 -6.566a5 5 0 1 1 7.5 6.572"></path>
+                  </svg>
+                  by Cat
+                </li>
+              </ul>
+            </div>
+          </div>
+        </div>
+      </footer>
+    </div>
+  </div>
+</body>
+</html>

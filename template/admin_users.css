@@ -1,0 +1,25 @@
+.admin-user-dialog {
+  width: min(calc(100% - 2rem), 32rem);
+  max-width: 32rem;
+  max-height: calc(100% - 2rem);
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+
+.admin-user-dialog::backdrop {
+  background: rgba(0, 0, 0, .55);
+  backdrop-filter: blur(2px);
+}
+
+.admin-user-dialog .modal-dialog {
+  width: 100%;
+  max-width: none;
+  margin: 0;
+  pointer-events: auto;
+}
+
+.admin-user-dialog .modal-content {
+  max-height: calc(100vh - 2rem);
+  overflow-y: auto;
+}

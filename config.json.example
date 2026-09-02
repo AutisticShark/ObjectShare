@@ -1,0 +1,25 @@
+{
+  "address": ":8080",
+  "read_timeout": "5m",
+  "write_timeout": "5m",
+  "idle_timeout": "1m",
+  "shutdown_timeout": "15s",
+  "settings_key": "replace-with-a-different-32-byte-random-secret",
+  "auth": {
+    "jwt_secret": "replace-with-at-least-32-random-bytes",
+    "token_lifetime": "12h"
+  },
+  "db": {
+    "type": "postgres",
+    "host": "127.0.0.1",
+    "port": 5432,
+    "user": "objectshare",
+    "password": "replace-me",
+    "database": "objectshare",
+    "ssl_mode": "require",
+    "timezone": "UTC",
+    "max_open_conns": 25,
+    "max_idle_conns": 5,
+    "conn_max_lifetime": "30m"
+  }
+}

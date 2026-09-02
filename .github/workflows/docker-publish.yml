@@ -1,0 +1,105 @@
+name: Build and Publish Docker Images
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+  packages: write
+  attestations: write
+  id-token: write
+
+concurrency:
+  group: container-publish-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8 # v4
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4
+      - name: Detect optional Docker Hub configuration
+        id: registries
+        shell: bash
+        env:
+          DOCKERHUB_USERNAME: ${{ vars.DOCKERHUB_USERNAME }}
+          DOCKERHUB_IMAGE: ${{ vars.DOCKERHUB_IMAGE }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+          dockerhub_configured=false
+          dockerhub=false
+          if [[ -n "$DOCKERHUB_USERNAME" && -n "$DOCKERHUB_IMAGE" && -n "$DOCKERHUB_TOKEN" ]]; then
+            dockerhub_configured=true
+            if [[ "$EVENT_NAME" != "push" ]]; then
+              dockerhub=true
+            fi
+          fi
+
+          {
+            echo "dockerhub=$dockerhub"
+            echo "images<<EOF"
+            echo "ghcr.io/${GITHUB_REPOSITORY,,}"
+            if [[ "$dockerhub" == "true" ]]; then
+              echo "$DOCKERHUB_IMAGE"
+            fi
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+          if [[ "$dockerhub_configured" == "false" ]]; then
+            echo "Docker Hub configuration is incomplete; publishing to GHCR only." >> "$GITHUB_STEP_SUMMARY"
+          elif [[ "$EVENT_NAME" == "push" ]]; then
+            echo "Development images are published to GHCR only; skipping Docker Hub." >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - name: Log in to Docker Hub
+        if: steps.registries.outputs.dockerhub == 'true'
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
+        with:
+          username: ${{ vars.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          scope: ${{ vars.DOCKERHUB_IMAGE }}@push
+      - name: Log in to GHCR
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Generate image metadata
+        id: meta
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6
+        with:
+          images: ${{ steps.registries.outputs.images }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}}
+            type=raw,value=edge,enable=${{ github.event_name == 'workflow_dispatch' }}
+            type=raw,value=dev,enable=${{ github.event_name == 'push' }}
+          labels: |
+            org.opencontainers.image.title=ObjectShare
+            org.opencontainers.image.description=A small self-hosted file sharing service
+            org.opencontainers.image.licenses=GPL-3.0-only
+      - name: Build and publish
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: VERSION=${{ steps.meta.outputs.version }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          provenance: mode=max
+          sbom: true

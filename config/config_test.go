@@ -1,0 +1,347 @@
+package config
+
+import (
+	"encoding/json"
+	"os"
+	"strings"
+	"testing"
+	"time"
+)
+
+const testJWTSecret = "test-only-jwt-secret-with-at-least-32-bytes"
+
+func testDefaults() *ServiceConfig {
+	cfg := defaults()
+	cfg.Auth.JWTSecret = testJWTSecret
+	return cfg
+}
+
+func TestDurationAcceptsStringAndLegacySeconds(t *testing.T) {
+	for _, test := range []struct {
+		input string
+		want  time.Duration
+	}{
+		{`"15s"`, 15 * time.Second}, {`600`, 10 * time.Minute},
+	} {
+		var duration Duration
+		if err := json.Unmarshal([]byte(test.input), &duration); err != nil {
+			t.Fatal(err)
+		}
+		if duration.Duration() != test.want {
+			t.Fatalf("%s: got %s, want %s", test.input, duration.Duration(), test.want)
+		}
+	}
+}
+
+func TestS3SessionTokenRequiresExplicitCredentials(t *testing.T) {
+	cfg := testDefaults()
+	cfg.StorageService = "s3"
+	cfg.S3 = &S3Config{
+		S3CompatibleConfig: S3CompatibleConfig{
+			BucketName: "bucket", Region: "us-east-1",
+			PresignLinkTimeout: Duration(time.Minute), PresignUploadTimeout: Duration(time.Minute),
+		},
+		SessionToken: "token",
+	}
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "session_token") {
+		t.Fatalf("error = %v, want session_token validation", err)
+	}
+}
+
+func TestSupportedObjectStorageConfigurations(t *testing.T) {
+	for _, storage := range []string{"s3", "b2", "oss", "cos"} {
+		t.Run(storage, func(t *testing.T) {
+			cfg := testDefaults()
+			cfg.StorageService = storage
+			settings := &S3CompatibleConfig{
+				BucketName: "bucket", Region: "region-1", AccessKeyID: "key", SecretAccessKey: "secret",
+				PresignLinkTimeout: Duration(10 * time.Minute), PresignUploadTimeout: Duration(time.Hour),
+			}
+			switch storage {
+			case "s3":
+				cfg.S3 = &S3Config{S3CompatibleConfig: *settings}
+			case "b2":
+				cfg.B2 = settings
+			case "oss":
+				cfg.OSS = settings
+			case "cos":
+				cfg.COS = settings
+			}
+			if err := cfg.Validate(); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
+func TestObjectStorageRejectsIncompleteCredentialsAndInsecureEndpoint(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		settings *S3CompatibleConfig
+		contains string
+	}{
+		{"partial credentials", &S3CompatibleConfig{BucketName: "bucket", Region: "region", AccessKeyID: "key", PresignLinkTimeout: Duration(time.Minute), PresignUploadTimeout: Duration(time.Minute)}, "provided together"},
+		{"insecure endpoint", &S3CompatibleConfig{BucketName: "bucket", Region: "region", Endpoint: "http://storage.example.com", PresignLinkTimeout: Duration(time.Minute), PresignUploadTimeout: Duration(time.Minute)}, "absolute HTTPS URL"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			cfg := testDefaults()
+			cfg.StorageService = "s3"
+			cfg.S3 = &S3Config{S3CompatibleConfig: *test.settings}
+			err := cfg.Validate()
+			if err == nil || !strings.Contains(err.Error(), test.contains) {
+				t.Fatalf("error = %v, want text %q", err, test.contains)
+			}
+		})
+	}
+}
+
+func TestObjectStorageEnvironmentOverrides(t *testing.T) {
+	t.Setenv("OBJECTSHARE_STORAGE_SERVICE", "cos")
+	t.Setenv("OBJECTSHARE_COS_BUCKET_NAME", "objectshare-1250000000")
+	t.Setenv("OBJECTSHARE_COS_REGION", "ap-guangzhou")
+	t.Setenv("OBJECTSHARE_COS_ENDPOINT", "https://cos.ap-guangzhou.myqcloud.com")
+	t.Setenv("OBJECTSHARE_COS_ACCESS_KEY_ID", "secret-id")
+	t.Setenv("OBJECTSHARE_COS_SECRET_ACCESS_KEY", "secret-key")
+	t.Setenv("OBJECTSHARE_COS_PRESIGN_TIMEOUT", "15m")
+	t.Setenv("OBJECTSHARE_COS_UPLOAD_PRESIGN_TIMEOUT", "45m")
+
+	cfg := testDefaults()
+	if err := applyEnvironment(cfg); err != nil {
+		t.Fatal(err)
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	if cfg.COS.BucketName != "objectshare-1250000000" || cfg.COS.Region != "ap-guangzhou" || cfg.COS.PresignLinkTimeout.Duration() != 15*time.Minute || cfg.COS.PresignUploadTimeout.Duration() != 45*time.Minute {
+		t.Fatalf("COS environment was not applied: %#v", cfg.COS)
+	}
+}
+
+func TestDefaultsValidate(t *testing.T) {
+	cfg := defaults()
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "jwt_secret") {
+		t.Fatalf("defaults without a deployment JWT secret should fail: %v", err)
+	}
+	if err := testDefaults().Validate(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestAuthenticationEnvironmentAndLifetimeValidation(t *testing.T) {
+	t.Setenv("OBJECTSHARE_SIGNUP_ENABLED", "false")
+	t.Setenv("OBJECTSHARE_JWT_LIFETIME", "8h")
+	cfg := testDefaults()
+	if err := applyEnvironment(cfg); err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Auth.SignupEnabled || cfg.Auth.TokenLifetime.Duration() != 8*time.Hour {
+		t.Fatalf("authentication environment was not applied: %#v", cfg.Auth)
+	}
+	for _, lifetime := range []time.Duration{time.Minute, 31 * 24 * time.Hour} {
+		cfg := testDefaults()
+		cfg.Auth.TokenLifetime = Duration(lifetime)
+		if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "token_lifetime") {
+			t.Fatalf("lifetime %s error = %v", lifetime, err)
+		}
+	}
+}
+
+func TestCaptchaEnvironmentAndValidation(t *testing.T) {
+	t.Setenv("OBJECTSHARE_CAPTCHA_PROVIDER", "turnstile")
+	t.Setenv("OBJECTSHARE_CAPTCHA_SITE_KEY", "public-site-key")
+	t.Setenv("OBJECTSHARE_CAPTCHA_SECRET_KEY", "private-secret-key")
+	t.Setenv("OBJECTSHARE_CAPTCHA_EXPECTED_HOSTNAME", "share.example.com")
+	t.Setenv("OBJECTSHARE_CAPTCHA_PROTECT_LOGIN", "true")
+	t.Setenv("OBJECTSHARE_CAPTCHA_PROTECT_SIGNUP", "true")
+	t.Setenv("OBJECTSHARE_CAPTCHA_PROTECT_UPLOAD", "true")
+	t.Setenv("OBJECTSHARE_CAPTCHA_PROTECT_DOWNLOAD", "true")
+	cfg := testDefaults()
+	if err := applyEnvironment(cfg); err != nil {
+		t.Fatal(err)
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Captcha.Provider != "turnstile" || !cfg.Captcha.ProtectLogin || !cfg.Captcha.ProtectSignup || !cfg.Captcha.ProtectUpload || !cfg.Captcha.ProtectDownload {
+		t.Fatalf("CAPTCHA environment was not applied: %#v", cfg.Captcha)
+	}
+
+	for _, test := range []struct {
+		name     string
+		settings *CaptchaConfig
+		want     string
+	}{
+		{"missing keys", &CaptchaConfig{Provider: "turnstile", ProtectLogin: true}, "site_key and secret_key"},
+		{"missing hostname", &CaptchaConfig{Provider: "turnstile", SiteKey: "site", SecretKey: "secret"}, "expected_hostname is required"},
+		{"protection without provider", &CaptchaConfig{Provider: "none", ProtectUpload: true}, "requires provider turnstile"},
+		{"unsafe hostname", &CaptchaConfig{Provider: "turnstile", SiteKey: "site", SecretKey: "secret", ExpectedHostname: "https://share.example.com"}, "expected_hostname"},
+		{"unsupported provider", &CaptchaConfig{Provider: "recaptcha"}, "unsupported captcha provider"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			cfg := testDefaults()
+			cfg.Captcha = test.settings
+			if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("error = %v, want %q", err, test.want)
+			}
+		})
+	}
+}
+
+func TestRateLimitEnvironmentDefaultsAndValidation(t *testing.T) {
+	cfg := testDefaults()
+	if err := json.Unmarshal([]byte(`{"rate_limit":{"upload_limit":7}}`), cfg); err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.RateLimit.Enabled || cfg.RateLimit.APILimit != 120 || cfg.RateLimit.UploadLimit != 7 {
+		t.Fatalf("partial rate-limit JSON discarded defaults: %#v", cfg.RateLimit)
+	}
+
+	t.Setenv("OBJECTSHARE_RATE_LIMIT_ENABLED", "true")
+	t.Setenv("OBJECTSHARE_RATE_LIMIT_WINDOW", "2m")
+	t.Setenv("OBJECTSHARE_RATE_LIMIT_API", "200")
+	t.Setenv("OBJECTSHARE_RATE_LIMIT_LOGIN", "8")
+	t.Setenv("OBJECTSHARE_RATE_LIMIT_SIGNUP", "4")
+	t.Setenv("OBJECTSHARE_RATE_LIMIT_UPLOAD", "12")
+	t.Setenv("OBJECTSHARE_RATE_LIMIT_DOWNLOAD", "40")
+	t.Setenv("OBJECTSHARE_TRUSTED_PROXY_CIDRS", "10.0.0.0/8, 2001:db8::/32")
+	cfg = testDefaults()
+	if err := applyEnvironment(cfg); err != nil {
+		t.Fatal(err)
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	if cfg.RateLimit.Window.Duration() != 2*time.Minute || cfg.RateLimit.APILimit != 200 || len(cfg.RateLimit.TrustedProxyCIDRs) != 2 {
+		t.Fatalf("rate-limit environment was not applied: %#v", cfg.RateLimit)
+	}
+
+	for _, mutate := range []func(*RateLimitConfig){
+		func(settings *RateLimitConfig) { settings.Window = Duration(500 * time.Millisecond) },
+		func(settings *RateLimitConfig) { settings.DownloadLimit = -1 },
+		func(settings *RateLimitConfig) { settings.TrustedProxyCIDRs = []string{"not-a-cidr"} },
+	} {
+		cfg := testDefaults()
+		mutate(cfg.RateLimit)
+		if err := cfg.Validate(); err == nil {
+			t.Fatalf("invalid rate-limit configuration was accepted: %#v", cfg.RateLimit)
+		}
+	}
+}
+
+func TestGuestUploadPolicyAndQuotaConfigRejection(t *testing.T) {
+	defaultsConfig := testDefaults()
+	if defaultsConfig.Upload == nil || !defaultsConfig.Upload.GuestEnabled {
+		t.Fatalf("guest uploads should remain enabled by default: %#v", defaultsConfig.Upload)
+	}
+	if err := json.Unmarshal([]byte(`{"upload":{"guest_enabled":false}}`), defaultsConfig); err != nil {
+		t.Fatal(err)
+	}
+	if defaultsConfig.Upload.GuestEnabled {
+		t.Fatalf("partial JSON upload settings discarded defaults: %#v", defaultsConfig.Upload)
+	}
+
+	t.Setenv("OBJECTSHARE_GUEST_UPLOAD_ENABLED", "false")
+	cfg := testDefaults()
+	if err := applyEnvironment(cfg); err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Upload.GuestEnabled {
+		t.Fatalf("guest upload environment was not applied: %#v", cfg.Upload)
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("OBJECTSHARE_USER_UPLOAD_QUOTA_MB", "25")
+	if err := applyEnvironment(testDefaults()); err == nil || !strings.Contains(err.Error(), "OBJECTSHARE_USER_UPLOAD_QUOTA_MB is no longer supported") {
+		t.Fatalf("legacy quota environment variable was silently accepted: %v", err)
+	}
+
+	path := t.TempDir() + "/legacy-quota.json"
+	if err := os.WriteFile(path, []byte(`{"upload":{"guest_enabled":true,"user_quota_mib":25}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := readJSON(path, testDefaults()); err == nil || !strings.Contains(err.Error(), "unknown field \"user_quota_mib\"") {
+		t.Fatalf("configuration-backed quota was accepted: %v", err)
+	}
+}
+
+func TestOAuthEnvironmentAndValidation(t *testing.T) {
+	t.Setenv("OBJECTSHARE_PUBLIC_URL", "https://share.example.com")
+	t.Setenv("OBJECTSHARE_SECURE_COOKIES", "true")
+	t.Setenv("OBJECTSHARE_GOOGLE_OAUTH_ENABLED", "true")
+	t.Setenv("OBJECTSHARE_GOOGLE_OAUTH_CLIENT_ID", "google-client")
+	t.Setenv("OBJECTSHARE_GOOGLE_OAUTH_CLIENT_SECRET", "google-secret")
+	t.Setenv("OBJECTSHARE_GITHUB_OAUTH_ENABLED", "true")
+	t.Setenv("OBJECTSHARE_GITHUB_OAUTH_CLIENT_ID", "github-client")
+	t.Setenv("OBJECTSHARE_GITHUB_OAUTH_CLIENT_SECRET", "github-secret")
+	cfg := testDefaults()
+	if err := applyEnvironment(cfg); err != nil {
+		t.Fatal(err)
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Auth.OAuth.PublicURL != "https://share.example.com" || !cfg.Auth.OAuth.Google.Enabled || !cfg.Auth.OAuth.GitHub.Enabled {
+		t.Fatalf("OAuth environment was not applied: %#v", cfg.Auth.OAuth)
+	}
+}
+
+func TestOAuthRejectsPartialCredentialsAndUnsafePublicURL(t *testing.T) {
+	for _, test := range []struct {
+		name, publicURL, clientID, clientSecret, want string
+	}{
+		{"partial credentials", "https://share.example.com", "client", "", "provided together"},
+		{"insecure public URL", "http://share.example.com", "client", "secret", "must use HTTPS"},
+		{"public URL path", "https://share.example.com/objectshare", "client", "secret", "without credentials, path"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			cfg := testDefaults()
+			cfg.SecureCookies = true
+			cfg.Auth.OAuth = &OAuthConfig{PublicURL: test.publicURL, Google: OAuthProviderConfig{Enabled: true, ClientID: test.clientID, ClientSecret: test.clientSecret}}
+			err := cfg.Validate()
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("OAuth validation error = %v, want %q", err, test.want)
+			}
+		})
+	}
+	cfg := testDefaults()
+	cfg.Auth.OAuth = &OAuthConfig{PublicURL: "http://localhost:8080/", GitHub: OAuthProviderConfig{Enabled: true, ClientID: "client", ClientSecret: "secret"}}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("localhost OAuth URL should be accepted: %v", err)
+	}
+	cfg = testDefaults()
+	cfg.Auth.OAuth = &OAuthConfig{PublicURL: "https://share.example.com", Google: OAuthProviderConfig{Enabled: true, ClientID: "client", ClientSecret: "secret"}}
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "secure_cookies") {
+		t.Fatalf("HTTPS OAuth without secure cookies error = %v", err)
+	}
+}
+
+func TestAuthenticationRejectsDocumentedPlaceholderSecret(t *testing.T) {
+	cfg := testDefaults()
+	cfg.Auth.JWTSecret = "replace-with-at-least-32-random-bytes"
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "non-placeholder") {
+		t.Fatalf("placeholder JWT secret error = %v", err)
+	}
+}
+
+func TestExampleConfiguration(t *testing.T) {
+	t.Setenv("OBJECTSHARE_JWT_SECRET", testJWTSecret)
+	t.Setenv("OBJECTSHARE_SETTINGS_KEY", "a-separate-test-settings-key-with-at-least-32-bytes")
+	cfg, err := Load("../config.json.example")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Address != ":8080" || cfg.Db.Port != 5432 {
+		t.Fatalf("unexpected example configuration: %#v", cfg)
+	}
+}
+
+func TestEncryptionMemoryLimit(t *testing.T) {
+	cfg := testDefaults()
+	cfg.MaxFileSize = 129
+	cfg.Encryption.Enabled = true
+	cfg.Encryption.Key = "QkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkI="
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected encrypted upload limit error")
+	}
+}
