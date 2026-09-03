@@ -108,6 +108,7 @@ type OAuthConfig struct {
 	PublicURL string              `json:"public_url"`
 	Google    OAuthProviderConfig `json:"google"`
 	GitHub    OAuthProviderConfig `json:"github"`
+	Discord   OAuthProviderConfig `json:"discord"`
 }
 
 type OAuthProviderConfig struct {

@@ -17,6 +17,10 @@ import (
 
 const oauthResponseLimit = 64 * 1024
 
+func discordUserAgent() string {
+	return "ObjectShare (https://github.com/AutisticShark/ObjectShare, " + config.GetVersion() + ")"
+}
+
 // OAuthProfile contains only the stable identity and verified profile fields
 // needed to create or link an ObjectShare account. Provider access tokens are
 // deliberately never returned to callers or persisted.
@@ -73,6 +77,18 @@ func NewOAuthProviders(settings *config.OAuthConfig) map[string]OAuthProvider {
 			profileURL: "https://api.github.com/user", emailsURL: "https://api.github.com/user/emails?per_page=100",
 		}
 	}
+	if settings.Discord.Enabled {
+		providers["discord"] = &oauthProvider{
+			key: "discord", label: "Discord",
+			config: oauth2.Config{
+				ClientID: settings.Discord.ClientID, ClientSecret: settings.Discord.ClientSecret,
+				RedirectURL: settings.PublicURL + "/oauth/discord/callback",
+				Scopes:      []string{"identify", "email"},
+				Endpoint:    oauth2.Endpoint{AuthURL: "https://discord.com/oauth2/authorize", TokenURL: "https://discord.com/api/oauth2/token", AuthStyle: oauth2.AuthStyleInHeader},
+			},
+			profileURL: "https://discord.com/api/v10/users/@me",
+		}
+	}
 	return providers
 }
 
@@ -90,6 +106,15 @@ func (provider *oauthProvider) Profile(ctx context.Context, code, verifier strin
 	if client == nil {
 		client = &http.Client{Timeout: 15 * time.Second}
 	}
+	if provider.key == "discord" {
+		clientCopy := *client
+		transport := client.Transport
+		if transport == nil {
+			transport = http.DefaultTransport
+		}
+		clientCopy.Transport = oauthUserAgentTransport{base: transport}
+		client = &clientCopy
+	}
 	exchangeContext := context.WithValue(ctx, oauth2.HTTPClient, client)
 	token, err := provider.config.Exchange(exchangeContext, code, oauth2.VerifierOption(verifier))
 	if err != nil {
@@ -98,10 +123,27 @@ func (provider *oauthProvider) Profile(ctx context.Context, code, verifier strin
 	if token.AccessToken == "" {
 		return nil, errors.New("provider returned an empty access token")
 	}
-	if provider.key == "github" {
+	switch provider.key {
+	case "github":
 		return provider.githubProfile(ctx, client, token)
+	case "discord":
+		return provider.discordProfile(ctx, client, token)
+	case "google":
+		return provider.googleProfile(ctx, client, token)
+	default:
+		return nil, errors.New("unsupported OAuth provider")
 	}
-	return provider.googleProfile(ctx, client, token)
+}
+
+type oauthUserAgentTransport struct {
+	base http.RoundTripper
+}
+
+func (transport oauthUserAgentTransport) RoundTrip(request *http.Request) (*http.Response, error) {
+	requestCopy := request.Clone(request.Context())
+	requestCopy.Header = request.Header.Clone()
+	requestCopy.Header.Set("User-Agent", discordUserAgent())
+	return transport.base.RoundTrip(requestCopy)
 }
 
 func (provider *oauthProvider) googleProfile(ctx context.Context, client *http.Client, token *oauth2.Token) (*OAuthProfile, error) {
@@ -149,6 +191,28 @@ func (provider *oauthProvider) githubProfile(ctx context.Context, client *http.C
 		name = user.Login
 	}
 	return &OAuthProfile{Subject: strconv.FormatInt(user.ID, 10), Email: email, EmailVerified: email != "", DisplayName: name}, nil
+}
+
+func (provider *oauthProvider) discordProfile(ctx context.Context, client *http.Client, token *oauth2.Token) (*OAuthProfile, error) {
+	var user struct {
+		ID         string `json:"id"`
+		Username   string `json:"username"`
+		GlobalName string `json:"global_name"`
+		Email      string `json:"email"`
+		Verified   bool   `json:"verified"`
+	}
+	if err := provider.getJSON(ctx, client, token, provider.profileURL, &user); err != nil {
+		return nil, fmt.Errorf("load Discord profile: %w", err)
+	}
+	identifier, err := strconv.ParseUint(user.ID, 10, 64)
+	if err != nil || identifier == 0 {
+		return nil, errors.New("Discord returned an invalid account identifier")
+	}
+	name := strings.TrimSpace(user.GlobalName)
+	if name == "" {
+		name = user.Username
+	}
+	return &OAuthProfile{Subject: user.ID, Email: user.Email, EmailVerified: user.Verified, DisplayName: name}, nil
 }
 
 func (provider *oauthProvider) getJSON(ctx context.Context, client *http.Client, token *oauth2.Token, endpoint string, target any) error {

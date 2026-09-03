@@ -7,7 +7,25 @@
   "settings_key": "replace-with-a-different-32-byte-random-secret",
   "auth": {
     "jwt_secret": "replace-with-at-least-32-random-bytes",
-    "token_lifetime": "12h"
+    "token_lifetime": "12h",
+    "oauth": {
+      "public_url": "http://localhost:8080",
+      "google": {
+        "enabled": false,
+        "client_id": "",
+        "client_secret": ""
+      },
+      "github": {
+        "enabled": false,
+        "client_id": "",
+        "client_secret": ""
+      },
+      "discord": {
+        "enabled": false,
+        "client_id": "",
+        "client_secret": ""
+      }
+    }
   },
   "db": {
     "type": "postgres",

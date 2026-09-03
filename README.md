@@ -16,7 +16,7 @@ ObjectShare is a small self-hosted file sharing service written in Go. Files are
 - Optional AES-256-GCM server-side encryption at rest
 - Owner-only rename and permanent deletion
 - Guest uploads plus database-backed per-user storage quotas
-- Password, Google, and GitHub login with separate user and administrator management interfaces
+- Password, Google, GitHub, and Discord login with separate user and administrator management interfaces
 - Optional server-verified Turnstile protection and shared PostgreSQL request rate limits
 - Encrypted PostgreSQL-backed configuration with a dedicated administrator dashboard
 - One-time administrator bootstrap through the web setup or CLI
@@ -154,9 +154,9 @@ Older JSON configuration uses the top-level `rate_limit` object as `enabled`, `w
 
 Forwarded IP headers are ignored unless the TCP peer belongs to a trusted proxy CIDR configured in the dashboard. The legacy seed is `OBJECTSHARE_TRUSTED_PROXY_CIDRS`, a comma-separated list; its older JSON equivalent is `rate_limit.trusted_proxy_cidrs`, an array. ObjectShare walks `X-Forwarded-For` from the trusted side and selects the first untrusted address. Do not add broad public networks merely to make a header work; an incorrect trust boundary lets clients choose their own limiter key.
 
-### Google and GitHub OAuth login
+### Google, GitHub, and Discord OAuth login
 
-OAuth providers are optional and disabled by default. In the dashboard, set the public URL to the exact browser-visible origin (for example, `https://share.example.com`) and enter either provider's client ID and write-only secret. The legacy first-import variables are:
+OAuth providers are optional and disabled by default. In the dashboard, set the public URL to the exact browser-visible origin (for example, `https://share.example.com`) and enter a provider's client ID and write-only secret. The legacy first-import variables are:
 
 ```dotenv
 OBJECTSHARE_PUBLIC_URL=https://share.example.com
@@ -169,20 +169,25 @@ OBJECTSHARE_GOOGLE_OAUTH_CLIENT_SECRET=your-google-client-secret
 OBJECTSHARE_GITHUB_OAUTH_ENABLED=true
 OBJECTSHARE_GITHUB_OAUTH_CLIENT_ID=your-github-client-id
 OBJECTSHARE_GITHUB_OAUTH_CLIENT_SECRET=your-github-client-secret
+
+OBJECTSHARE_DISCORD_OAUTH_ENABLED=true
+OBJECTSHARE_DISCORD_OAUTH_CLIENT_ID=your-discord-application-id
+OBJECTSHARE_DISCORD_OAUTH_CLIENT_SECRET=your-discord-client-secret
 ```
 
 Register these exact callback URLs with the providers you enable:
 
 - Google: `https://share.example.com/oauth/google/callback`
 - GitHub: `https://share.example.com/oauth/github/callback`
+- Discord: `https://share.example.com/oauth/discord/callback`
 
-Create the credentials as a Google web application or a GitHub OAuth App; see Google's [web-server OAuth setup](https://developers.google.com/identity/protocols/oauth2/web-server#creatingcred) and GitHub's [OAuth App creation guide](https://docs.github.com/en/apps/oauth-apps/building-oauth-apps/creating-an-oauth-app).
+Create the credentials as a Google web application, a GitHub OAuth App, or a Discord application. See Google's [web-server OAuth setup](https://developers.google.com/identity/protocols/oauth2/web-server#creatingcred), GitHub's [OAuth App creation guide](https://docs.github.com/en/apps/oauth-apps/building-oauth-apps/creating-an-oauth-app), and Discord's [OAuth2 documentation](https://docs.discord.com/developers/topics/oauth2). For Discord, add the callback under **OAuth2 > Redirects** in the Developer Portal; ObjectShare requests only the `identify` and `email` scopes and does not require a bot.
 
-For older JSON configuration, the equivalent settings belong under `auth.oauth`: `public_url`, then the `enabled`, `client_id`, and `client_secret` fields under `google` or `github`. `public_url` must be an HTTPS origin without a path, query, or fragment; plain HTTP is accepted only for `localhost` and loopback development addresses. HTTPS OAuth configuration also requires secure cookies. When deployed behind a reverse proxy, configure the public URL, not the container's internal address.
+For older JSON configuration, the equivalent settings belong under `auth.oauth`: `public_url`, then the `enabled`, `client_id`, and `client_secret` fields under `google`, `github`, or `discord`. `public_url` must be an HTTPS origin without a path, query, or fragment; plain HTTP is accepted only for `localhost` and loopback development addresses. HTTPS OAuth configuration also requires secure cookies. When deployed behind a reverse proxy, configure the public URL, not the container's internal address.
 
 OAuth uses the authorization-code flow with a fresh signed state value and PKCE challenge for every attempt. ObjectShare requests only identity/profile scopes, accepts only a provider's stable account ID plus verified email, does not store provider access or refresh tokens, and issues the same hardened ObjectShare JWT used by password login.
 
-A new verified OAuth identity creates a normal user only while public signup is enabled. If its email already belongs to an ObjectShare account, automatic email-based merging is refused: log in with the existing password and link Google or GitHub from **My account**. OAuth-only users can set a password there. ObjectShare also prevents removing the final login method. Disabling public signup does not stop already-linked identities from signing in.
+A new verified OAuth identity creates a normal user only while public signup is enabled. If its email already belongs to an ObjectShare account, automatic email-based merging is refused: log in with the existing password and link Google, GitHub, or Discord from **My account**. OAuth-only users can set a password there. ObjectShare also prevents removing the final login method. Disabling public signup does not stop already-linked identities from signing in.
 
 Account authentication uses signed HS256 JWTs only; there is no server-side login-session table. Tokens require the ObjectShare issuer and audience plus `sub`, `jti`, `iat`, `nbf`, `exp`, role, token-version, and CSRF claims. Browser login stores the JWT in an `HttpOnly`, `SameSite=Strict` cookie (and a `Secure` `__Host-` cookie when `OBJECTSHARE_SECURE_COOKIES=true`). Cookie-authenticated mutations require the CSRF value embedded in the signed token. Passwords are hashed with Argon2id, and login attempts are throttled after repeated failures.
 

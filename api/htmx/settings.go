@@ -17,12 +17,12 @@ import (
 )
 
 type settingsSecretState struct {
-	Captcha, Google, GitHub, Encryption bool
-	R2Access, R2Secret                  bool
-	S3Access, S3Secret, S3Session       bool
-	B2Access, B2Secret                  bool
-	OSSAccess, OSSSecret                bool
-	COSAccess, COSSecret                bool
+	Captcha, Google, GitHub, Discord, Encryption bool
+	R2Access, R2Secret                           bool
+	S3Access, S3Secret, S3Session                bool
+	B2Access, B2Secret                           bool
+	OSSAccess, OSSSecret                         bool
+	COSAccess, COSSecret                         bool
 }
 
 type adminSettingsPageData struct {
@@ -110,7 +110,7 @@ func (handler *Handler) renderSettings(writer http.ResponseWriter, identity *ide
 	pendingJSON, _ := json.Marshal(runtime)
 	activeJSON, _ := json.Marshal(config.RuntimeFromService(handler.config))
 	secrets := settingsSecretState{
-		Captcha: runtime.Captcha.SecretKey != "", Google: runtime.Auth.OAuth.Google.ClientSecret != "", GitHub: runtime.Auth.OAuth.GitHub.ClientSecret != "", Encryption: runtime.Encryption.Key != "",
+		Captcha: runtime.Captcha.SecretKey != "", Google: runtime.Auth.OAuth.Google.ClientSecret != "", GitHub: runtime.Auth.OAuth.GitHub.ClientSecret != "", Discord: runtime.Auth.OAuth.Discord.ClientSecret != "", Encryption: runtime.Encryption.Key != "",
 		R2Access: runtime.R2.AccessKeyID != "", R2Secret: runtime.R2.SecretAccessKey != "",
 		S3Access: runtime.S3.AccessKeyID != "", S3Secret: runtime.S3.SecretAccessKey != "", S3Session: runtime.S3.SessionToken != "",
 		B2Access: runtime.B2.AccessKeyID != "", B2Secret: runtime.B2.SecretAccessKey != "",
@@ -137,6 +137,7 @@ func settingsRevision(value string) string {
 func redactRuntimeSecrets(runtime *config.RuntimeConfig) {
 	runtime.Auth.OAuth.Google.ClientSecret = ""
 	runtime.Auth.OAuth.GitHub.ClientSecret = ""
+	runtime.Auth.OAuth.Discord.ClientSecret = ""
 	runtime.Captcha.SecretKey = ""
 	runtime.Encryption.Key = ""
 	runtime.R2.AccessKeyID, runtime.R2.SecretAccessKey, runtime.R2.SecretID, runtime.R2.SecretKey = "", "", "", ""
@@ -165,6 +166,7 @@ func updateRuntimeFromForm(runtime *config.RuntimeConfig, request *http.Request)
 	runtime.Auth.OAuth.PublicURL = strings.TrimSpace(request.FormValue("oauth_public_url"))
 	updateOAuthProvider(request, "google", &runtime.Auth.OAuth.Google)
 	updateOAuthProvider(request, "github", &runtime.Auth.OAuth.GitHub)
+	updateOAuthProvider(request, "discord", &runtime.Auth.OAuth.Discord)
 
 	runtime.Captcha.Provider = strings.TrimSpace(request.FormValue("captcha_provider"))
 	runtime.Captcha.SiteKey = strings.TrimSpace(request.FormValue("captcha_site_key"))

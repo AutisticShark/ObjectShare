@@ -24,6 +24,8 @@ import (
 
 const oauthFlowLifetime = 10 * time.Minute
 
+var oauthProviderKeys = [...]string{"google", "github", "discord"}
+
 type oauthButton struct {
 	Key, Label, URL string
 }
@@ -247,7 +249,7 @@ func (handler *Handler) finishOAuthLogin(writer http.ResponseWriter, request *ht
 
 func (handler *Handler) OAuthUnlink(writer http.ResponseWriter, request *http.Request) {
 	provider := strings.ToLower(chi.URLParam(request, "provider"))
-	if provider != "google" && provider != "github" {
+	if oauthProviderLabel(provider) == "" {
 		http.NotFound(writer, request)
 		return
 	}
@@ -277,7 +279,7 @@ func (handler *Handler) oauthProvider(key string) appauth.OAuthProvider {
 
 func (handler *Handler) oauthLoginButtons(next string) []oauthButton {
 	buttons := make([]oauthButton, 0, len(handler.oauthProviders))
-	for _, key := range []string{"google", "github"} {
+	for _, key := range oauthProviderKeys {
 		if provider := handler.oauthProviders[key]; provider != nil {
 			endpoint := "/oauth/" + key + "/start"
 			if safe := safeLoginDestination(next); safe != "" {
@@ -298,8 +300,8 @@ func (handler *Handler) oauthAccountProviders(ctx context.Context, userID string
 	for _, identity := range identities {
 		linked[identity.Provider] = true
 	}
-	rows := make([]oauthAccountProvider, 0, 2)
-	for _, key := range []string{"google", "github"} {
+	rows := make([]oauthAccountProvider, 0, len(oauthProviderKeys))
+	for _, key := range oauthProviderKeys {
 		configured := handler.oauthProviders[key] != nil
 		if configured || linked[key] {
 			rows = append(rows, oauthAccountProvider{Key: key, Label: oauthProviderLabel(key), Configured: configured, Linked: linked[key]})
@@ -403,5 +405,5 @@ func oauthDisplayName(value, providerLabel string) string {
 }
 
 func oauthProviderLabel(key string) string {
-	return map[string]string{"google": "Google", "github": "GitHub"}[key]
+	return map[string]string{"google": "Google", "github": "GitHub", "discord": "Discord"}[key]
 }

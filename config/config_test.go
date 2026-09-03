@@ -274,6 +274,9 @@ func TestOAuthEnvironmentAndValidation(t *testing.T) {
 	t.Setenv("OBJECTSHARE_GITHUB_OAUTH_ENABLED", "true")
 	t.Setenv("OBJECTSHARE_GITHUB_OAUTH_CLIENT_ID", "github-client")
 	t.Setenv("OBJECTSHARE_GITHUB_OAUTH_CLIENT_SECRET", "github-secret")
+	t.Setenv("OBJECTSHARE_DISCORD_OAUTH_ENABLED", "true")
+	t.Setenv("OBJECTSHARE_DISCORD_OAUTH_CLIENT_ID", "discord-client")
+	t.Setenv("OBJECTSHARE_DISCORD_OAUTH_CLIENT_SECRET", "discord-secret")
 	cfg := testDefaults()
 	if err := applyEnvironment(cfg); err != nil {
 		t.Fatal(err)
@@ -281,7 +284,7 @@ func TestOAuthEnvironmentAndValidation(t *testing.T) {
 	if err := cfg.Validate(); err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Auth.OAuth.PublicURL != "https://share.example.com" || !cfg.Auth.OAuth.Google.Enabled || !cfg.Auth.OAuth.GitHub.Enabled {
+	if cfg.Auth.OAuth.PublicURL != "https://share.example.com" || !cfg.Auth.OAuth.Google.Enabled || !cfg.Auth.OAuth.GitHub.Enabled || !cfg.Auth.OAuth.Discord.Enabled {
 		t.Fatalf("OAuth environment was not applied: %#v", cfg.Auth.OAuth)
 	}
 }
@@ -313,6 +316,12 @@ func TestOAuthRejectsPartialCredentialsAndUnsafePublicURL(t *testing.T) {
 	cfg.Auth.OAuth = &OAuthConfig{PublicURL: "https://share.example.com", Google: OAuthProviderConfig{Enabled: true, ClientID: "client", ClientSecret: "secret"}}
 	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "secure_cookies") {
 		t.Fatalf("HTTPS OAuth without secure cookies error = %v", err)
+	}
+	cfg = testDefaults()
+	cfg.SecureCookies = true
+	cfg.Auth.OAuth = &OAuthConfig{PublicURL: "https://share.example.com", Discord: OAuthProviderConfig{Enabled: true, ClientID: "client"}}
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "auth oauth discord") {
+		t.Fatalf("partial Discord OAuth credentials error = %v", err)
 	}
 }
 

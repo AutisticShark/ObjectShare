@@ -462,10 +462,10 @@ func TestAllProductionTemplatesParse(t *testing.T) {
 		{"index.html", map[string]any{"Version": "test", "MaxFileSize": int64(1), "User": user, "CSRF": "csrf"}},
 		{"file_view.html", map[string]any{"Version": "test", "FileName": "file.txt", "User": user, "CSRF": "csrf"}},
 		{"setup.html", authPageData{Version: "test", CSRF: "csrf"}},
-		{"login.html", authPageData{Version: "test", CSRF: "csrf", OAuthProviders: []oauthButton{{Key: "google", Label: "Google", URL: "/oauth/google/start"}}}},
+		{"login.html", authPageData{Version: "test", CSRF: "csrf", OAuthProviders: []oauthButton{{Key: "discord", Label: "Discord", URL: "/oauth/discord/start"}}}},
 		{"signup.html", authPageData{Version: "test", CSRF: "csrf"}},
 		{"oauth_error.html", oauthErrorData{Version: "test", Error: "OAuth error", Back: "/login", BackLabel: "Back to login"}},
-		{"account.html", accountPageData{Version: "test", CSRF: "csrf", User: user, OAuthProviders: []oauthAccountProvider{{Key: "github", Label: "GitHub", Configured: true, Linked: true}}}},
+		{"account.html", accountPageData{Version: "test", CSRF: "csrf", User: user, OAuthProviders: []oauthAccountProvider{{Key: "discord", Label: "Discord", Configured: true, Linked: true}}}},
 		{"admin_users.html", adminPageData{Version: "test", CSRF: "csrf", User: user}},
 	}
 	for _, render := range renders {

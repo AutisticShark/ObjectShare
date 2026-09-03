@@ -3,6 +3,7 @@ package htmx
 import (
 	"context"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -189,6 +190,41 @@ func TestOAuthSignupDisabledStillAllowsLinkedIdentity(t *testing.T) {
 	handler.OAuthCallback(response, callback)
 	if response.Code != http.StatusSeeOther || response.Header().Get("Location") != "/account" {
 		t.Fatalf("linked OAuth login with signup disabled status=%d body=%q", response.Code, response.Body.String())
+	}
+}
+
+func TestDiscordOAuthIsPresentedAndCanBeUnlinked(t *testing.T) {
+	repository := newAuthMemoryRepository()
+	user := &db.User{ID: "60c628c1-85cb-4463-b895-a629c31bfa55", Email: "user@example.com", DisplayName: "User", PasswordHash: "configured", Role: db.RoleUser, Active: true, TokenVersion: 1}
+	repository.users[user.ID] = user
+	repository.identities["discord\x0080351110224678912"] = &db.OAuthIdentity{UserID: user.ID, Provider: "discord", Subject: "80351110224678912", Email: user.Email}
+	handler := newAuthTestHandler(t, repository, false)
+	handler.oauthProviders = map[string]appauth.OAuthProvider{
+		"google":  &fakeOAuthProvider{key: "google", label: "Google"},
+		"github":  &fakeOAuthProvider{key: "github", label: "GitHub"},
+		"discord": &fakeOAuthProvider{key: "discord", label: "Discord"},
+	}
+
+	buttons := handler.oauthLoginButtons(loginDestinationAdminUsers)
+	if len(buttons) != 3 || buttons[2].Key != "discord" || buttons[2].Label != "Discord" || buttons[2].URL != "/oauth/discord/start?next=admin-users" {
+		t.Fatalf("Discord OAuth login button missing or out of order: %#v", buttons)
+	}
+	providers, err := handler.oauthAccountProviders(context.Background(), user.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(providers) != 3 || providers[2].Key != "discord" || !providers[2].Configured || !providers[2].Linked {
+		t.Fatalf("Discord account provider missing: %#v", providers)
+	}
+
+	request := oauthRouteRequest(http.MethodPost, "/account/oauth/discord/unlink", "discord")
+	request.Body = io.NopCloser(strings.NewReader(url.Values{"csrf_token": {"signed-csrf"}}.Encode()))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	request = request.WithContext(context.WithValue(request.Context(), identityContextKey{}, &identity{User: user, Claims: &appauth.Claims{CSRF: "signed-csrf"}, Transport: transportCookie}))
+	response := httptest.NewRecorder()
+	handler.OAuthUnlink(response, request)
+	if response.Code != http.StatusSeeOther || response.Header().Get("Location") != "/account?message=oauth-unlinked" || len(repository.identities) != 0 {
+		t.Fatalf("Discord unlink status=%d location=%q identities=%d body=%q", response.Code, response.Header().Get("Location"), len(repository.identities), response.Body.String())
 	}
 }
 

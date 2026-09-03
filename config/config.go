@@ -228,6 +228,9 @@ func applyEnvironment(cfg *ServiceConfig) error {
 	problems = append(problems, setBool("OBJECTSHARE_GITHUB_OAUTH_ENABLED", &cfg.Auth.OAuth.GitHub.Enabled))
 	setString("OBJECTSHARE_GITHUB_OAUTH_CLIENT_ID", &cfg.Auth.OAuth.GitHub.ClientID)
 	setString("OBJECTSHARE_GITHUB_OAUTH_CLIENT_SECRET", &cfg.Auth.OAuth.GitHub.ClientSecret)
+	problems = append(problems, setBool("OBJECTSHARE_DISCORD_OAUTH_ENABLED", &cfg.Auth.OAuth.Discord.Enabled))
+	setString("OBJECTSHARE_DISCORD_OAUTH_CLIENT_ID", &cfg.Auth.OAuth.Discord.ClientID)
+	setString("OBJECTSHARE_DISCORD_OAUTH_CLIENT_SECRET", &cfg.Auth.OAuth.Discord.ClientSecret)
 	if cfg.Captcha == nil {
 		cfg.Captcha = &CaptchaConfig{Provider: "none"}
 	}
@@ -521,6 +524,7 @@ func validateOAuth(settings *OAuthConfig, secureCookies bool) error {
 	}{
 		{"google", settings.Google},
 		{"github", settings.GitHub},
+		{"discord", settings.Discord},
 	}
 	anyEnabled := false
 	for _, provider := range providers {
