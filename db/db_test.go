@@ -73,18 +73,29 @@ func TestPaidStatusAndRetentionClaimMigrationMetadata(t *testing.T) {
 func TestRetentionEligibilityKeepsPaidAccountsOutOfCleanup(t *testing.T) {
 	guestBefore := time.Date(2026, 8, 28, 0, 0, 0, 0, time.UTC)
 	unpaidBefore := time.Date(2026, 8, 5, 0, 0, 0, 0, time.UTC)
-	query, arguments := retentionEligibilitySQL(&guestBefore, &unpaidBefore)
-	for _, clause := range []string{"f.file_owner IS NULL", "f.file_owner IS NOT NULL", "u.id = f.file_owner", "u.is_paid = FALSE"} {
+	now := time.Date(2026, 9, 4, 0, 0, 0, 0, time.UTC)
+	query, arguments := retentionEligibilitySQLAt(now, &guestBefore, &unpaidBefore)
+	for _, clause := range []string{"f.file_owner IS NULL", "f.file_owner IS NOT NULL", "u.id = f.file_owner", "u.is_paid = FALSE", "subscriptions AS s", "p.retention_days"} {
 		if !strings.Contains(query, clause) {
 			t.Fatalf("retention eligibility omitted %q: %s", clause, query)
 		}
 	}
-	if len(arguments) != 2 || arguments[0] != guestBefore || arguments[1] != unpaidBefore {
+	if len(arguments) != 5 || arguments[0] != guestBefore || arguments[1] != now || arguments[2] != now || arguments[3] != now || arguments[4] != unpaidBefore {
 		t.Fatalf("retention cutoffs = %#v", arguments)
 	}
-	disabled, arguments := retentionEligibilitySQL(nil, nil)
+	disabled, arguments := retentionEligibilitySQLAt(now, nil, nil)
 	if disabled != "FALSE" || len(arguments) != 0 {
 		t.Fatalf("disabled retention produced %q with %#v", disabled, arguments)
+	}
+}
+
+func TestSubscriptionBenefitsRequireActiveStatusAndFuturePeriod(t *testing.T) {
+	now := time.Date(2026, 9, 4, 0, 0, 0, 0, time.UTC)
+	if !subscriptionActive("active", now.Add(time.Hour), now) || !subscriptionActive("trialing", now.Add(time.Hour), now) {
+		t.Fatal("active subscription statuses did not receive benefits")
+	}
+	if subscriptionActive("past_due", now.Add(time.Hour), now) || subscriptionActive("active", now, now) {
+		t.Fatal("inactive or expired subscription received benefits")
 	}
 }
 

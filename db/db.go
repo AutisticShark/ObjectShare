@@ -165,7 +165,7 @@ func Open(ctx context.Context, cfg *config.DatabaseConfig) (*GormRepository, err
 			return nil, fmt.Errorf("remove legacy uniqueness: %w", err)
 		}
 	}
-	if err := migration.AutoMigrate(&User{}, &OAuthIdentity{}, &RevokedToken{}, &LoginThrottle{}, &RateLimitBucket{}, &FileList{}, &ApplicationSetting{}); err != nil {
+	if err := migration.AutoMigrate(&User{}, &OAuthIdentity{}, &RevokedToken{}, &LoginThrottle{}, &RateLimitBucket{}, &FileList{}, &ApplicationSetting{}, &PaidPlan{}, &Subscription{}, &BillingEvent{}, &BillingCheckout{}); err != nil {
 		_ = migration.Rollback().Error
 		_ = sqlDB.Close()
 		return nil, fmt.Errorf("migrate PostgreSQL: %w", err)
@@ -232,13 +232,17 @@ func (repo *GormRepository) ReserveUpload(ctx context.Context, file *FileList) e
 		} else if err != nil {
 			return err
 		}
-		if user.UploadQuotaBytes > 0 {
+		quota, err := effectiveUploadQuota(transaction, user.ID, user.UploadQuotaBytes, time.Now().UTC())
+		if err != nil {
+			return err
+		}
+		if quota > 0 {
 			used, err := uploadBytesUsed(transaction, user.ID)
 			if err != nil {
 				return err
 			}
-			if exceedsQuota(used, file.FileSize, user.UploadQuotaBytes) {
-				return &UploadQuotaError{Scope: "user", Used: used, Limit: user.UploadQuotaBytes, Requested: file.FileSize}
+			if exceedsQuota(used, file.FileSize, quota) {
+				return &UploadQuotaError{Scope: "user", Used: used, Limit: quota, Requested: file.FileSize}
 			}
 		}
 		return transaction.Create(file).Error
@@ -253,11 +257,35 @@ func (repo *GormRepository) UploadUsage(ctx context.Context, userID string) (Upl
 	} else if err != nil {
 		return UploadUsage{}, err
 	}
-	if user.UploadQuotaBytes == 0 {
+	quota, err := effectiveUploadQuota(connection, user.ID, user.UploadQuotaBytes, time.Now().UTC())
+	if err != nil {
+		return UploadUsage{}, err
+	}
+	if quota == 0 {
 		return UploadUsage{}, nil
 	}
 	used, err := uploadBytesUsed(connection, userID)
-	return UploadUsage{Used: used, Limit: user.UploadQuotaBytes}, err
+	return UploadUsage{Used: used, Limit: quota}, err
+}
+
+func effectiveUploadQuota(connection *gorm.DB, userID string, accountQuota int64, now time.Time) (int64, error) {
+	// Zero has always meant an unlimited administrator-assigned account quota.
+	// A paid plan must never reduce that existing entitlement.
+	if accountQuota == 0 {
+		return 0, nil
+	}
+	var planQuota int64
+	err := connection.Table("subscriptions AS s").Select("COALESCE(MAX(p.storage_quota_bytes), 0)").
+		Joins("JOIN paid_plans AS p ON p.id = s.plan_id").
+		Where("s.user_id = ? AND s.status IN ? AND s.current_period_end > ?", userID, []string{"active", "trialing"}, now).
+		Scan(&planQuota).Error
+	if err != nil {
+		return 0, err
+	}
+	if planQuota > accountQuota {
+		return planQuota, nil
+	}
+	return accountQuota, nil
 }
 
 func uploadBytesUsed(connection *gorm.DB, userID string) (int64, error) {
@@ -353,7 +381,7 @@ func (repo *GormRepository) ClaimFilesForRetention(ctx context.Context, now, sta
 	if limit <= 0 {
 		return nil, nil
 	}
-	eligibleSQL, eligibilityArgs := retentionEligibilitySQL(guestBefore, unpaidBefore)
+	eligibleSQL, eligibilityArgs := retentionEligibilitySQLAt(now, guestBefore, unpaidBefore)
 	var claimed []FileList
 	err := repo.connection.WithContext(ctx).Transaction(func(transaction *gorm.DB) error {
 		args := append(eligibilityArgs, staleBefore)
@@ -376,7 +404,7 @@ func (repo *GormRepository) ClaimFilesForRetention(ctx context.Context, now, sta
 				userIDs = append(userIDs, *file.FileOwner)
 			}
 		}
-		paidByID := make(map[string]bool, len(userIDs))
+		usersByID := make(map[string]User, len(userIDs))
 		if len(userIDs) != 0 {
 			var users []User
 			if err := transaction.Clauses(clause.Locking{Strength: "SHARE"}).
@@ -384,8 +412,16 @@ func (repo *GormRepository) ClaimFilesForRetention(ctx context.Context, now, sta
 				return err
 			}
 			for _, user := range users {
-				paidByID[user.ID] = user.IsPaid
+				usersByID[user.ID] = user
 			}
+		}
+		entitlementsByID := make(map[string]Entitlements, len(userIDs))
+		for _, userID := range userIDs {
+			entitlements, err := entitlementsWithDB(transaction, userID, now)
+			if err != nil {
+				return err
+			}
+			entitlementsByID[userID] = entitlements
 		}
 
 		claimed = candidates[:0]
@@ -393,8 +429,16 @@ func (repo *GormRepository) ClaimFilesForRetention(ctx context.Context, now, sta
 		for _, file := range candidates {
 			eligible := file.UploadStatus == "deleting" || file.FileOwner == nil
 			if file.UploadStatus == "complete" && file.FileOwner != nil {
-				paid, userExists := paidByID[*file.FileOwner]
-				eligible = userExists && !paid
+				user, userExists := usersByID[*file.FileOwner]
+				eligible = false
+				if userExists && !user.IsPaid {
+					entitlements := entitlementsByID[user.ID]
+					if entitlements.Active {
+						eligible = entitlements.RetentionDays > 0 && !file.CreatedAt.After(now.AddDate(0, 0, -entitlements.RetentionDays))
+					} else if unpaidBefore != nil {
+						eligible = !file.CreatedAt.After(*unpaidBefore)
+					}
+				}
 			}
 			if eligible {
 				claimed = append(claimed, file)
@@ -413,7 +457,7 @@ func (repo *GormRepository) ClaimFilesForRetention(ctx context.Context, now, sta
 	return claimed, nil
 }
 
-func retentionEligibilitySQL(guestBefore, unpaidBefore *time.Time) (string, []any) {
+func retentionEligibilitySQLAt(now time.Time, guestBefore, unpaidBefore *time.Time) (string, []any) {
 	var eligibility []string
 	var eligibilityArgs []any
 	if guestBefore != nil {
@@ -421,8 +465,8 @@ func retentionEligibilitySQL(guestBefore, unpaidBefore *time.Time) (string, []an
 		eligibilityArgs = append(eligibilityArgs, *guestBefore)
 	}
 	if unpaidBefore != nil {
-		eligibility = append(eligibility, "(f.file_owner IS NOT NULL AND f.created_at <= ? AND EXISTS (SELECT 1 FROM users AS u WHERE u.id = f.file_owner AND u.is_paid = FALSE))")
-		eligibilityArgs = append(eligibilityArgs, *unpaidBefore)
+		eligibility = append(eligibility, `(f.file_owner IS NOT NULL AND EXISTS (SELECT 1 FROM users AS u WHERE u.id = f.file_owner AND u.is_paid = FALSE) AND ((EXISTS (SELECT 1 FROM subscriptions AS s JOIN paid_plans AS p ON p.id = s.plan_id WHERE s.user_id = f.file_owner AND s.status IN ('active','trialing') AND s.current_period_end > ? AND p.retention_days > 0 AND f.created_at <= ? - (p.retention_days * INTERVAL '1 day'))) OR (NOT EXISTS (SELECT 1 FROM subscriptions AS s WHERE s.user_id = f.file_owner AND s.status IN ('active','trialing') AND s.current_period_end > ?) AND f.created_at <= ?)))`)
+		eligibilityArgs = append(eligibilityArgs, now, now, now, *unpaidBefore)
 	}
 	eligibleSQL := "FALSE"
 	if len(eligibility) != 0 {

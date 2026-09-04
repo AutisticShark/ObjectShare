@@ -22,7 +22,7 @@
         </div>
         <div class="navbar-nav flex-row order-md-last align-items-center gap-2 ms-auto">
           {{if .User}}
-          {{if eq .User.Role "admin"}}<a class="nav-link" href="/admin/users">Users</a>{{end}}
+          <a class="nav-link" href="/plans">Plans</a>{{if eq .User.Role "admin"}}<a class="nav-link" href="/admin/users">Users</a>{{end}}
           <a class="nav-link" href="/account">{{.User.DisplayName}}</a>
           <form action="/logout" method="post" hx-post="/logout" hx-disabled-elt="button"><input type="hidden" name="csrf_token" value="{{.CSRF}}"><button class="btn btn-outline-secondary btn-sm" type="submit">Log out</button></form>
           {{template "theme-toggle" .}}
@@ -42,10 +42,11 @@
               <h2 class="page-title">{{.FileName}}</h2>
             </div>
             <div class="col-auto ms-auto d-print-none">
-              {{if .Captcha}}<form action="/api/v1/download/{{.FileID}}" method="post">
+              {{if .CanDirectLink}}<a class="btn btn-primary" href="/api/v1/download/{{.FileID}}">Download</a>{{else}}<form action="/api/v1/download/{{.FileID}}" method="post">
+                <input type="hidden" name="download_token" value="{{.DownloadToken}}">
                 {{template "captcha-widget" .Captcha}}
                 <button class="btn btn-primary" type="submit">Download</button>
-              </form>{{else}}<a class="btn btn-primary" href="/api/v1/download/{{.FileID}}">Download</a>{{end}}
+              </form>{{end}}
             </div>
           </div>
         </div>
@@ -87,6 +88,7 @@
                   <div class="datagrid-content text-break">{{if .ChecksumsVerified}}<code>{{.FileSHA3}}</code>{{else}}<span class="text-secondary">Not calculated for direct upload</span>{{end}}</div>
                 </div>
               </div>
+              {{if and .CanManage .CanDirectLink}}<div class="alert alert-success mt-3 mb-0"><strong>Direct link enabled:</strong> share <code>{{.DirectURL}}</code>. It remains active only while your plan includes direct links.</div>{{end}}
             </div>
 
             {{if .CanManage}}

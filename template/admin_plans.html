@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en"{{if .User.DarkMode}} data-bs-theme="dark"{{end}}><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Plan catalog · ObjectShare</title>{{template "tabler-head" .}}</head>
+<body><div class="page">{{template "app-nav" .}}<div class="page-wrapper"><div class="page-header"><div class="container-xl"><div class="page-pretitle">Administration</div><h2 class="page-title">Paid plan catalog</h2></div></div><div class="page-body"><div class="container-xl">
+{{if .Error}}<div class="alert alert-danger">{{.Error}}</div>{{end}}<div class="alert alert-info">A plan raises a finite per-account quota but never reduces an account whose standard quota is <strong>0 (unlimited)</strong>. Set finite standard quotas in <a href="/admin/users">Users</a> before advertising storage as an upgrade.</div>
+<div class="card mb-4"><div class="card-header"><h3 class="card-title">Add plan</h3></div>
+<form action="/admin/plans" method="post"><input type="hidden" name="csrf_token" value="{{.CSRF}}"><div class="card-body"><div class="row g-3">
+<div class="col-md-4"><label class="form-label">Name</label><input class="form-control" name="name" maxlength="80" required></div>
+<div class="col-md-4"><label class="form-label">Stripe Price ID</label><input class="form-control" name="stripe_price_id" placeholder="price_..." required></div>
+<div class="col-md-4"><label class="form-label">Displayed price</label><input class="form-control" name="price_label" placeholder="$5 / month" required></div>
+<div class="col-12"><label class="form-label">Description</label><input class="form-control" name="description" maxlength="500"></div>
+<div class="col-md-4"><label class="form-label">Storage quota (GiB)</label><input class="form-control" name="storage_quota_gib" type="number" min="0.01" max="10240" step="0.01" required></div>
+<div class="col-md-4"><label class="form-label">Retention days</label><input class="form-control" name="retention_days" type="number" min="0" max="36500" value="0" required><div class="form-hint">0 means no age-based deletion while active.</div></div>
+<div class="col-md-4"><label class="form-label">Sort order</label><input class="form-control" name="sort_order" type="number" min="-10000" max="10000" value="0" required></div>
+<div class="col-md-4"><label class="form-check"><input class="form-check-input" name="direct_links" type="checkbox"><span class="form-check-label">Direct download links</span></label></div>
+<div class="col-md-4"><label class="form-check"><input class="form-check-input" name="active" type="checkbox" checked><span class="form-check-label">Available for purchase</span></label></div>
+</div></div><div class="card-footer text-end"><button class="btn btn-primary" type="submit">Add plan</button></div></form></div>
+<div class="row row-cards">{{range .Plans}}<div class="col-12"><div class="card"><div class="card-header"><h3 class="card-title">{{.Name}}</h3><div class="card-actions">{{if .Active}}<span class="badge bg-green-lt">Available</span>{{else}}<span class="badge">Hidden</span>{{end}}</div></div>
+<form action="/admin/plans/{{.ID}}" method="post"><input type="hidden" name="csrf_token" value="{{$.CSRF}}"><div class="card-body"><div class="row g-3">
+<div class="col-md-4"><label class="form-label">Name</label><input class="form-control" name="name" maxlength="80" value="{{.Name}}" required></div>
+<div class="col-md-4"><label class="form-label">Stripe Price ID</label><input class="form-control" name="stripe_price_id" value="{{.StripePriceID}}" required></div>
+<div class="col-md-4"><label class="form-label">Displayed price</label><input class="form-control" name="price_label" value="{{.PriceLabel}}" required></div>
+<div class="col-12"><label class="form-label">Description</label><input class="form-control" name="description" maxlength="500" value="{{.Description}}"></div>
+<div class="col-md-4"><label class="form-label">Storage quota (GiB)</label><input class="form-control" name="storage_quota_gib" type="number" min="0.01" max="10240" step="0.01" value="{{.StorageQuotaGiB}}" required></div>
+<div class="col-md-4"><label class="form-label">Retention days</label><input class="form-control" name="retention_days" type="number" min="0" max="36500" value="{{.RetentionDays}}" required></div>
+<div class="col-md-4"><label class="form-label">Sort order</label><input class="form-control" name="sort_order" type="number" min="-10000" max="10000" value="{{.SortOrder}}" required></div>
+<div class="col-md-4"><label class="form-check"><input class="form-check-input" name="direct_links" type="checkbox"{{if .DirectLinks}} checked{{end}}><span class="form-check-label">Direct download links</span></label></div>
+<div class="col-md-4"><label class="form-check"><input class="form-check-input" name="active" type="checkbox"{{if .Active}} checked{{end}}><span class="form-check-label">Available for purchase</span></label></div>
+</div></div><div class="card-footer text-end"><button class="btn btn-primary" type="submit">Save plan</button></div></form></div></div>{{end}}</div>
+</div></div>{{template "footer" .}}</div></div></body></html>

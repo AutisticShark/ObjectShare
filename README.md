@@ -8,7 +8,7 @@ ObjectShare is a small self-hosted file sharing service written in Go. Files are
 
 ## Features
 
-- Streaming, size-limited uploads with SHA-256 and SHA3-256 checksums
+- Single-file and multiple-file, size-limited uploads with SHA-256 and SHA3-256 checksums
 - Tabler UI with HTMX progressive enhancement and native-form fallbacks
 - Filesystem, Cloudflare R2, AWS S3, Backblaze B2, Alibaba Cloud OSS, or Tencent Cloud COS object storage
 - Direct-to-object-storage uploads that avoid reverse-proxy request-body limits
@@ -16,6 +16,7 @@ ObjectShare is a small self-hosted file sharing service written in Go. Files are
 - Optional AES-256-GCM server-side encryption at rest
 - Owner-only rename and permanent deletion
 - Guest uploads, database-backed per-user storage quotas, and automatic guest/unpaid file retention
+- Stripe Checkout paid plans for upgraded storage, longer active-plan retention, and direct download links
 - Password, Google, GitHub, and Discord login with separate user and administrator management interfaces
 - Optional server-verified Turnstile protection and shared PostgreSQL request rate limits
 - Encrypted PostgreSQL-backed configuration with a dedicated administrator dashboard
@@ -25,14 +26,16 @@ ObjectShare is a small self-hosted file sharing service written in Go. Files are
 - Docker Compose development/single-node deployment
 - CI, vulnerability scanning, SBOM/provenance, and multi-architecture publishing to Docker Hub and GHCR
 
-Anyone with a file URL can still download it. Accounts provide persistent upload ownership and management, not private share links; put ObjectShare behind an authentication-aware reverse proxy if every download must require authentication.
+File detail URLs remain unlisted rather than private. Guest and standard-account downloads must start on that details page; a stable direct download URL works only while the owning account has an active plan that includes direct links. Put ObjectShare behind an authentication-aware reverse proxy if every file view must require authentication.
 
 ## Roadmap
 
 - [x] File upload
+- [x] Single-file and multiple-file upload modes
 - [x] Upload quota
 - [x] CAPTCHA and API rate limiting
 - [x] File download
+- [x] Paid storage, retention, and direct-link plans
 - [ ] Better upload UI
 - [ ] File sharing & permission
 - [x] File deletion
@@ -103,7 +106,7 @@ Generate an object-encryption key separately with `openssl rand -base64 32` and 
 
 ### User and administrator management
 
-Normal users manage their profile, password, appearance, and account-owned uploads at `/account`. The light/dark theme choice is stored with the account, so it follows the user across browsers and is applied to every authenticated page. Administrators have a dedicated `/admin/settings` configuration dashboard and a separate `/admin/users` interface where they can create normal users or administrators, change roles, active status, paid status, and quotas, reset passwords, and delete accounts. Both routes enforce the administrator role server-side and cookie-authenticated changes require the signed JWT CSRF value. The final active administrator cannot be disabled, demoted, or deleted. Disabling an account, changing its role, or resetting its password increments the account token version so every earlier JWT is rejected. Paid-status and quota changes do not invalidate JWTs because request authorization reloads current account entitlements from PostgreSQL. Deleting an account keeps its existing shared files available and converts them to anonymous uploads; those files then follow the guest retention policy if it is enabled.
+Normal users manage their profile, password, appearance, paid plan, and account-owned uploads at `/account`. The light/dark theme choice is stored with the account, so it follows the user across browsers and is applied to every authenticated page. Administrators have dedicated `/admin/settings`, `/admin/plans`, and `/admin/users` interfaces for configuration, the purchasable plan catalog, and account management. These routes enforce the administrator role server-side and cookie-authenticated changes require the signed JWT CSRF value. The final active administrator cannot be disabled, demoted, or deleted. Disabling an account, changing its role, or resetting its password increments the account token version so every earlier JWT is rejected. Manual retention-exemption and quota changes do not invalidate JWTs because request authorization reloads current account entitlements from PostgreSQL. Deleting an account keeps its existing shared files available and converts them to anonymous uploads; those files then follow the guest retention policy if it is enabled.
 
 Public signup is changed from the configuration dashboard. `auth.jwt_secret` and `auth.token_lifetime` remain bootstrap JSON settings and are intentionally not editable from the browser.
 
@@ -111,15 +114,34 @@ Public signup is changed from the configuration dashboard. `auth.jwt_secret` and
 
 Guest uploads are enabled by default. A guest receives a random per-file owner token in an HTTP-only cookie, allowing that browser to rename or delete the file without creating an account. Disable **Allow guest uploads** in the configuration dashboard and restart to require login for new uploads; existing unlisted download links and owner tokens continue to work.
 
-Storage quota is an entitlement of an individual account. It is stored in PostgreSQL as `users.upload_quota_bytes`; it is not selected by role and there is no guest-wide or server-wide quota setting. New accounts default to `0` (unlimited). Administrators can choose an initial quota when creating an account and change it later from `/admin/users`; the web form uses MiB while the database stores bytes. This lets a billing or plan-upgrade integration update one user's entitlement without changing deployment configuration or affecting other users.
+Storage quota is an entitlement of an individual account. Its standard limit is stored in PostgreSQL as `users.upload_quota_bytes`; it is not selected by role and there is no guest-wide or server-wide quota setting. New accounts default to `0` (unlimited). Administrators can choose an initial quota when creating an account and change it later from `/admin/users`; the web form uses MiB while the database stores bytes. While a subscription is active, ObjectShare uses the larger of the standard account quota and the plan quota. The historical `0` value remains unlimited, so a finite paid plan never reduces a legacy unlimited account.
 
 Remove the obsolete `guest_quota_mib`, `user_quota_mib`, `admin_quota_mib`, and `panel_quota_mib` JSON keys and the matching `OBJECTSHARE_*_UPLOAD_QUOTA_MB` environment variables when upgrading from an earlier quota implementation. ObjectShare rejects them instead of silently starting with different quota behavior.
 
 Complete files and pending direct-upload reservations both consume that account's quota, preventing concurrent requests or multiple application replicas from overcommitting it. Reservations for the same account are serialized with a database row lock; unrelated accounts do not share a quota lock. Deleting a file, aborting a direct upload, or cleaning up an expired reservation releases its bytes. Lowering a quota below current usage blocks new reservations but does not delete existing files. Anonymous uploads are not charged to an account, so disable guest uploads when every stored object must be quota-controlled. Quotas limit stored capacity; use ingress rate limiting and, where appropriate, CAPTCHA separately to control request abuse.
 
+The uploader offers explicit single-file and multiple-file modes. A batch accepts at most `upload.max_files_per_batch` files (default `10`, range `1`–`100`), with the configured per-file size limit applied independently. The legacy first-import environment setting is `OBJECTSHARE_MAX_FILES_PER_BATCH`. Proxied batches reserve and store each file and roll back earlier files if a later reservation or storage operation fails. Direct-to-storage batches obtain all short-lived, size/type-scoped authorizations with one server request and one CAPTCHA challenge, then verify each object before publishing it.
+
+### Stripe paid plans
+
+Stripe Billing is optional and disabled by default. Enable it in `/admin/settings` with the browser-visible public origin, a restricted Stripe secret key, and the endpoint signing secret. Secrets are write-only in the administrator UI: blank preserves the encrypted database value, and the explicit clear control removes it. The legacy first-import variables are:
+
+```dotenv
+OBJECTSHARE_STRIPE_ENABLED=true
+OBJECTSHARE_BILLING_PUBLIC_URL=https://share.example.com
+OBJECTSHARE_STRIPE_SECRET_KEY=sk_live_...
+OBJECTSHARE_STRIPE_WEBHOOK_SECRET=whsec_...
+```
+
+Create recurring Prices in Stripe, then add one ObjectShare record per Price at `/admin/plans`. Each plan defines its display name/price, storage quota, retention days, direct-link entitlement, availability, and sort order. The displayed price is presentation only; Checkout always receives the trusted Stripe Price ID from PostgreSQL. Do not reuse one Price ID for multiple plans. Configure the Stripe Customer Portal for cancellation and payment-method management.
+
+Register `https://your-origin.example/api/v1/billing/stripe/webhook` in Stripe for `customer.subscription.created`, `customer.subscription.updated`, and `customer.subscription.deleted`. ObjectShare verifies the `Stripe-Signature` against the raw body with a five-minute tolerance, records event IDs for idempotency, ignores older subscription updates, and maps the subscription's Price ID back to a server-side plan. Checkout success pages never grant access. Only a verified `active` or `trialing` subscription whose current period has not ended supplies entitlements. Restart every replica after enabling billing or rotating its secrets.
+
+An active plan raises a finite account quota to at least the plan quota. It applies its own retention window while active; `0` plan-retention days means no age-based deletion during the active subscription. When access ends, the account immediately returns to its standard quota and unpaid retention window, so old files can become eligible during the next sweep. Existing objects are not synchronously deleted merely because the plan ends. Direct-link plans enable `GET /api/v1/download/{id}` only while active; otherwise that URL redirects to the file details page, whose short-lived signed POST authorization prevents method-switch bypasses. If administrator-enforced download CAPTCHA is enabled, it continues to require the details-page flow even for a direct-link plan.
+
 ### Automatic file retention
 
-ObjectShare can permanently delete completed guest files and completed files owned by unpaid accounts after separate administrator-defined numbers of days. Both policies default to `0` (disabled), so an upgrade never starts deleting existing data until an administrator deliberately enables retention. Configure **Guest retention** and **Unpaid retention** at `/admin/settings`, save, and restart every application replica. Paid status is a per-account PostgreSQL entitlement, independent from role and storage quota; set it from `/admin/users`. Paid accounts are exempt from unpaid retention. Existing and newly created accounts default to unpaid; mark entitled accounts paid before restarting with unpaid retention enabled. Changing a paid account to unpaid can make files older than the configured limit eligible at the next sweep.
+ObjectShare can permanently delete completed guest files and completed files owned by accounts without an active plan after separate administrator-defined numbers of days. Both policies default to `0` (disabled), so an upgrade never starts deleting existing data until an administrator deliberately enables retention. Configure **Guest retention** and **Unpaid retention** at `/admin/settings`, save, and restart every application replica. Active plans use their plan-specific retention days instead. `/admin/users` retains a manual retention exemption for complimentary or externally billed accounts; it is independent from Stripe, quota, and direct-link access. Removing an exemption or ending a subscription can make older files immediately eligible at the next sweep.
 
 The legacy first-import inputs are:
 
@@ -262,7 +284,7 @@ Grant the configured identity only read, write, and delete access to the selecte
 
 Use the provider console's equivalent fields when it does not accept S3 CORS JSON directly. Add a separate localhost origin for local browser testing. Avoid wildcard origins for private buckets.
 
-Presigned download timeouts default to `10m`; upload timeouts default to `1h`. Configure them per provider in the dashboard. The legacy first-import variables are `OBJECTSHARE_<PROVIDER>_PRESIGN_TIMEOUT` and `OBJECTSHARE_<PROVIDER>_UPLOAD_PRESIGN_TIMEOUT`, replacing `<PROVIDER>` with `R2`, `S3`, `B2`, `OSS`, or `COS`. Both support a maximum of `168h`. Single-part direct uploads are capped at 5 GiB; larger objects require multipart upload support, which ObjectShare does not currently implement.
+Presigned download timeouts default to `10m`; upload timeouts default to `1h`. Configure them per provider in the dashboard. The legacy first-import variables are `OBJECTSHARE_<PROVIDER>_PRESIGN_TIMEOUT` and `OBJECTSHARE_<PROVIDER>_UPLOAD_PRESIGN_TIMEOUT`, replacing `<PROVIDER>` with `R2`, `S3`, `B2`, `OSS`, or `COS`. Both support a maximum of `168h`. Each direct object upload is a single PUT and is capped at 5 GiB; the UI can upload several such files as a batch, but larger individual objects require S3 multipart-object upload support, which ObjectShare does not currently implement.
 
 #### Cloudflare R2
 

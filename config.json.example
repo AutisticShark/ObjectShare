@@ -6,11 +6,18 @@
   "shutdown_timeout": "15s",
   "settings_key": "replace-with-a-different-32-byte-random-secret",
   "upload": {
-    "guest_enabled": true
+    "guest_enabled": true,
+    "max_files_per_batch": 10
   },
   "retention": {
     "guest_days": 0,
     "unpaid_days": 0
+  },
+  "billing": {
+    "enabled": false,
+    "public_url": "http://localhost:8080",
+    "secret_key": "",
+    "webhook_secret": ""
   },
   "auth": {
     "jwt_secret": "replace-with-at-least-32-random-bytes",

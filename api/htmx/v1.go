@@ -3,6 +3,7 @@ package htmx
 import (
 	"bytes"
 	"context"
+	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/sha3"
@@ -16,9 +17,11 @@ import (
 	"io/fs"
 	"log/slog"
 	"mime"
+	"mime/multipart"
 	"net"
 	"net/http"
 	"path"
+	"strconv"
 	"strings"
 	"time"
 	"unicode"
@@ -54,10 +57,13 @@ type Handler struct {
 	jwt             *appauth.JWTManager
 	csrfSecret      []byte
 	oauthSecret     []byte
+	downloadSecret  []byte
 	oauthProviders  map[string]appauth.OAuthProvider
 	captcha         captchaVerifier
 	rateLimits      db.RateLimitRepository
 	settings        db.SettingsRepository
+	billing         db.BillingRepository
+	stripe          stripeBillingClient
 	settingsKey     string
 	localRateLimits *localRateLimiter
 	trustedProxies  []*net.IPNet
@@ -103,6 +109,7 @@ func New(cfg *config.ServiceConfig, repository db.Repository, storage service.Ob
 	}
 	rateLimits, _ := repository.(db.RateLimitRepository)
 	settings, _ := repository.(db.SettingsRepository)
+	billing, _ := repository.(db.BillingRepository)
 	if cfg.RateLimit != nil && cfg.RateLimit.Enabled && rateLimits == nil {
 		return nil, errors.New("enabled rate limiting requires a shared rate-limit repository")
 	}
@@ -111,8 +118,18 @@ func New(cfg *config.ServiceConfig, repository db.Repository, storage service.Ob
 		templates: parsed, themeJS: themeJS, uploadJS: uploadJS, captchaJS: captchaJS,
 		adminUsersJS: adminUsersJS, adminUsersCSS: adminUsersCSS, logger: logger, csrfSecret: csrfSecret,
 		captcha: newCaptchaVerifier(cfg.Captcha), rateLimits: rateLimits,
-		settings:        settings,
+		settings: settings, billing: billing,
 		localRateLimits: newLocalRateLimiter(), trustedProxies: trustedProxies,
+	}
+	if cfg.Auth != nil {
+		downloadSecret := sha256.Sum256([]byte("objectshare-download-form-v1\x00" + cfg.Auth.JWTSecret))
+		handler.downloadSecret = downloadSecret[:]
+	}
+	if cfg.Billing != nil && cfg.Billing.Enabled {
+		if billing == nil {
+			return nil, errors.New("enabled billing requires a billing repository")
+		}
+		handler.stripe = newStripeClient(cfg.Billing.SecretKey)
 	}
 	if userRepository != nil {
 		if cfg.Auth == nil {
@@ -162,11 +179,12 @@ func (handler *Handler) Index(writer http.ResponseWriter, request *http.Request)
 	handler.render(writer, "index.html", struct {
 		Version, QuotaLabel                    string
 		MaxFileSize                            int64
+		MaxFiles                               int
 		DirectUpload, SignupEnabled, CanUpload bool
 		User                                   *db.User
 		CSRF                                   string
 		Captcha                                *captchaWidget
-	}{config.GetVersion(), quotaLabel, maxFileSize, handler.direct != nil, signupEnabled, canUpload, user, identityCSRF(request), handler.captchaWidget("upload")})
+	}{config.GetVersion(), quotaLabel, maxFileSize, settings.MaxFilesPerBatch, handler.direct != nil, signupEnabled, canUpload, user, identityCSRF(request), handler.captchaWidget("upload")})
 }
 
 func (handler *Handler) DirectUploadConnectSources() []string {
@@ -222,13 +240,15 @@ func (handler *Handler) FileView(writer http.ResponseWriter, request *http.Reque
 		http.NotFound(writer, request)
 		return
 	}
+	canDirectLink := !handler.captchaEnabled("download") && handler.fileHasDirectLinks(request.Context(), file)
 	handler.render(writer, "file_view.html", struct {
-		Version, FileID, FileName, FileSize, FileSHA256, FileSHA3, CreatedAt, UpdatedAt string
-		CanManage, Encrypted, ChecksumsVerified                                         bool
-		SignupEnabled                                                                   bool
-		User                                                                            *db.User
-		CSRF                                                                            string
-		Captcha                                                                         *captchaWidget
+		Version, FileID, FileName, FileSize, FileSHA256, FileSHA3, CreatedAt, UpdatedAt, DirectURL string
+		CanManage, Encrypted, ChecksumsVerified, CanDirectLink                                     bool
+		SignupEnabled                                                                              bool
+		User                                                                                       *db.User
+		CSRF                                                                                       string
+		Captcha                                                                                    *captchaWidget
+		DownloadToken                                                                              string
 	}{
 		Version: config.GetVersion(), FileID: file.FileID, FileName: file.FileName,
 		FileSize: humanSize(file.FileSize), FileSHA256: file.FileSHA256, FileSHA3: file.FileSHA3,
@@ -237,7 +257,17 @@ func (handler *Handler) FileView(writer http.ResponseWriter, request *http.Reque
 		ChecksumsVerified: file.ChecksumStatus == "verified",
 		SignupEnabled:     handler.config.Auth.SignupEnabled,
 		User:              identityUser(request), CSRF: identityCSRF(request), Captcha: handler.captchaWidget("download"),
+		CanDirectLink: canDirectLink,
+		DownloadToken: handler.downloadFormToken(file.FileID, time.Now().UTC().Add(10*time.Minute)),
+		DirectURL:     handler.publicDownloadURL(file.FileID),
 	})
+}
+
+func (handler *Handler) publicDownloadURL(fileID string) string {
+	if handler.config.Billing != nil && handler.config.Billing.PublicURL != "" {
+		return handler.config.Billing.PublicURL + "/api/v1/download/" + fileID
+	}
+	return "/api/v1/download/" + fileID
 }
 
 func (handler *Handler) Upload(writer http.ResponseWriter, request *http.Request) {
@@ -245,7 +275,11 @@ func (handler *Handler) Upload(writer http.ResponseWriter, request *http.Request
 		return
 	}
 	maxBytes := handler.config.MaxFileSize * mebibyte
-	request.Body = http.MaxBytesReader(writer, request.Body, maxBytes+mebibyte)
+	maxFiles := handler.uploadSettings().MaxFilesPerBatch
+	if maxFiles <= 0 {
+		maxFiles = 10
+	}
+	request.Body = http.MaxBytesReader(writer, request.Body, maxBytes*int64(maxFiles)+int64(maxFiles)*mebibyte)
 	defer func() {
 		if request.MultipartForm != nil {
 			_ = request.MultipartForm.RemoveAll()
@@ -270,6 +304,17 @@ func (handler *Handler) Upload(writer http.ResponseWriter, request *http.Request
 			return
 		}
 		http.Error(writer, "A file is required and must be within the configured size limit.", http.StatusBadRequest)
+		return
+	}
+	headers := request.MultipartForm.File["file"]
+	if len(headers) > maxFiles {
+		_ = fileObject.Close()
+		http.Error(writer, fmt.Sprintf("Choose no more than %d files per upload.", maxFiles), http.StatusRequestEntityTooLarge)
+		return
+	}
+	if len(headers) > 1 {
+		_ = fileObject.Close()
+		handler.uploadMultiple(writer, request, headers, maxBytes)
 		return
 	}
 	defer fileObject.Close()
@@ -363,6 +408,140 @@ func (handler *Handler) Upload(writer http.ResponseWriter, request *http.Request
 	handler.redirect(writer, request, "/file/"+fileID)
 }
 
+type uploadedFileResult struct{ ID, Name string }
+
+func (handler *Handler) uploadMultiple(writer http.ResponseWriter, request *http.Request, headers []*multipart.FileHeader, maxBytes int64) {
+	results := make([]uploadedFileResult, 0, len(headers))
+	tokens := make([]string, 0, len(headers))
+	for _, header := range headers {
+		result, token, err := handler.storeProxiedHeader(request, header, maxBytes)
+		if err != nil {
+			for _, completed := range results {
+				handler.discardUpload(request, completed.ID, true)
+			}
+			var quotaError *db.UploadQuotaError
+			if errors.As(err, &quotaError) {
+				http.Error(writer, "This upload batch would exceed your account storage quota.", http.StatusRequestEntityTooLarge)
+			} else if errors.Is(err, errInvalidUpload) {
+				http.Error(writer, err.Error(), http.StatusBadRequest)
+			} else {
+				handler.internalError(writer, request, "store upload batch", err)
+			}
+			return
+		}
+		results, tokens = append(results, result), append(tokens, token)
+	}
+	ids := make([]string, 0, len(results))
+	for index, result := range results {
+		http.SetCookie(writer, ownerCookie(result.ID, tokens[index], handler.config.SecureCookies, 30*24*time.Hour))
+		ids = append(ids, result.ID)
+	}
+	handler.redirect(writer, request, "/uploads/complete?ids="+strings.Join(ids, ","))
+}
+
+var errInvalidUpload = errors.New("invalid upload")
+
+func (handler *Handler) storeProxiedHeader(request *http.Request, header *multipart.FileHeader, maxBytes int64) (uploadedFileResult, string, error) {
+	if header.Size <= 0 || header.Size > maxBytes {
+		return uploadedFileResult{}, "", fmt.Errorf("%w: every file must be between 1 byte and %s", errInvalidUpload, humanSize(maxBytes))
+	}
+	fileObject, err := header.Open()
+	if err != nil {
+		return uploadedFileResult{}, "", fmt.Errorf("open uploaded file: %w", err)
+	}
+	defer fileObject.Close()
+	fileName, err := safeFileName(header.Filename)
+	if err != nil {
+		return uploadedFileResult{}, "", fmt.Errorf("%w: %s", errInvalidUpload, err)
+	}
+	contentType, err := sniffContentType(fileObject)
+	if err != nil {
+		return uploadedFileResult{}, "", fmt.Errorf("%w: unable to read %s", errInvalidUpload, fileName)
+	}
+	token, tokenHash, err := newOwnerToken()
+	if err != nil {
+		return uploadedFileResult{}, "", err
+	}
+	fileID, now := uuid.NewString(), time.Now().UTC()
+	expiresAt := now.Add(handler.proxiedUploadReservationLifetime())
+	record := &db.FileList{AnonymousSessionToken: tokenHash, FileID: fileID, FileName: fileName, FileSize: header.Size,
+		ContentType: contentType, IsAnonymousUpload: true, IsEncrypted: handler.cipher != nil, StorageService: handler.config.StorageService,
+		UploadStatus: "pending", ChecksumStatus: "pending", UploadExpiresAt: &expiresAt, CreatedAt: now, UpdatedAt: now}
+	if identity := currentIdentity(request); identity != nil {
+		record.FileOwner = &identity.User.ID
+		record.IsAnonymousUpload = false
+	}
+	if handler.cipher != nil {
+		record.EncryptionMethod = "aes-256-gcm"
+	}
+	if err := handler.repository.ReserveUpload(request.Context(), record); err != nil {
+		return uploadedFileResult{}, "", err
+	}
+	objectMayExist, success := false, false
+	defer func() {
+		if !success {
+			handler.discardUpload(request, fileID, objectMayExist)
+		}
+	}()
+	sha256Hasher, sha3Hasher, counter := sha256.New(), sha3.New256(), &byteCounter{}
+	reader := io.TeeReader(fileObject, io.MultiWriter(sha256Hasher, sha3Hasher, counter))
+	storedSize := header.Size
+	if handler.cipher != nil {
+		if !handler.acquireCipherSlot() {
+			return uploadedFileResult{}, "", errors.New("encryption capacity is busy")
+		}
+		defer handler.releaseCipherSlot()
+		plaintext, readErr := io.ReadAll(io.LimitReader(reader, maxBytes+1))
+		if readErr != nil || int64(len(plaintext)) != header.Size || int64(len(plaintext)) > maxBytes {
+			return uploadedFileResult{}, "", errors.New("read complete uploaded file")
+		}
+		ciphertext, encryptErr := handler.cipher.Encrypt(plaintext)
+		if encryptErr != nil {
+			return uploadedFileResult{}, "", encryptErr
+		}
+		storedSize, reader = int64(len(ciphertext)), bytes.NewReader(ciphertext)
+	}
+	objectMayExist = true
+	if err := handler.storage.Put(request.Context(), fileID, reader, storedSize, contentType); err != nil {
+		return uploadedFileResult{}, "", err
+	}
+	if counter.total != header.Size {
+		return uploadedFileResult{}, "", fmt.Errorf("stored %d of %d bytes", counter.total, header.Size)
+	}
+	if err := handler.repository.FinalizeUpload(request.Context(), fileID, hex.EncodeToString(sha256Hasher.Sum(nil)), hex.EncodeToString(sha3Hasher.Sum(nil)), handler.cipher != nil, record.EncryptionMethod); err != nil {
+		return uploadedFileResult{}, "", err
+	}
+	success = true
+	return uploadedFileResult{ID: fileID, Name: fileName}, token, nil
+}
+
+func (handler *Handler) UploadResults(writer http.ResponseWriter, request *http.Request) {
+	parts := strings.Split(request.URL.Query().Get("ids"), ",")
+	maxFiles := handler.uploadSettings().MaxFilesPerBatch
+	if len(parts) < 2 || len(parts) > maxFiles {
+		http.NotFound(writer, request)
+		return
+	}
+	results := make([]uploadedFileResult, 0, len(parts))
+	for _, id := range parts {
+		if _, err := uuid.Parse(id); err != nil {
+			http.NotFound(writer, request)
+			return
+		}
+		file, err := handler.repository.Get(request.Context(), id)
+		if err != nil || file.UploadStatus != "complete" {
+			http.NotFound(writer, request)
+			return
+		}
+		results = append(results, uploadedFileResult{ID: file.FileID, Name: file.FileName})
+	}
+	handler.render(writer, "upload_results.html", struct {
+		Version, CSRF string
+		User          *db.User
+		Files         []uploadedFileResult
+	}{config.GetVersion(), identityCSRF(request), identityUser(request), results})
+}
+
 func (handler *Handler) Download(writer http.ResponseWriter, request *http.Request) {
 	if !handler.allowRequest(writer, request, "download", handler.rateLimitSettings().DownloadLimit) {
 		return
@@ -377,9 +556,9 @@ func (handler *Handler) Download(writer http.ResponseWriter, request *http.Reque
 			http.Error(writer, "Invalid download request.", http.StatusBadRequest)
 			return
 		}
-	}
-	if !handler.verifyCaptcha(writer, request, "download", "") {
-		return
+		if !handler.verifyCaptcha(writer, request, "download", "") {
+			return
+		}
 	}
 	fileID, ok := validFileID(request)
 	if !ok {
@@ -397,6 +576,15 @@ func (handler *Handler) Download(writer http.ResponseWriter, request *http.Reque
 	}
 	if file.UploadStatus != "complete" {
 		http.NotFound(writer, request)
+		return
+	}
+	if request.Method == http.MethodGet {
+		if !handler.fileHasDirectLinks(request.Context(), file) && !handler.isOwner(request, file) {
+			http.Redirect(writer, request, "/file/"+file.FileID, http.StatusSeeOther)
+			return
+		}
+	} else if handler.billing != nil && !handler.validDownloadFormToken(file.FileID, request.FormValue("download_token"), time.Now().UTC()) {
+		http.Error(writer, "Open the file details page before downloading.", http.StatusForbidden)
 		return
 	}
 	if !file.IsEncrypted {
@@ -451,6 +639,41 @@ func (handler *Handler) Download(writer http.ResponseWriter, request *http.Reque
 	}
 	writer.Header().Set("Content-Length", fmt.Sprint(file.FileSize))
 	_, _ = io.Copy(writer, body)
+}
+
+func (handler *Handler) fileHasDirectLinks(ctx context.Context, file *db.FileList) bool {
+	if handler.billing == nil {
+		return true
+	}
+	if file.FileOwner == nil {
+		return false
+	}
+	entitlements, err := handler.billing.Entitlements(ctx, *file.FileOwner, time.Now().UTC())
+	if err != nil {
+		handler.logger.Warn("check direct-link entitlement", "user_id", *file.FileOwner, "error", err)
+		return false
+	}
+	return entitlements.Active && entitlements.DirectLinks
+}
+
+func (handler *Handler) downloadFormToken(fileID string, expires time.Time) string {
+	expiry := strconv.FormatInt(expires.Unix(), 10)
+	mac := hmac.New(sha256.New, handler.downloadSecret)
+	_, _ = mac.Write([]byte(fileID + "\x00" + expiry))
+	return expiry + "." + base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
+}
+
+func (handler *Handler) validDownloadFormToken(fileID, token string, now time.Time) bool {
+	expiryText, signature, ok := strings.Cut(token, ".")
+	if !ok || signature == "" {
+		return false
+	}
+	expiry, err := strconv.ParseInt(expiryText, 10, 64)
+	if err != nil || now.After(time.Unix(expiry, 0)) || time.Unix(expiry, 0).After(now.Add(15*time.Minute)) {
+		return false
+	}
+	want := handler.downloadFormToken(fileID, time.Unix(expiry, 0))
+	return subtle.ConstantTimeCompare([]byte(want), []byte(token)) == 1
 }
 
 func (handler *Handler) Delete(writer http.ResponseWriter, request *http.Request) {
@@ -601,9 +824,13 @@ func identityCSRF(request *http.Request) string {
 
 func (handler *Handler) uploadSettings() config.UploadConfig {
 	if handler.config.Upload == nil {
-		return config.UploadConfig{GuestEnabled: true}
+		return config.UploadConfig{GuestEnabled: true, MaxFilesPerBatch: 10}
 	}
-	return *handler.config.Upload
+	settings := *handler.config.Upload
+	if settings.MaxFilesPerBatch == 0 {
+		settings.MaxFilesPerBatch = 10
+	}
+	return settings
 }
 
 func (handler *Handler) uploadAllowed(writer http.ResponseWriter, request *http.Request) bool {

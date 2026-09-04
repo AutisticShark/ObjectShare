@@ -14,7 +14,7 @@ import (
 	"github.com/google/uuid"
 )
 
-const directRequestLimit = 8 * 1024
+const directRequestLimit = 64 * 1024
 
 type directUploadRequest struct {
 	FileName     string `json:"file_name"`
@@ -25,6 +25,123 @@ type directUploadRequest struct {
 
 type directUploadToken struct {
 	Token string `json:"token"`
+}
+
+type directUploadBatchRequest struct {
+	Files        []directUploadRequest `json:"files"`
+	CaptchaToken string                `json:"captcha_token,omitempty"`
+}
+
+type directUploadAuthorization struct {
+	FileID      string `json:"file_id"`
+	FileName    string `json:"file_name"`
+	UploadURL   string `json:"upload_url"`
+	CompleteURL string `json:"complete_url"`
+	AbortURL    string `json:"abort_url"`
+	Token       string `json:"token"`
+	ExpiresAt   string `json:"expires_at"`
+}
+
+func (handler *Handler) BeginDirectUploadBatch(writer http.ResponseWriter, request *http.Request) {
+	if handler.direct == nil {
+		http.Error(writer, "Direct uploads are unavailable for this storage or encryption mode.", http.StatusNotFound)
+		return
+	}
+	if !handler.allowRequest(writer, request, "upload", handler.rateLimitSettings().UploadLimit) || !handler.verifyAuthenticatedMutationCSRF(writer, request) || !handler.uploadAllowed(writer, request) {
+		return
+	}
+	var input directUploadBatchRequest
+	if err := decodeJSON(writer, request, &input); err != nil {
+		http.Error(writer, err.Error(), http.StatusBadRequest)
+		return
+	}
+	maxFiles := handler.uploadSettings().MaxFilesPerBatch
+	if len(input.Files) < 1 || len(input.Files) > maxFiles {
+		http.Error(writer, fmt.Sprintf("Choose between 1 and %d files.", maxFiles), http.StatusBadRequest)
+		return
+	}
+	if !handler.verifyCaptcha(writer, request, "upload", input.CaptchaToken) {
+		return
+	}
+	handler.cleanupExpiredUploads(request)
+	authorizations := make([]directUploadAuthorization, 0, len(input.Files))
+	rollback := func() {
+		for _, item := range authorizations {
+			handler.discardUpload(request, item.FileID, false)
+		}
+	}
+	for _, file := range input.Files {
+		authorization, record, err := handler.authorizeDirectUpload(request, file)
+		if err != nil {
+			rollback()
+			var quotaError *db.UploadQuotaError
+			if errors.As(err, &quotaError) {
+				http.Error(writer, "This upload batch would exceed your account storage quota.", http.StatusRequestEntityTooLarge)
+			} else if errors.Is(err, errInvalidUpload) {
+				http.Error(writer, err.Error(), http.StatusBadRequest)
+			} else {
+				handler.internalError(writer, request, "authorize direct upload batch", err)
+			}
+			return
+		}
+		if err := handler.repository.ReserveUpload(request.Context(), record); err != nil {
+			rollback()
+			var quotaError *db.UploadQuotaError
+			if errors.As(err, &quotaError) {
+				http.Error(writer, "This upload batch would exceed your account storage quota.", http.StatusRequestEntityTooLarge)
+			} else {
+				handler.internalError(writer, request, "reserve direct upload batch", err)
+			}
+			return
+		}
+		uploadURL, err := handler.direct.PresignPut(request.Context(), record.FileID, record.FileSize, record.ContentType)
+		if err != nil {
+			handler.discardUpload(request, record.FileID, false)
+			rollback()
+			handler.internalError(writer, request, "presign direct upload batch", err)
+			return
+		}
+		authorization.UploadURL = uploadURL
+		authorizations = append(authorizations, authorization)
+	}
+	writeJSON(writer, http.StatusCreated, map[string]any{"uploads": authorizations})
+}
+
+func (handler *Handler) authorizeDirectUpload(request *http.Request, input directUploadRequest) (directUploadAuthorization, *db.FileList, error) {
+	fileName, err := safeFileName(input.FileName)
+	if err != nil {
+		return directUploadAuthorization{}, nil, fmt.Errorf("%w: %s", errInvalidUpload, err)
+	}
+	maxBytes := handler.config.MaxFileSize * mebibyte
+	if maxBytes > handler.directPolicy.MaxSize {
+		maxBytes = handler.directPolicy.MaxSize
+	}
+	if input.FileSize <= 0 || input.FileSize > maxBytes {
+		return directUploadAuthorization{}, nil, fmt.Errorf("%w: file size must be between 1 byte and %s", errInvalidUpload, humanSize(maxBytes))
+	}
+	contentType := strings.TrimSpace(input.ContentType)
+	if contentType == "" {
+		contentType = "application/octet-stream"
+	}
+	if _, _, err := mime.ParseMediaType(contentType); err != nil || len(contentType) > 255 {
+		return directUploadAuthorization{}, nil, fmt.Errorf("%w: invalid content type", errInvalidUpload)
+	}
+	token, tokenHash, err := newOwnerToken()
+	if err != nil {
+		return directUploadAuthorization{}, nil, err
+	}
+	fileID, now := uuid.NewString(), time.Now().UTC()
+	expiresAt := now.Add(handler.directPolicy.Expires)
+	record := &db.FileList{AnonymousSessionToken: tokenHash, FileID: fileID, FileName: fileName, FileSize: input.FileSize,
+		ContentType: contentType, IsAnonymousUpload: true, StorageService: handler.config.StorageService,
+		UploadStatus: "pending", ChecksumStatus: "unavailable", UploadExpiresAt: &expiresAt, CreatedAt: now, UpdatedAt: now}
+	if identity := currentIdentity(request); identity != nil {
+		record.FileOwner = &identity.User.ID
+		record.IsAnonymousUpload = false
+	}
+	authorization := directUploadAuthorization{FileID: fileID, FileName: fileName, CompleteURL: "/api/v1/uploads/direct/" + fileID + "/complete",
+		AbortURL: "/api/v1/uploads/direct/" + fileID + "/abort", Token: token, ExpiresAt: expiresAt.Format(time.RFC3339)}
+	return authorization, record, nil
 }
 
 func (handler *Handler) BeginDirectUpload(writer http.ResponseWriter, request *http.Request) {

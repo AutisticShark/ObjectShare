@@ -24,7 +24,7 @@
         </div>
         <div class="navbar-nav flex-row order-md-last align-items-center gap-2 ms-auto">
           {{if .User}}
-          {{if eq .User.Role "admin"}}<a class="nav-link" href="/admin/users">Users</a>{{end}}
+          <a class="nav-link" href="/plans">Plans</a>{{if eq .User.Role "admin"}}<a class="nav-link" href="/admin/users">Users</a>{{end}}
           <a class="nav-link" href="/account">{{.User.DisplayName}}</a>
           <form action="/logout" method="post" hx-post="/logout" hx-disabled-elt="button"><input type="hidden" name="csrf_token" value="{{.CSRF}}"><button class="btn btn-outline-secondary btn-sm" type="submit">Log out</button></form>
           {{template "theme-toggle" .}}
@@ -63,9 +63,10 @@
                       Files are shared through an unlisted link. {{if .User}}Uploads are saved to your account so you can manage them later.{{else}}This browser receives an owner token that permits rename and deletion.{{end}}
                     </p>
                     <div class="mb-3">
-                      <label class="form-label" for="file">Choose a file</label>
-                      <input class="form-control" id="file" type="file" name="file" required>
-                      <small class="form-hint">Maximum file size: {{.MaxFileSize}} MiB.{{if .QuotaLabel}} {{.QuotaLabel}}{{end}}</small>
+                      <label class="form-label">Upload mode</label><div class="form-selectgroup mb-3"><label class="form-selectgroup-item"><input class="form-selectgroup-input" type="radio" name="upload_mode" value="single" checked><span class="form-selectgroup-label">Single file</span></label><label class="form-selectgroup-item"><input class="form-selectgroup-input" type="radio" name="upload_mode" value="multiple"><span class="form-selectgroup-label">Multiple files</span></label></div>
+                      <label class="form-label" for="file">Choose file</label>
+                      <input class="form-control" id="file" type="file" name="file" multiple required>
+                      <small class="form-hint">Maximum file size: {{.MaxFileSize}} MiB each; up to {{.MaxFiles}} files per batch.{{if .QuotaLabel}} {{.QuotaLabel}}{{end}}</small>
                     </div>
                     <div id="upload-status" class="alert alert-info d-none" role="status" aria-live="polite"></div>
                     <div id="upload-progress-wrap" class="progress d-none" aria-hidden="true">

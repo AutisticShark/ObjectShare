@@ -187,6 +187,43 @@ func TestCaptchaEnvironmentAndValidation(t *testing.T) {
 	}
 }
 
+func TestStripeBillingEnvironmentAndValidation(t *testing.T) {
+	t.Setenv("OBJECTSHARE_STRIPE_ENABLED", "true")
+	t.Setenv("OBJECTSHARE_BILLING_PUBLIC_URL", "https://share.example.com")
+	t.Setenv("OBJECTSHARE_STRIPE_SECRET_KEY", "sk_test_example")
+	t.Setenv("OBJECTSHARE_STRIPE_WEBHOOK_SECRET", "whsec_example")
+	cfg := testDefaults()
+	cfg.SecureCookies = true
+	if err := applyEnvironment(cfg); err != nil {
+		t.Fatal(err)
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.Billing.Enabled || cfg.Billing.PublicURL != "https://share.example.com" {
+		t.Fatalf("billing environment was not applied: %#v", cfg.Billing)
+	}
+
+	for _, test := range []struct {
+		name    string
+		billing *BillingConfig
+		secure  bool
+		want    string
+	}{
+		{"missing secret", &BillingConfig{Enabled: true, PublicURL: "https://share.example.com", SecretKey: "sk_test_example"}, true, "webhook_secret"},
+		{"unsafe origin", &BillingConfig{Enabled: true, PublicURL: "http://share.example.com", SecretKey: "sk_test_example", WebhookSecret: "whsec_example"}, false, "must use HTTPS"},
+		{"insecure cookie", &BillingConfig{Enabled: true, PublicURL: "https://share.example.com", SecretKey: "sk_test_example", WebhookSecret: "whsec_example"}, false, "secure_cookies"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			candidate := testDefaults()
+			candidate.Billing, candidate.SecureCookies = test.billing, test.secure
+			if err := candidate.Validate(); err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("error=%v want %q", err, test.want)
+			}
+		})
+	}
+}
+
 func TestRateLimitEnvironmentDefaultsAndValidation(t *testing.T) {
 	cfg := testDefaults()
 	if err := json.Unmarshal([]byte(`{"rate_limit":{"upload_limit":7}}`), cfg); err != nil {

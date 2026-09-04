@@ -18,6 +18,7 @@ import (
 
 type settingsSecretState struct {
 	Captcha, Google, GitHub, Discord, Encryption bool
+	StripeSecret, StripeWebhook                  bool
 	R2Access, R2Secret                           bool
 	S3Access, S3Secret, S3Session                bool
 	B2Access, B2Secret                           bool
@@ -111,6 +112,7 @@ func (handler *Handler) renderSettings(writer http.ResponseWriter, identity *ide
 	activeJSON, _ := json.Marshal(config.RuntimeFromService(handler.config))
 	secrets := settingsSecretState{
 		Captcha: runtime.Captcha.SecretKey != "", Google: runtime.Auth.OAuth.Google.ClientSecret != "", GitHub: runtime.Auth.OAuth.GitHub.ClientSecret != "", Discord: runtime.Auth.OAuth.Discord.ClientSecret != "", Encryption: runtime.Encryption.Key != "",
+		StripeSecret: runtime.Billing.SecretKey != "", StripeWebhook: runtime.Billing.WebhookSecret != "",
 		R2Access: runtime.R2.AccessKeyID != "", R2Secret: runtime.R2.SecretAccessKey != "",
 		S3Access: runtime.S3.AccessKeyID != "", S3Secret: runtime.S3.SecretAccessKey != "", S3Session: runtime.S3.SessionToken != "",
 		B2Access: runtime.B2.AccessKeyID != "", B2Secret: runtime.B2.SecretAccessKey != "",
@@ -139,6 +141,7 @@ func redactRuntimeSecrets(runtime *config.RuntimeConfig) {
 	runtime.Auth.OAuth.GitHub.ClientSecret = ""
 	runtime.Auth.OAuth.Discord.ClientSecret = ""
 	runtime.Captcha.SecretKey = ""
+	runtime.Billing.SecretKey, runtime.Billing.WebhookSecret = "", ""
 	runtime.Encryption.Key = ""
 	runtime.R2.AccessKeyID, runtime.R2.SecretAccessKey, runtime.R2.SecretID, runtime.R2.SecretKey = "", "", "", ""
 	runtime.S3.AccessKeyID, runtime.S3.SecretAccessKey, runtime.S3.SessionToken = "", "", ""
@@ -161,9 +164,16 @@ func updateRuntimeFromForm(runtime *config.RuntimeConfig, request *http.Request)
 	problems = append(problems, formInt64(request, "max_file_size", &runtime.MaxFileSize))
 	runtime.SecureCookies = checked(request, "secure_cookies")
 	runtime.Upload.GuestEnabled = checked(request, "guest_enabled")
+	if request.FormValue("max_files_per_batch") != "" {
+		problems = append(problems, formInt(request, "max_files_per_batch", &runtime.Upload.MaxFilesPerBatch))
+	}
 	problems = append(problems, formInt(request, "guest_retention_days", &runtime.Retention.GuestDays))
 	problems = append(problems, formInt(request, "unpaid_retention_days", &runtime.Retention.UnpaidDays))
 	runtime.Auth.SignupEnabled = checked(request, "signup_enabled")
+	runtime.Billing.Enabled = checked(request, "stripe_enabled")
+	runtime.Billing.PublicURL = strings.TrimSpace(request.FormValue("billing_public_url"))
+	runtime.Billing.SecretKey = updatedSecret(request, "stripe_secret_key", "clear_stripe_secret", runtime.Billing.SecretKey)
+	runtime.Billing.WebhookSecret = updatedSecret(request, "stripe_webhook_secret", "clear_stripe_webhook_secret", runtime.Billing.WebhookSecret)
 
 	runtime.Auth.OAuth.PublicURL = strings.TrimSpace(request.FormValue("oauth_public_url"))
 	updateOAuthProvider(request, "google", &runtime.Auth.OAuth.Google)

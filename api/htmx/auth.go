@@ -53,11 +53,13 @@ type accountFile struct {
 }
 
 type accountPageData struct {
-	Version, CSRF, Error, Message, QuotaLabel string
-	User                                      *db.User
-	Files                                     []accountFile
-	OAuthProviders                            []oauthAccountProvider
-	HasPassword                               bool
+	Version, CSRF, Error, Message, QuotaLabel                 string
+	User                                                      *db.User
+	Files                                                     []accountFile
+	OAuthProviders                                            []oauthAccountProvider
+	HasPassword                                               bool
+	PlanName, PlanRenews, PlanStatus                          string
+	PlanActive, PlanCanceling, BillingEnabled, BillingAccount bool
 }
 
 type adminUserRow struct {
@@ -506,7 +508,26 @@ func (handler *Handler) renderAccount(writer http.ResponseWriter, request *http.
 		handler.internalError(writer, request, "list linked OAuth identities", err)
 		return
 	}
-	handler.render(writer, "account.html", accountPageData{Version: config.GetVersion(), CSRF: identity.Claims.CSRF, User: identity.User, Files: rows, OAuthProviders: providers, HasPassword: identity.User.PasswordHash != "", Error: formError, Message: message, QuotaLabel: handler.uploadQuotaLabel(request, identity.User)})
+	data := accountPageData{Version: config.GetVersion(), CSRF: identity.Claims.CSRF, User: identity.User, Files: rows, OAuthProviders: providers, HasPassword: identity.User.PasswordHash != "", Error: formError, Message: message, QuotaLabel: handler.uploadQuotaLabel(request, identity.User), BillingEnabled: handler.stripe != nil}
+	if handler.billing != nil {
+		subscription, subscriptionErr := handler.billing.SubscriptionForUser(request.Context(), identity.User.ID)
+		if subscriptionErr == nil {
+			data.BillingAccount, data.PlanName, data.PlanStatus = true, subscription.Plan.Name, subscription.Status
+		} else if !errors.Is(subscriptionErr, db.ErrNotFound) {
+			handler.internalError(writer, request, "get billing account", subscriptionErr)
+			return
+		}
+		entitlements, entitlementErr := handler.billing.Entitlements(request.Context(), identity.User.ID, time.Now().UTC())
+		if entitlementErr != nil {
+			handler.internalError(writer, request, "get account plan", entitlementErr)
+			return
+		}
+		if entitlements.Active {
+			data.PlanActive, data.PlanName, data.PlanCanceling = true, entitlements.PlanName, entitlements.CancelAtPeriodEnd
+			data.PlanRenews = entitlements.CurrentPeriodEnd.UTC().Format("2006-01-02")
+		}
+	}
+	handler.render(writer, "account.html", data)
 }
 
 func (handler *Handler) UpdateProfile(writer http.ResponseWriter, request *http.Request) {
@@ -965,9 +986,9 @@ func (handler *Handler) redirectAfterLogin(writer http.ResponseWriter, request *
 }
 
 func accountMessage(value string) string {
-	return map[string]string{"welcome": "Welcome to ObjectShare.", "profile": "Profile updated.", "theme": "Appearance updated.", "password": "Password changed and all earlier JWTs were invalidated.", "oauth-linked": "OAuth login linked.", "oauth-unlinked": "OAuth login removed."}[value]
+	return map[string]string{"welcome": "Welcome to ObjectShare.", "profile": "Profile updated.", "theme": "Appearance updated.", "password": "Password changed and all earlier JWTs were invalidated.", "oauth-linked": "OAuth login linked.", "oauth-unlinked": "OAuth login removed.", "billing-pending": "Payment received. Plan access will appear after Stripe confirms the subscription."}[value]
 }
 
 func adminMessage(value string) string {
-	return map[string]string{"setup": "Initial administrator created.", "created": "User created.", "updated": "Access updated; that user's earlier JWTs were invalidated.", "quota": "Upload quota updated.", "paid": "Payment status updated.", "password": "Password reset; that user's earlier JWTs were invalidated.", "deleted": "User deleted."}[value]
+	return map[string]string{"setup": "Initial administrator created.", "created": "User created.", "updated": "Access updated; that user's earlier JWTs were invalidated.", "quota": "Upload quota updated.", "paid": "Manual retention exemption updated.", "password": "Password reset; that user's earlier JWTs were invalidated.", "deleted": "User deleted."}[value]
 }

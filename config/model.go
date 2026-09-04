@@ -48,6 +48,7 @@ type ServiceConfig struct {
 	SettingsKey     string             `json:"settings_key,omitempty"`
 	Upload          *UploadConfig      `json:"upload,omitempty"`
 	Retention       *RetentionConfig   `json:"retention,omitempty"`
+	Billing         *BillingConfig     `json:"billing,omitempty"`
 	Auth            *AuthConfig        `json:"auth"`
 	Captcha         *CaptchaConfig     `json:"captcha,omitempty"`
 	RateLimit       *RateLimitConfig   `json:"rate_limit,omitempty"`
@@ -66,14 +67,25 @@ type ServiceConfig struct {
 // UploadConfig controls whether people without an account may upload. Account
 // storage quotas are user data and therefore live in PostgreSQL, not config.
 type UploadConfig struct {
-	GuestEnabled bool `json:"guest_enabled"`
+	GuestEnabled     bool `json:"guest_enabled"`
+	MaxFilesPerBatch int  `json:"max_files_per_batch"`
 }
 
-// RetentionConfig controls age-based deletion for files without a paid
-// account. Zero disables automatic deletion for that category.
+// RetentionConfig controls age-based deletion for guests and accounts without
+// an active plan or manual exemption. Zero disables that category.
 type RetentionConfig struct {
 	GuestDays  int `json:"guest_days"`
 	UnpaidDays int `json:"unpaid_days"`
+}
+
+// BillingConfig contains the Stripe credentials used only by the server. Plan
+// prices and entitlements live in PostgreSQL so administrators can change the
+// catalogue without rebuilding the application.
+type BillingConfig struct {
+	Enabled       bool   `json:"enabled"`
+	PublicURL     string `json:"public_url"`
+	SecretKey     string `json:"secret_key"`
+	WebhookSecret string `json:"webhook_secret"`
 }
 
 type AuthConfig struct {

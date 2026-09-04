@@ -127,8 +127,9 @@ func defaults() *ServiceConfig {
 		IdleTimeout:     Duration(60 * time.Second),
 		ShutdownTimeout: Duration(15 * time.Second),
 		MaxFileSize:     100,
-		Upload:          &UploadConfig{GuestEnabled: true},
+		Upload:          &UploadConfig{GuestEnabled: true, MaxFilesPerBatch: 10},
 		Retention:       &RetentionConfig{},
+		Billing:         &BillingConfig{},
 		Auth: &AuthConfig{
 			SignupEnabled: true, TokenLifetime: Duration(12 * time.Hour), OAuth: &OAuthConfig{},
 		},
@@ -200,14 +201,22 @@ func applyEnvironment(cfg *ServiceConfig) error {
 	problems = append(problems, setBool("OBJECTSHARE_SECURE_COOKIES", &cfg.SecureCookies))
 	setString("OBJECTSHARE_SETTINGS_KEY", &cfg.SettingsKey)
 	if cfg.Upload == nil {
-		cfg.Upload = &UploadConfig{GuestEnabled: true}
+		cfg.Upload = &UploadConfig{GuestEnabled: true, MaxFilesPerBatch: 10}
 	}
 	problems = append(problems, setBool("OBJECTSHARE_GUEST_UPLOAD_ENABLED", &cfg.Upload.GuestEnabled))
+	problems = append(problems, setInt("OBJECTSHARE_MAX_FILES_PER_BATCH", &cfg.Upload.MaxFilesPerBatch))
 	if cfg.Retention == nil {
 		cfg.Retention = &RetentionConfig{}
 	}
 	problems = append(problems, setInt("OBJECTSHARE_GUEST_RETENTION_DAYS", &cfg.Retention.GuestDays))
 	problems = append(problems, setInt("OBJECTSHARE_UNPAID_RETENTION_DAYS", &cfg.Retention.UnpaidDays))
+	if cfg.Billing == nil {
+		cfg.Billing = &BillingConfig{}
+	}
+	problems = append(problems, setBool("OBJECTSHARE_STRIPE_ENABLED", &cfg.Billing.Enabled))
+	setString("OBJECTSHARE_BILLING_PUBLIC_URL", &cfg.Billing.PublicURL)
+	setString("OBJECTSHARE_STRIPE_SECRET_KEY", &cfg.Billing.SecretKey)
+	setString("OBJECTSHARE_STRIPE_WEBHOOK_SECRET", &cfg.Billing.WebhookSecret)
 	for _, name := range []string{
 		"OBJECTSHARE_GUEST_UPLOAD_QUOTA_MB",
 		"OBJECTSHARE_USER_UPLOAD_QUOTA_MB",
@@ -339,7 +348,13 @@ func (cfg *ServiceConfig) Validate() error {
 		return errors.New("max_file_size must be between 1 and 10240 MiB")
 	}
 	if cfg.Upload == nil {
-		cfg.Upload = &UploadConfig{GuestEnabled: true}
+		cfg.Upload = &UploadConfig{GuestEnabled: true, MaxFilesPerBatch: 10}
+	}
+	if cfg.Upload.MaxFilesPerBatch == 0 {
+		cfg.Upload.MaxFilesPerBatch = 10
+	}
+	if cfg.Upload.MaxFilesPerBatch < 1 || cfg.Upload.MaxFilesPerBatch > 100 {
+		return errors.New("upload max_files_per_batch must be between 1 and 100")
 	}
 	if cfg.Retention == nil {
 		cfg.Retention = &RetentionConfig{}
@@ -349,6 +364,12 @@ func (cfg *ServiceConfig) Validate() error {
 	}
 	if cfg.Retention.UnpaidDays < 0 || cfg.Retention.UnpaidDays > 36500 {
 		return errors.New("retention unpaid_days must be between 0 and 36500")
+	}
+	if cfg.Billing == nil {
+		cfg.Billing = &BillingConfig{}
+	}
+	if err := validateBilling(cfg.Billing, cfg.SecureCookies); err != nil {
+		return err
 	}
 	if cfg.Timeout > 0 && cfg.ReadTimeout == Duration(5*time.Minute) {
 		cfg.ReadTimeout = Duration(time.Duration(cfg.Timeout) * time.Second)
@@ -515,6 +536,30 @@ func (cfg *ServiceConfig) Validate() error {
 			return errors.New("max_file_size cannot exceed 128 MiB when encryption is enabled")
 		}
 	}
+	return nil
+}
+
+func validateBilling(settings *BillingConfig, secureCookies bool) error {
+	if settings == nil || !settings.Enabled {
+		return nil
+	}
+	validStripeKey := strings.HasPrefix(settings.SecretKey, "sk_") || strings.HasPrefix(settings.SecretKey, "rk_")
+	if !validStripeKey || !strings.HasPrefix(settings.WebhookSecret, "whsec_") {
+		return errors.New("billing requires Stripe secret_key and webhook_secret")
+	}
+	publicURL, err := url.Parse(settings.PublicURL)
+	if err != nil || publicURL.Host == "" || publicURL.User != nil || publicURL.RawQuery != "" || publicURL.Fragment != "" || (publicURL.Path != "" && publicURL.Path != "/") {
+		return errors.New("billing public_url must be an absolute origin without credentials, path, query, or fragment")
+	}
+	hostname := strings.ToLower(publicURL.Hostname())
+	localHTTP := publicURL.Scheme == "http" && (hostname == "localhost" || hostname == "127.0.0.1" || hostname == "::1")
+	if publicURL.Scheme != "https" && !localHTTP {
+		return errors.New("billing public_url must use HTTPS except on localhost")
+	}
+	if publicURL.Scheme == "https" && !secureCookies {
+		return errors.New("secure_cookies must be true when billing uses an HTTPS public_url")
+	}
+	settings.PublicURL = strings.TrimSuffix(settings.PublicURL, "/")
 	return nil
 }
 
