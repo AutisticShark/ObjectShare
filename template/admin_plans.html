@@ -11,6 +11,8 @@
 <div class="col-12"><label class="form-label">Description</label><input class="form-control" name="description" maxlength="500"></div>
 <div class="col-md-4"><label class="form-label">Storage quota (GiB)</label><input class="form-control" name="storage_quota_gib" type="number" min="0.01" max="10240" step="0.01" required></div>
 <div class="col-md-4"><label class="form-label">Retention days</label><input class="form-control" name="retention_days" type="number" min="0" max="36500" value="0" required><div class="form-hint">0 means no age-based deletion while active.</div></div>
+<div class="col-md-4"><label class="form-label">Credit price</label><input class="form-control" name="credit_price" type="number" min="0" max="1000000000" value="0" required><div class="form-hint">0 disables prepaid purchase.</div></div>
+<div class="col-md-4"><label class="form-label">Credit access duration (days)</label><input class="form-control" name="credit_duration_days" type="number" min="0" max="36500" value="0" required><div class="form-hint">Set both credit fields to 0, or both to a positive value.</div></div>
 <div class="col-md-4"><label class="form-label">Sort order</label><input class="form-control" name="sort_order" type="number" min="-10000" max="10000" value="0" required></div>
 <div class="col-md-4"><label class="form-check"><input class="form-check-input" name="direct_links" type="checkbox"><span class="form-check-label">Direct download links</span></label></div>
 <div class="col-md-4"><label class="form-check"><input class="form-check-input" name="active" type="checkbox" checked><span class="form-check-label">Available for purchase</span></label></div>
@@ -24,6 +26,8 @@
 <div class="col-12"><label class="form-label">Description</label><input class="form-control" name="description" maxlength="500" value="{{.Description}}"></div>
 <div class="col-md-4"><label class="form-label">Storage quota (GiB)</label><input class="form-control" name="storage_quota_gib" type="number" min="0.01" max="10240" step="0.01" value="{{.StorageQuotaGiB}}" required></div>
 <div class="col-md-4"><label class="form-label">Retention days</label><input class="form-control" name="retention_days" type="number" min="0" max="36500" value="{{.RetentionDays}}" required></div>
+<div class="col-md-4"><label class="form-label">Credit price</label><input class="form-control" name="credit_price" type="number" min="0" max="1000000000" value="{{.CreditPrice}}" required></div>
+<div class="col-md-4"><label class="form-label">Credit access duration (days)</label><input class="form-control" name="credit_duration_days" type="number" min="0" max="36500" value="{{.CreditDurationDays}}" required></div>
 <div class="col-md-4"><label class="form-label">Sort order</label><input class="form-control" name="sort_order" type="number" min="-10000" max="10000" value="{{.SortOrder}}" required></div>
 <div class="col-md-4"><label class="form-check"><input class="form-check-input" name="direct_links" type="checkbox"{{if .DirectLinks}} checked{{end}}><span class="form-check-label">Direct download links</span></label></div>
 <div class="col-md-4"><label class="form-check"><input class="form-check-input" name="active" type="checkbox"{{if .Active}} checked{{end}}><span class="form-check-label">Available for purchase</span></label></div>

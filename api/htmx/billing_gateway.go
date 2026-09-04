@@ -12,6 +12,7 @@ import (
 
 type billingGateway interface {
 	Checkout(context.Context, billingCheckoutInput) (string, error)
+	TopUp(context.Context, billingTopUpInput) (billingTopUpResult, error)
 	Portal(context.Context, *db.Subscription, string) (string, error)
 }
 
@@ -22,6 +23,15 @@ type billingCheckoutInput struct {
 	CustomerID    string
 	SuccessURL    string
 	CancelURL     string
+}
+
+type billingTopUpInput struct {
+	TopUpID, UserID, Email, Currency, SuccessURL, CancelURL string
+	Credits, AmountMinor                                    int64
+}
+
+type billingTopUpResult struct {
+	Location, GatewayReference string
 }
 
 type billingGatewayModule interface {

@@ -17,6 +17,7 @@ ObjectShare is a small self-hosted file sharing service written in Go. Files are
 - Owner-only rename and permanent deletion
 - Guest uploads, database-backed per-user storage quotas, and automatic guest/unpaid file retention
 - Stripe Checkout or PayPal Subscriptions plans for upgraded storage, longer active-plan retention, and direct download links
+- Prepaid account-credit top-ups and credit-funded fixed-duration plans
 - Password, Google, GitHub, and Discord login with separate user and administrator management interfaces
 - Optional server-verified Turnstile protection and shared PostgreSQL request rate limits
 - Encrypted PostgreSQL-backed configuration with a dedicated administrator dashboard
@@ -36,6 +37,7 @@ File detail URLs remain unlisted rather than private. Guest and standard-account
 - [x] CAPTCHA and API rate limiting
 - [x] File download
 - [x] Paid storage, retention, and direct-link plans
+- [x] Account credit, top-ups, and prepaid plan purchases
 - [ ] Better upload UI
 - [ ] File sharing & permission
 - [x] File deletion
@@ -129,6 +131,9 @@ Billing is optional and every gateway is disabled by default. Enable Stripe, Pay
 ```json
 "billing": {
   "public_url": "https://share.example.com",
+  "credit_currency": "USD",
+  "min_top_up_credits": 5,
+  "max_top_up_credits": 1000,
   "stripe": {
     "enabled": true,
     "secret_key": "sk_live_...",
@@ -149,6 +154,9 @@ Earlier Stripe-only documents with `enabled`, `secret_key`, and `webhook_secret`
 ```dotenv
 OBJECTSHARE_STRIPE_ENABLED=true
 OBJECTSHARE_BILLING_PUBLIC_URL=https://share.example.com
+OBJECTSHARE_BILLING_CREDIT_CURRENCY=USD
+OBJECTSHARE_BILLING_MIN_TOP_UP_CREDITS=5
+OBJECTSHARE_BILLING_MAX_TOP_UP_CREDITS=1000
 OBJECTSHARE_STRIPE_SECRET_KEY=sk_live_...
 OBJECTSHARE_STRIPE_WEBHOOK_SECRET=whsec_...
 
@@ -159,11 +167,19 @@ OBJECTSHARE_PAYPAL_CLIENT_SECRET=
 OBJECTSHARE_PAYPAL_WEBHOOK_ID=
 ```
 
-Create recurring Prices in Stripe or [products and subscription plans in PayPal](https://developer.paypal.com/platforms/subscriptions/integrate/), then add one ObjectShare record per gateway plan at `/admin/plans`. Select the gateway and store its trusted external identifier: a Stripe Price ID (`price_...`) or a PayPal plan ID (`P-...`). Each record also defines its display name/price, storage quota, retention days, direct-link entitlement, availability, and sort order. The displayed price is presentation only; checkout always receives the trusted gateway plan ID from PostgreSQL. A gateway plan ID can be mapped only once per gateway. Configure the Stripe Customer Portal for Stripe cancellation and payment-method management; PayPal accounts are sent to PayPal's automatic-payment management page.
+Create recurring Prices in Stripe or [products and subscription plans in PayPal](https://developer.paypal.com/platforms/subscriptions/integrate/), then add one ObjectShare record per gateway plan at `/admin/plans`. Select the gateway and store its trusted external identifier: a Stripe Price ID (`price_...`) or a PayPal plan ID (`P-...`). Each record also defines its display name/price, storage quota, retention days, direct-link entitlement, availability, and sort order. The displayed price is presentation only; subscription checkout always receives the trusted gateway plan ID from PostgreSQL. A gateway plan ID can be mapped only once per gateway. Configure the Stripe Customer Portal for Stripe cancellation and payment-method management; PayPal accounts are sent to PayPal's automatic-payment management page.
 
-Register `https://your-origin.example/api/v1/billing/stripe/webhook` in Stripe for `customer.subscription.created`, `customer.subscription.updated`, and `customer.subscription.deleted`. ObjectShare verifies the `Stripe-Signature` against the raw body with a five-minute tolerance, records event IDs for idempotency, ignores older subscription updates, and maps the subscription's Price ID back to a server-side plan. Checkout success pages never grant access. Only a verified `active` or `trialing` subscription whose current period has not ended supplies entitlements. Restart every replica after enabling billing or rotating its secrets.
+Account credit is a PostgreSQL-backed prepaid wallet. One credit equals one whole unit of `credit_currency`; ObjectShare intentionally supports the common two-decimal currencies `AUD`, `BRL`, `CAD`, `CHF`, `CNY`, `CZK`, `DKK`, `EUR`, `GBP`, `HKD`, `ILS`, `MXN`, `MYR`, `NOK`, `NZD`, `PHP`, `PLN`, `SEK`, `SGD`, `THB`, and `USD`. Configure the permitted whole-credit top-up range in `/admin/settings`. Changing the currency affects future top-ups only: existing credits and plan prices are not converted. A user chooses an amount and gateway from `/account`; the server records the expected account, currency, and amount before redirecting to Stripe Checkout or PayPal Checkout. The balance changes only when a signed Stripe payment event or an authenticated PayPal capture response matches all of those stored values. Gateway payment identifiers and persistent, account-scoped purchase/adjustment request IDs prevent replays from changing the balance twice across replicas. The account ledger is append-only during the account lifetime and is removed if an administrator deletes that account. Administrators can make a signed positive or negative correction from `/admin/users`, and every correction requires a reason.
 
-For PayPal, [create REST API credentials](https://developer.paypal.com/api/rest/authentication/), first test with `environment` set to `sandbox`, then switch the credentials and environment to `live` for production. Register `https://your-origin.example/api/v1/billing/paypal/webhook` for the documented [subscription webhook events](https://developer.paypal.com/docs/subscriptions/reference/webhooks/): `BILLING.SUBSCRIPTION.ACTIVATED`, `BILLING.SUBSCRIPTION.UPDATED`, `BILLING.SUBSCRIPTION.SUSPENDED`, `BILLING.SUBSCRIPTION.CANCELLED`, `BILLING.SUBSCRIPTION.EXPIRED`, and `BILLING.SUBSCRIPTION.PAYMENT.FAILED`. Copy the registered webhook ID into ObjectShare. ObjectShare exchanges the client credentials for a short-lived OAuth access token, asks [PayPal's verification endpoint](https://developer.paypal.com/api/webhooks/v1/verify-webhook-signature-post/) to authenticate every webhook, maps the event's PayPal plan ID to the PostgreSQL plan, and grants benefits only for an `ACTIVE` subscription with a future next-billing time. `BILLING.SUBSCRIPTION.CREATED` is deliberately not persisted because an approval-pending checkout must not create access or permanently block a retry. The local return page remains informational; only a verified webhook updates entitlements.
+To let users spend credit, set both **Credit price** and **Credit access duration** on a plan. Zero in both fields disables prepaid purchase for that plan. A credit purchase atomically debits the wallet and creates or renews a fixed-duration plan; it cannot overlap a different active subscription or prepaid plan. Credit never silently pays or renews a Stripe/PayPal subscription. When a prepaid period expires, the account returns to its standard entitlements and can buy again or start a gateway subscription.
+
+Register `https://your-origin.example/api/v1/billing/stripe/webhook` in Stripe for `customer.subscription.created`, `customer.subscription.updated`, `customer.subscription.deleted`, `checkout.session.completed`, and `checkout.session.async_payment_succeeded`. ObjectShare verifies the `Stripe-Signature` against the raw body with a five-minute tolerance, records subscription event IDs for idempotency, ignores older subscription updates, and maps the subscription's Price ID back to a server-side plan. One-time Checkout events mint credit only when `mode=payment`, `payment_status=paid`, and their metadata, currency, and total match a pending server-side top-up. Browser success pages never grant plan access or credit. Only a verified `active` or `trialing` subscription whose current period has not ended supplies recurring entitlements. Restart every replica after enabling billing or rotating its secrets.
+
+For PayPal, [create REST API credentials](https://developer.paypal.com/api/rest/authentication/), first test with `environment` set to `sandbox`, then switch the credentials and environment to `live` for production. Register `https://your-origin.example/api/v1/billing/paypal/webhook` for the documented [subscription webhook events](https://developer.paypal.com/docs/subscriptions/reference/webhooks/): `BILLING.SUBSCRIPTION.ACTIVATED`, `BILLING.SUBSCRIPTION.UPDATED`, `BILLING.SUBSCRIPTION.SUSPENDED`, `BILLING.SUBSCRIPTION.CANCELLED`, `BILLING.SUBSCRIPTION.EXPIRED`, `BILLING.SUBSCRIPTION.PAYMENT.FAILED`, and the one-time-payment event `PAYMENT.CAPTURE.COMPLETED`. Copy the registered webhook ID into ObjectShare. ObjectShare exchanges the client credentials for a short-lived OAuth access token, asks [PayPal's verification endpoint](https://developer.paypal.com/api/webhooks/v1/verify-webhook-signature-post/) to authenticate every webhook, maps subscription events to PostgreSQL plans, and grants benefits only for an `ACTIVE` subscription with a future next-billing time. `BILLING.SUBSCRIPTION.CREATED` is deliberately not persisted because an approval-pending checkout must not create access or permanently block a retry. For top-ups, PayPal returns an order token to a narrowly scoped endpoint; ObjectShare first matches that token to its pending row, captures the approved order over PayPal's authenticated API, and verifies the capture ID, custom ID, amount, and currency before minting credit. A later signed webhook is idempotent.
+
+ObjectShare does not automatically process provider-side refunds, disputes, or chargebacks. Resolve them at the provider and record the corresponding negative administrator adjustment so the local ledger remains auditable; balances may be negative, and a negative or insufficient balance cannot buy a prepaid plan.
+
+Finish or abandon outstanding gateway subscription checkouts before purchasing prepaid access. If an old provider checkout settles after prepaid access was purchased, ObjectShare rejects the conflicting subscription update instead of overwriting the prepaid period. Reconcile that overlapping subscription at the provider; it is not automatically canceled or refunded.
 
 An active plan raises a finite account quota to at least the plan quota. It applies its own retention window while active; `0` plan-retention days means no age-based deletion during the active subscription. When access ends, the account immediately returns to its standard quota and unpaid retention window, so old files can become eligible during the next sweep. Existing objects are not synchronously deleted merely because the plan ends. Direct-link plans enable `GET /api/v1/download/{id}` only while active; otherwise that URL redirects to the file details page, whose short-lived signed POST authorization prevents method-switch bypasses. If administrator-enforced download CAPTCHA is enabled, it continues to require the details-page flow even for a direct-link plan.
 
@@ -392,6 +408,8 @@ go run golang.org/x/vuln/cmd/govulncheck@v1.7.0 ./...
 ```
 
 CI also verifies formatting and builds the container. Dependency and action updates are proposed weekly by Dependabot.
+
+Credit transaction integration tests require PostgreSQL and are skipped unless `OBJECTSHARE_TEST_POSTGRES_DSN` is set. Point it at a **disposable test database**, never the production database, using a role that can create schemas. Run `go test -count=1 -run TestPostgresCredit -v ./db` (with `-mod=mod` if your ignored vendor directory is stale). These tests create a unique `credit_test_*` schema, exercise migrations, concurrent payment replay, concurrent spending, form resubmission, and transaction rollback, then remove only that schema. The ordinary test suite also covers gateway requests, payment validation, authorization, CSRF, configuration, and actual HTML template rendering without contacting payment providers.
 
 ## License
 

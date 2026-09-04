@@ -15,6 +15,9 @@
   },
   "billing": {
     "public_url": "http://localhost:8080",
+    "credit_currency": "USD",
+    "min_top_up_credits": 5,
+    "max_top_up_credits": 1000,
     "stripe": {
       "enabled": false,
       "secret_key": "",

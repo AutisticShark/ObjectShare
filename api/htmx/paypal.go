@@ -7,8 +7,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -50,6 +52,7 @@ type paypalBillingGateway interface {
 	billingGateway
 	VerifyWebhook(context.Context, http.Header, json.RawMessage) (bool, error)
 	SubscriptionDetails(context.Context, string) (paypalSubscription, error)
+	CaptureTopUp(context.Context, string) (paypalCapture, error)
 }
 
 type paypalClient struct {
@@ -63,17 +66,30 @@ type paypalClient struct {
 }
 
 type paypalSubscription struct {
-	ID               string `json:"id"`
-	PlanID           string `json:"plan_id"`
-	CustomID         string `json:"custom_id"`
-	Status           string `json:"status"`
-	StatusUpdateTime string `json:"status_update_time"`
+	ID               string       `json:"id"`
+	PlanID           string       `json:"plan_id"`
+	CustomID         string       `json:"custom_id"`
+	Status           string       `json:"status"`
+	StatusUpdateTime string       `json:"status_update_time"`
+	Amount           paypalAmount `json:"amount"`
 	Subscriber       struct {
 		PayerID string `json:"payer_id"`
 	} `json:"subscriber"`
 	BillingInfo struct {
 		NextBillingTime string `json:"next_billing_time"`
 	} `json:"billing_info"`
+}
+
+type paypalAmount struct {
+	Currency string `json:"currency_code"`
+	Value    string `json:"value"`
+}
+
+type paypalCapture struct {
+	ID       string       `json:"id"`
+	CustomID string       `json:"custom_id"`
+	Status   string       `json:"status"`
+	Amount   paypalAmount `json:"amount"`
 }
 
 func newPayPalClient(settings config.PayPalBillingConfig) billingGateway {
@@ -122,6 +138,88 @@ func (client *paypalClient) Checkout(ctx context.Context, input billingCheckoutI
 		}
 	}
 	return "", errors.New("PayPal returned no safe approval URL")
+}
+
+func (client *paypalClient) TopUp(ctx context.Context, input billingTopUpInput) (billingTopUpResult, error) {
+	body := struct {
+		Intent        string `json:"intent"`
+		PurchaseUnits []struct {
+			ReferenceID string       `json:"reference_id"`
+			CustomID    string       `json:"custom_id"`
+			Description string       `json:"description"`
+			Amount      paypalAmount `json:"amount"`
+		} `json:"purchase_units"`
+		PaymentSource struct {
+			PayPal struct {
+				ExperienceContext struct {
+					ShippingPreference string `json:"shipping_preference"`
+					UserAction         string `json:"user_action"`
+					ReturnURL          string `json:"return_url"`
+					CancelURL          string `json:"cancel_url"`
+				} `json:"experience_context"`
+			} `json:"paypal"`
+		} `json:"payment_source"`
+	}{Intent: "CAPTURE", PurchaseUnits: make([]struct {
+		ReferenceID string       `json:"reference_id"`
+		CustomID    string       `json:"custom_id"`
+		Description string       `json:"description"`
+		Amount      paypalAmount `json:"amount"`
+	}, 1)}
+	body.PurchaseUnits[0].ReferenceID = input.TopUpID
+	body.PurchaseUnits[0].CustomID = input.TopUpID
+	body.PurchaseUnits[0].Description = fmt.Sprintf("%d ObjectShare account credits", input.Credits)
+	body.PurchaseUnits[0].Amount = paypalAmount{Currency: input.Currency, Value: formatMinorAmount(input.AmountMinor)}
+	body.PaymentSource.PayPal.ExperienceContext.ShippingPreference = "NO_SHIPPING"
+	body.PaymentSource.PayPal.ExperienceContext.UserAction = "PAY_NOW"
+	body.PaymentSource.PayPal.ExperienceContext.ReturnURL = input.SuccessURL
+	body.PaymentSource.PayPal.ExperienceContext.CancelURL = input.CancelURL
+	var response struct {
+		ID    string `json:"id"`
+		Links []struct {
+			Href string `json:"href"`
+			Rel  string `json:"rel"`
+		} `json:"links"`
+	}
+	if err := client.requestJSON(ctx, http.MethodPost, "/v2/checkout/orders", body, &response, map[string]string{"PayPal-Request-Id": input.TopUpID}); err != nil {
+		return billingTopUpResult{}, err
+	}
+	if response.ID == "" {
+		return billingTopUpResult{}, errors.New("PayPal returned an invalid order")
+	}
+	for _, link := range response.Links {
+		if (link.Rel == "payer-action" || link.Rel == "approve") && client.safeBrowserURL(link.Href) {
+			return billingTopUpResult{Location: link.Href, GatewayReference: response.ID}, nil
+		}
+	}
+	return billingTopUpResult{}, errors.New("PayPal returned no safe approval URL")
+}
+
+func (client *paypalClient) CaptureTopUp(ctx context.Context, orderID string) (paypalCapture, error) {
+	var order struct {
+		ID            string `json:"id"`
+		Status        string `json:"status"`
+		PurchaseUnits []struct {
+			Payments struct {
+				Captures []paypalCapture `json:"captures"`
+			} `json:"payments"`
+		} `json:"purchase_units"`
+	}
+	endpoint := "/v2/checkout/orders/" + url.PathEscape(orderID)
+	if err := client.requestJSON(ctx, http.MethodPost, endpoint+"/capture", struct{}{}, &order, map[string]string{"PayPal-Request-Id": "capture-" + orderID, "Prefer": "return=representation"}); err != nil {
+		// A previous capture may have succeeded before the response was lost.
+		// Only an authenticated, completed order is accepted by the checks below.
+		if readErr := client.requestJSON(ctx, http.MethodGet, endpoint, nil, &order, nil); readErr != nil {
+			return paypalCapture{}, err
+		}
+	}
+	if order.ID != orderID || order.Status != "COMPLETED" || len(order.PurchaseUnits) != 1 || len(order.PurchaseUnits[0].Payments.Captures) != 1 {
+		return paypalCapture{}, errors.New("PayPal returned an incomplete capture")
+	}
+	capture := order.PurchaseUnits[0].Payments.Captures[0]
+	if capture.ID == "" || capture.Status != "COMPLETED" {
+		return paypalCapture{}, errors.New("PayPal payment was not completed")
+	}
+	return capture, nil
 }
 
 func (client *paypalClient) Portal(_ context.Context, _ *db.Subscription, _ string) (string, error) {
@@ -317,6 +415,29 @@ func (handler *Handler) PayPalWebhook(writer http.ResponseWriter, request *http.
 		writer.WriteHeader(http.StatusNoContent)
 		return
 	}
+	if event.EventType == "PAYMENT.CAPTURE.COMPLETED" {
+		amountMinor, amountErr := parseMinorAmount(event.Resource.Amount.Value)
+		if amountErr != nil || event.Resource.CustomID == "" || event.Resource.Status != "COMPLETED" {
+			http.Error(writer, "Invalid PayPal top-up capture.", http.StatusBadRequest)
+			return
+		}
+		if _, parseErr := uuid.Parse(event.Resource.CustomID); parseErr != nil {
+			http.Error(writer, "Invalid PayPal top-up metadata.", http.StatusUnprocessableEntity)
+			return
+		}
+		_, applyErr := handler.billing.ApplyCreditTopUp(request.Context(), db.CreditPayment{TopUpID: event.Resource.CustomID,
+			Gateway: db.BillingGatewayPayPal, GatewayPaymentID: event.Resource.ID, Currency: event.Resource.Amount.Currency, AmountMinor: amountMinor}, time.Now().UTC())
+		if errors.Is(applyErr, db.ErrNotFound) || errors.Is(applyErr, db.ErrInvalidCredit) || errors.Is(applyErr, db.ErrConflict) {
+			http.Error(writer, "PayPal top-up did not match a pending account payment.", http.StatusUnprocessableEntity)
+			return
+		}
+		if applyErr != nil {
+			handler.internalError(writer, request, "apply PayPal credit top-up", applyErr)
+			return
+		}
+		writer.WriteHeader(http.StatusNoContent)
+		return
+	}
 	if !paypalSubscriptionEvent(event.EventType) {
 		writer.WriteHeader(http.StatusNoContent)
 		return
@@ -403,4 +524,29 @@ func normalizePayPalStatus(status string) string {
 	default:
 		return strings.ToLower(status)
 	}
+}
+
+func formatMinorAmount(amount int64) string {
+	return fmt.Sprintf("%d.%02d", amount/100, amount%100)
+}
+
+func parseMinorAmount(value string) (int64, error) {
+	whole, fraction, ok := strings.Cut(value, ".")
+	if !ok || len(fraction) != 2 || whole == "" {
+		return 0, errors.New("amount must have two decimal places")
+	}
+	for _, digit := range whole + fraction {
+		if digit < '0' || digit > '9' {
+			return 0, errors.New("invalid amount")
+		}
+	}
+	units, err := strconv.ParseInt(whole, 10, 64)
+	if err != nil || units < 0 {
+		return 0, errors.New("invalid amount")
+	}
+	cents, err := strconv.ParseInt(fraction, 10, 64)
+	if err != nil || cents < 0 || cents > 99 || units > (math.MaxInt64-cents)/100 {
+		return 0, errors.New("invalid amount")
+	}
+	return units*100 + cents, nil
 }

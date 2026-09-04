@@ -42,6 +42,7 @@ type User struct {
 	DarkMode         bool       `gorm:"column:dark_mode;not null;default:false"`
 	IsPaid           bool       `gorm:"column:is_paid;not null;default:false;index"`
 	UploadQuotaBytes int64      `gorm:"column:upload_quota_bytes;not null;default:0;check:chk_users_upload_quota_bytes_nonnegative,upload_quota_bytes >= 0"`
+	CreditBalance    int64      `gorm:"column:credit_balance;not null;default:0"`
 	LastLoginAt      *time.Time `gorm:"column:last_login_at"`
 	CreatedAt        time.Time  `gorm:"column:created_at;not null"`
 	UpdatedAt        time.Time  `gorm:"column:updated_at;not null"`
@@ -108,24 +109,27 @@ func (ApplicationSetting) TableName() string { return "application_settings" }
 const (
 	BillingGatewayStripe = "stripe"
 	BillingGatewayPayPal = "paypal"
+	BillingGatewayCredit = "credit"
 )
 
 // PaidPlan maps a gateway-owned recurring plan to the entitlements ObjectShare
 // grants while the matching subscription is active.
 type PaidPlan struct {
-	ID                string    `gorm:"column:id;type:uuid;primaryKey"`
-	Name              string    `gorm:"column:name;type:varchar(80);not null"`
-	Description       string    `gorm:"column:description;type:varchar(500);not null"`
-	Gateway           string    `gorm:"column:gateway;type:varchar(32);not null;default:stripe;uniqueIndex:idx_paid_plans_gateway_plan"`
-	GatewayPlanID     string    `gorm:"column:gateway_plan_id;type:varchar(255);not null;uniqueIndex:idx_paid_plans_gateway_plan"`
-	PriceLabel        string    `gorm:"column:price_label;type:varchar(80);not null"`
-	StorageQuotaBytes int64     `gorm:"column:storage_quota_bytes;not null;check:chk_paid_plans_quota_positive,storage_quota_bytes > 0"`
-	RetentionDays     int       `gorm:"column:retention_days;not null;check:chk_paid_plans_retention_nonnegative,retention_days >= 0"`
-	DirectLinks       bool      `gorm:"column:direct_links;not null;default:false"`
-	Active            bool      `gorm:"column:active;not null;default:true;index"`
-	SortOrder         int       `gorm:"column:sort_order;not null;default:0;index"`
-	CreatedAt         time.Time `gorm:"column:created_at;not null"`
-	UpdatedAt         time.Time `gorm:"column:updated_at;not null"`
+	ID                 string    `gorm:"column:id;type:uuid;primaryKey"`
+	Name               string    `gorm:"column:name;type:varchar(80);not null"`
+	Description        string    `gorm:"column:description;type:varchar(500);not null"`
+	Gateway            string    `gorm:"column:gateway;type:varchar(32);not null;default:stripe;uniqueIndex:idx_paid_plans_gateway_plan"`
+	GatewayPlanID      string    `gorm:"column:gateway_plan_id;type:varchar(255);not null;uniqueIndex:idx_paid_plans_gateway_plan"`
+	PriceLabel         string    `gorm:"column:price_label;type:varchar(80);not null"`
+	StorageQuotaBytes  int64     `gorm:"column:storage_quota_bytes;not null;check:chk_paid_plans_quota_positive,storage_quota_bytes > 0"`
+	RetentionDays      int       `gorm:"column:retention_days;not null;check:chk_paid_plans_retention_nonnegative,retention_days >= 0"`
+	DirectLinks        bool      `gorm:"column:direct_links;not null;default:false"`
+	CreditPrice        int64     `gorm:"column:credit_price;not null;default:0;check:chk_paid_plans_credit_price_nonnegative,credit_price >= 0"`
+	CreditDurationDays int       `gorm:"column:credit_duration_days;not null;default:0;check:chk_paid_plans_credit_duration_nonnegative,credit_duration_days >= 0"`
+	Active             bool      `gorm:"column:active;not null;default:true;index"`
+	SortOrder          int       `gorm:"column:sort_order;not null;default:0;index"`
+	CreatedAt          time.Time `gorm:"column:created_at;not null"`
+	UpdatedAt          time.Time `gorm:"column:updated_at;not null"`
 }
 
 func (PaidPlan) TableName() string { return "paid_plans" }
@@ -171,3 +175,55 @@ type BillingCheckout struct {
 }
 
 func (BillingCheckout) TableName() string { return "billing_checkouts" }
+
+const (
+	CreditTopUpPending   = "pending"
+	CreditTopUpCompleted = "completed"
+	CreditTopUpCanceled  = "canceled"
+
+	CreditTransactionTopUp      = "topup"
+	CreditTransactionPlan       = "plan"
+	CreditTransactionAdjustment = "adjustment"
+)
+
+// CreditTopUp records the server-selected value before a user is redirected to
+// a gateway. A verified gateway result must match this row before credit is
+// minted; browser return parameters never determine the value.
+type CreditTopUp struct {
+	ID                   string     `gorm:"column:id;type:uuid;primaryKey"`
+	UserID               string     `gorm:"column:user_id;type:uuid;not null;index"`
+	Gateway              string     `gorm:"column:gateway;type:varchar(32);not null;index;uniqueIndex:idx_credit_topups_gateway_reference"`
+	Credits              int64      `gorm:"column:credits;not null;check:chk_credit_topups_credits_positive,credits > 0"`
+	AmountMinor          int64      `gorm:"column:amount_minor;not null;check:chk_credit_topups_amount_positive,amount_minor > 0"`
+	Currency             string     `gorm:"column:currency;type:char(3);not null"`
+	Status               string     `gorm:"column:status;type:varchar(16);not null;default:pending;index"`
+	GatewayReference     *string    `gorm:"column:gateway_reference;type:varchar(255);uniqueIndex:idx_credit_topups_gateway_reference"`
+	GatewayTransactionID string     `gorm:"column:gateway_transaction_id;type:varchar(255);not null;default:''"`
+	ExpiresAt            time.Time  `gorm:"column:expires_at;not null;index"`
+	CompletedAt          *time.Time `gorm:"column:completed_at"`
+	CreatedAt            time.Time  `gorm:"column:created_at;not null"`
+	UpdatedAt            time.Time  `gorm:"column:updated_at;not null"`
+	User                 User       `gorm:"foreignKey:UserID;references:ID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE"`
+}
+
+func (CreditTopUp) TableName() string { return "credit_topups" }
+
+// CreditTransaction is an append-only account statement (removed with the
+// account). DeduplicationKey identifies gateway receipts or account-scoped form
+// submissions, making their retries safe across application replicas.
+type CreditTransaction struct {
+	ID               string    `gorm:"column:id;type:uuid;primaryKey"`
+	UserID           string    `gorm:"column:user_id;type:uuid;not null;index"`
+	Delta            int64     `gorm:"column:delta;not null"`
+	BalanceAfter     int64     `gorm:"column:balance_after;not null"`
+	Kind             string    `gorm:"column:kind;type:varchar(24);not null;index"`
+	Gateway          string    `gorm:"column:gateway;type:varchar(32);not null;default:''"`
+	GatewayPaymentID string    `gorm:"column:gateway_payment_id;type:varchar(255);not null;default:''"`
+	ReferenceID      string    `gorm:"column:reference_id;type:varchar(255);not null;default:'';index"`
+	DeduplicationKey string    `gorm:"column:deduplication_key;type:varchar(320);not null;uniqueIndex"`
+	Description      string    `gorm:"column:description;type:varchar(240);not null"`
+	CreatedAt        time.Time `gorm:"column:created_at;not null;index"`
+	User             User      `gorm:"foreignKey:UserID;references:ID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE"`
+}
+
+func (CreditTransaction) TableName() string { return "credit_transactions" }

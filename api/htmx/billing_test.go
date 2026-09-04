@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	appauth "github.com/AutisticShark/ObjectShare/auth"
 	"github.com/AutisticShark/ObjectShare/config"
 	"github.com/AutisticShark/ObjectShare/db"
 	"github.com/go-chi/chi/v5"
@@ -19,9 +20,19 @@ import (
 
 type entitlementRepository struct {
 	*memoryRepository
-	entitlements db.Entitlements
-	plan         *db.PaidPlan
-	applied      *db.SubscriptionUpdate
+	entitlements  db.Entitlements
+	plan          *db.PaidPlan
+	applied       *db.SubscriptionUpdate
+	topUp         *db.CreditTopUp
+	creditPayment *db.CreditPayment
+	transactions  []db.CreditTransaction
+	purchaseErr   error
+	adjustment    *creditAdjustment
+}
+
+type creditAdjustment struct {
+	UserID, Description, AdministratorID string
+	Delta                                int64
 }
 
 func (repo *entitlementRepository) PublicPlans(context.Context) ([]db.PaidPlan, error) {
@@ -58,12 +69,55 @@ func (repo *entitlementRepository) ApplySubscription(_ context.Context, update d
 	repo.applied = &update
 	return true, nil
 }
+func (repo *entitlementRepository) CreateCreditTopUp(_ context.Context, topUp *db.CreditTopUp) error {
+	copy := *topUp
+	repo.topUp = &copy
+	return nil
+}
+func (repo *entitlementRepository) BindCreditTopUp(_ context.Context, id, gateway, reference string) error {
+	if repo.topUp == nil || repo.topUp.ID != id || repo.topUp.Gateway != gateway {
+		return db.ErrNotFound
+	}
+	repo.topUp.GatewayReference = &reference
+	return nil
+}
+func (repo *entitlementRepository) CancelCreditTopUp(context.Context, string, string) error {
+	return nil
+}
+func (repo *entitlementRepository) CreditTopUpByID(_ context.Context, id string) (*db.CreditTopUp, error) {
+	if repo.topUp == nil || repo.topUp.ID != id {
+		return nil, db.ErrNotFound
+	}
+	copy := *repo.topUp
+	return &copy, nil
+}
+func (repo *entitlementRepository) ApplyCreditTopUp(_ context.Context, payment db.CreditPayment, _ time.Time) (bool, error) {
+	repo.creditPayment = &payment
+	return true, nil
+}
+func (repo *entitlementRepository) CreditTransactions(context.Context, string, int) ([]db.CreditTransaction, error) {
+	return repo.transactions, nil
+}
+func (repo *entitlementRepository) PurchasePlanWithCredit(context.Context, string, string, string, time.Time) (*db.Subscription, error) {
+	return &db.Subscription{}, repo.purchaseErr
+}
+func (repo *entitlementRepository) AdjustCredit(_ context.Context, userID string, delta int64, description, administratorID, _ string, _ time.Time) (int64, error) {
+	repo.adjustment = &creditAdjustment{UserID: userID, Delta: delta, Description: description, AdministratorID: administratorID}
+	return delta, nil
+}
 
-type checkoutGatewayStub struct{ input *billingCheckoutInput }
+type checkoutGatewayStub struct {
+	input      *billingCheckoutInput
+	topUpInput *billingTopUpInput
+}
 
 func (stub *checkoutGatewayStub) Checkout(_ context.Context, input billingCheckoutInput) (string, error) {
 	stub.input = &input
 	return "https://www.sandbox.paypal.com/approve", nil
+}
+func (stub *checkoutGatewayStub) TopUp(_ context.Context, input billingTopUpInput) (billingTopUpResult, error) {
+	stub.topUpInput = &input
+	return billingTopUpResult{Location: "https://www.sandbox.paypal.com/approve"}, nil
 }
 func (*checkoutGatewayStub) Portal(context.Context, *db.Subscription, string) (string, error) {
 	return "https://www.sandbox.paypal.com/myaccount/autopay/connect/", nil
@@ -133,6 +187,105 @@ func TestBillingCheckoutDispatchesTrustedPlanToConfiguredGateway(t *testing.T) {
 	}
 }
 
+func TestBillingTopUpUsesAuthenticatedAccountAndConfiguredValue(t *testing.T) {
+	user := &db.User{ID: "11111111-1111-4111-8111-111111111111", Email: "user@example.com"}
+	repository := &entitlementRepository{memoryRepository: &memoryRepository{files: make(map[string]*db.FileList)}}
+	handler := newTestHandler(t, repository, &memoryStorage{objects: make(map[string][]byte)})
+	handler.config.Billing = &config.BillingConfig{PublicURL: "https://share.example.com", CreditCurrency: "USD", MinTopUpCredits: 5, MaxTopUpCredits: 1000}
+	gateway := &checkoutGatewayStub{}
+	handler.billingGateways = map[string]billingGateway{db.BillingGatewayStripe: gateway}
+	router := chi.NewRouter()
+	router.Post("/{gateway}", handler.BillingTopUp)
+	request := httptest.NewRequest(http.MethodPost, "/stripe", strings.NewReader(url.Values{"credits": {"25"}}.Encode()))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	request = request.WithContext(context.WithValue(request.Context(), identityContextKey{}, &identity{User: user, Transport: transportBearer}))
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusSeeOther || repository.topUp == nil || gateway.topUpInput == nil {
+		t.Fatalf("status=%d topup=%#v input=%#v body=%q", response.Code, repository.topUp, gateway.topUpInput, response.Body.String())
+	}
+	if repository.topUp.UserID != user.ID || repository.topUp.Credits != 25 || repository.topUp.AmountMinor != 2500 || repository.topUp.Currency != "USD" {
+		t.Fatalf("reserved top-up=%#v", repository.topUp)
+	}
+	if gateway.topUpInput.TopUpID != repository.topUp.ID || gateway.topUpInput.UserID != user.ID || gateway.topUpInput.Email != user.Email || gateway.topUpInput.AmountMinor != 2500 {
+		t.Fatalf("gateway top-up input=%#v", gateway.topUpInput)
+	}
+
+	request = httptest.NewRequest(http.MethodPost, "/stripe", strings.NewReader(url.Values{"credits": {"4"}}.Encode()))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	request = request.WithContext(context.WithValue(request.Context(), identityContextKey{}, &identity{User: user, Transport: transportBearer}))
+	response = httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("below-minimum top-up status=%d body=%q", response.Code, response.Body.String())
+	}
+
+	repository.topUp, gateway.topUpInput = nil, nil
+	request = httptest.NewRequest(http.MethodPost, "/stripe", strings.NewReader(url.Values{"credits": {"25"}}.Encode()))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	request = request.WithContext(context.WithValue(request.Context(), identityContextKey{}, &identity{User: user, Transport: transportCookie, Claims: &appauth.Claims{CSRF: "expected"}}))
+	response = httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusForbidden || repository.topUp != nil || gateway.topUpInput != nil {
+		t.Fatalf("missing CSRF status=%d topup=%#v input=%#v", response.Code, repository.topUp, gateway.topUpInput)
+	}
+}
+
+func TestCreditPlanPurchaseReportsInsufficientBalance(t *testing.T) {
+	user := &db.User{ID: "11111111-1111-4111-8111-111111111111"}
+	repository := &entitlementRepository{memoryRepository: &memoryRepository{files: make(map[string]*db.FileList)}, purchaseErr: db.ErrInsufficientCredit}
+	handler := newTestHandler(t, repository, &memoryStorage{objects: make(map[string][]byte)})
+	router := chi.NewRouter()
+	router.Post("/{id}", handler.BillingPurchaseWithCredit)
+	request := httptest.NewRequest(http.MethodPost, "/22222222-2222-4222-8222-222222222222", strings.NewReader("credit_request_id=33333333-3333-4333-8333-333333333333"))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	request = request.WithContext(context.WithValue(request.Context(), identityContextKey{}, &identity{User: user, Transport: transportBearer}))
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusPaymentRequired {
+		t.Fatalf("status=%d body=%q", response.Code, response.Body.String())
+	}
+}
+
+func TestAdminCreditAdjustmentIsCSRFProtectedAndAudited(t *testing.T) {
+	admin := &db.User{ID: "11111111-1111-4111-8111-111111111111", Role: db.RoleAdmin}
+	targetID := "22222222-2222-4222-8222-222222222222"
+	repository := &entitlementRepository{memoryRepository: &memoryRepository{files: make(map[string]*db.FileList)}}
+	handler := newTestHandler(t, repository, &memoryStorage{objects: make(map[string][]byte)})
+	router := chi.NewRouter()
+	router.With(handler.RequireAdmin).Post("/{id}", handler.AdminAdjustCredit)
+	values := url.Values{"credit_delta": {"-7"}, "credit_description": {"Refund correction"}, "csrf_token": {"expected"}, "credit_request_id": {"33333333-3333-4333-8333-333333333333"}}
+	request := httptest.NewRequest(http.MethodPost, "/"+targetID, strings.NewReader(values.Encode()))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	request = request.WithContext(context.WithValue(request.Context(), identityContextKey{}, &identity{User: admin, Transport: transportCookie, Claims: &appauth.Claims{CSRF: "expected"}}))
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusSeeOther || repository.adjustment == nil || repository.adjustment.UserID != targetID || repository.adjustment.Delta != -7 || repository.adjustment.AdministratorID != admin.ID || repository.adjustment.Description != "Refund correction" {
+		t.Fatalf("status=%d adjustment=%#v body=%q", response.Code, repository.adjustment, response.Body.String())
+	}
+
+	repository.adjustment = nil
+	values.Del("csrf_token")
+	request = httptest.NewRequest(http.MethodPost, "/"+targetID, strings.NewReader(values.Encode()))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	request = request.WithContext(context.WithValue(request.Context(), identityContextKey{}, &identity{User: admin, Transport: transportCookie, Claims: &appauth.Claims{CSRF: "expected"}}))
+	response = httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusForbidden || repository.adjustment != nil {
+		t.Fatalf("missing CSRF status=%d adjustment=%#v", response.Code, repository.adjustment)
+	}
+
+	values.Set("csrf_token", "expected")
+	request = httptest.NewRequest(http.MethodPost, "/"+targetID, strings.NewReader(values.Encode()))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	request = request.WithContext(context.WithValue(request.Context(), identityContextKey{}, &identity{User: &db.User{ID: targetID, Role: db.RoleUser}, Transport: transportBearer}))
+	response = httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusForbidden || repository.adjustment != nil {
+		t.Fatalf("non-admin status=%d adjustment=%#v", response.Code, repository.adjustment)
+	}
+}
+
 func TestProxiedMultipleFileUploadStoresEveryFile(t *testing.T) {
 	repository := &memoryRepository{files: make(map[string]*db.FileList)}
 	storage := &memoryStorage{objects: make(map[string][]byte)}
@@ -189,7 +342,7 @@ func TestDirectBatchAuthorizesEveryFileWithOneRequest(t *testing.T) {
 }
 
 func TestPaidPlanFormRejectsUntrustedPriceIDs(t *testing.T) {
-	values := url.Values{"name": {"Plus"}, "gateway": {"stripe"}, "gateway_plan_id": {"product_not_a_price"}, "price_label": {"$5/month"}, "storage_quota_gib": {"10"}, "retention_days": {"30"}, "sort_order": {"0"}}
+	values := url.Values{"name": {"Plus"}, "gateway": {"stripe"}, "gateway_plan_id": {"product_not_a_price"}, "price_label": {"$5/month"}, "storage_quota_gib": {"10"}, "retention_days": {"30"}, "credit_price": {"0"}, "credit_duration_days": {"0"}, "sort_order": {"0"}}
 	request := httptest.NewRequest(http.MethodPost, "/admin/plans", strings.NewReader(values.Encode()))
 	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	_ = request.ParseForm()
@@ -203,5 +356,33 @@ func TestPaidPlanFormRejectsUntrustedPriceIDs(t *testing.T) {
 	_ = request.ParseForm()
 	if _, err := paidPlanFromForm(request); err == nil {
 		t.Fatal("invalid PayPal plan identifier was accepted")
+	}
+}
+
+func TestPaidPlanFormRequiresCompleteCreditOffer(t *testing.T) {
+	values := url.Values{"name": {"Plus"}, "gateway": {"stripe"}, "gateway_plan_id": {"price_plus"}, "price_label": {"$5/month"}, "storage_quota_gib": {"10"}, "retention_days": {"30"}, "credit_price": {"10"}, "credit_duration_days": {"0"}, "sort_order": {"0"}}
+	request := httptest.NewRequest(http.MethodPost, "/admin/plans", strings.NewReader(values.Encode()))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	_ = request.ParseForm()
+	if _, err := paidPlanFromForm(request); err == nil {
+		t.Fatal("partial credit offer was accepted")
+	}
+	values.Set("credit_duration_days", "30")
+	request = httptest.NewRequest(http.MethodPost, "/admin/plans", strings.NewReader(values.Encode()))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	_ = request.ParseForm()
+	plan, err := paidPlanFromForm(request)
+	if err != nil || plan.CreditPrice != 10 || plan.CreditDurationDays != 30 {
+		t.Fatalf("plan=%#v err=%v", plan, err)
+	}
+}
+
+func TestExpiredCreditPlanAllowsGatewayCheckout(t *testing.T) {
+	now := time.Now().UTC()
+	if !subscriptionAllowsCheckout(&db.Subscription{Gateway: db.BillingGatewayCredit, Status: "active", CurrentPeriodEnd: now.Add(-time.Second)}, now) {
+		t.Fatal("expired prepaid plan blocked a new checkout")
+	}
+	if subscriptionAllowsCheckout(&db.Subscription{Gateway: db.BillingGatewayCredit, Status: "active", CurrentPeriodEnd: now.Add(time.Second)}, now) {
+		t.Fatal("active prepaid plan allowed an overlapping checkout")
 	}
 }

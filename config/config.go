@@ -129,7 +129,7 @@ func defaults() *ServiceConfig {
 		MaxFileSize:     100,
 		Upload:          &UploadConfig{GuestEnabled: true, MaxFilesPerBatch: 10},
 		Retention:       &RetentionConfig{},
-		Billing:         &BillingConfig{PayPal: PayPalBillingConfig{Environment: "sandbox"}},
+		Billing:         &BillingConfig{CreditCurrency: "USD", MinTopUpCredits: 5, MaxTopUpCredits: 1000, PayPal: PayPalBillingConfig{Environment: "sandbox"}},
 		Auth: &AuthConfig{
 			SignupEnabled: true, TokenLifetime: Duration(12 * time.Hour), OAuth: &OAuthConfig{},
 		},
@@ -211,10 +211,13 @@ func applyEnvironment(cfg *ServiceConfig) error {
 	problems = append(problems, setInt("OBJECTSHARE_GUEST_RETENTION_DAYS", &cfg.Retention.GuestDays))
 	problems = append(problems, setInt("OBJECTSHARE_UNPAID_RETENTION_DAYS", &cfg.Retention.UnpaidDays))
 	if cfg.Billing == nil {
-		cfg.Billing = &BillingConfig{PayPal: PayPalBillingConfig{Environment: "sandbox"}}
+		cfg.Billing = &BillingConfig{CreditCurrency: "USD", MinTopUpCredits: 5, MaxTopUpCredits: 1000, PayPal: PayPalBillingConfig{Environment: "sandbox"}}
 	}
 	problems = append(problems, setBool("OBJECTSHARE_STRIPE_ENABLED", &cfg.Billing.Stripe.Enabled))
 	setString("OBJECTSHARE_BILLING_PUBLIC_URL", &cfg.Billing.PublicURL)
+	setString("OBJECTSHARE_BILLING_CREDIT_CURRENCY", &cfg.Billing.CreditCurrency)
+	problems = append(problems, setInt64("OBJECTSHARE_BILLING_MIN_TOP_UP_CREDITS", &cfg.Billing.MinTopUpCredits))
+	problems = append(problems, setInt64("OBJECTSHARE_BILLING_MAX_TOP_UP_CREDITS", &cfg.Billing.MaxTopUpCredits))
 	setString("OBJECTSHARE_STRIPE_SECRET_KEY", &cfg.Billing.Stripe.SecretKey)
 	setString("OBJECTSHARE_STRIPE_WEBHOOK_SECRET", &cfg.Billing.Stripe.WebhookSecret)
 	problems = append(problems, setBool("OBJECTSHARE_PAYPAL_ENABLED", &cfg.Billing.PayPal.Enabled))
@@ -371,7 +374,7 @@ func (cfg *ServiceConfig) Validate() error {
 		return errors.New("retention unpaid_days must be between 0 and 36500")
 	}
 	if cfg.Billing == nil {
-		cfg.Billing = &BillingConfig{PayPal: PayPalBillingConfig{Environment: "sandbox"}}
+		cfg.Billing = &BillingConfig{CreditCurrency: "USD", MinTopUpCredits: 5, MaxTopUpCredits: 1000, PayPal: PayPalBillingConfig{Environment: "sandbox"}}
 	}
 	if err := validateBilling(cfg.Billing, cfg.SecureCookies); err != nil {
 		return err
@@ -563,6 +566,22 @@ func validateBilling(settings *BillingConfig, secureCookies bool) error {
 	if settings.PayPal.Environment == "" {
 		settings.PayPal.Environment = "sandbox"
 	}
+	settings.CreditCurrency = strings.ToUpper(strings.TrimSpace(settings.CreditCurrency))
+	if settings.CreditCurrency == "" {
+		settings.CreditCurrency = "USD"
+	}
+	if settings.MinTopUpCredits == 0 {
+		settings.MinTopUpCredits = 5
+	}
+	if settings.MaxTopUpCredits == 0 {
+		settings.MaxTopUpCredits = 1000
+	}
+	if !supportedCreditCurrency(settings.CreditCurrency) {
+		return errors.New("billing credit_currency must be a supported two-decimal currency")
+	}
+	if settings.MinTopUpCredits < 1 || settings.MaxTopUpCredits < settings.MinTopUpCredits || settings.MaxTopUpCredits > 1_000_000 {
+		return errors.New("billing credit top-up range must be between 1 and 1000000 credits")
+	}
 	if settings.Stripe.Enabled {
 		validStripeKey := strings.HasPrefix(settings.Stripe.SecretKey, "sk_") || strings.HasPrefix(settings.Stripe.SecretKey, "rk_")
 		if !validStripeKey || !strings.HasPrefix(settings.Stripe.WebhookSecret, "whsec_") {
@@ -598,6 +617,15 @@ func validateBilling(settings *BillingConfig, secureCookies bool) error {
 	}
 	settings.PublicURL = strings.TrimSuffix(settings.PublicURL, "/")
 	return nil
+}
+
+func supportedCreditCurrency(currency string) bool {
+	switch currency {
+	case "AUD", "BRL", "CAD", "CHF", "CNY", "CZK", "DKK", "EUR", "GBP", "HKD", "ILS", "MXN", "MYR", "NOK", "NZD", "PHP", "PLN", "SEK", "SGD", "THB", "USD":
+		return true
+	default:
+		return false
+	}
 }
 
 func splitCSV(value string) []string {

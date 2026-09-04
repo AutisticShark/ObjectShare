@@ -45,6 +45,7 @@ func (stripeGatewayModule) HandleWebhook(handler *Handler, writer http.ResponseW
 type stripeClient struct {
 	secret        string
 	webhookSecret string
+	apiBase       string
 	client        *http.Client
 }
 
@@ -54,13 +55,17 @@ type stripeBillingGateway interface {
 }
 
 func newStripeClient(settings config.StripeBillingConfig) billingGateway {
-	return &stripeClient{secret: settings.SecretKey, webhookSecret: settings.WebhookSecret, client: &http.Client{Timeout: 15 * time.Second}}
+	return &stripeClient{secret: settings.SecretKey, webhookSecret: settings.WebhookSecret, apiBase: stripeAPIBase, client: &http.Client{Timeout: 15 * time.Second}}
 }
 
 func (client *stripeClient) WebhookSigningSecret() string { return client.webhookSecret }
 
 func (client *stripeClient) postForm(ctx context.Context, endpoint string, values url.Values, idempotencyKey string) (string, error) {
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, stripeAPIBase+endpoint, strings.NewReader(values.Encode()))
+	apiBase := client.apiBase
+	if apiBase == "" {
+		apiBase = stripeAPIBase
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, apiBase+endpoint, strings.NewReader(values.Encode()))
 	if err != nil {
 		return "", err
 	}
@@ -112,6 +117,21 @@ func (client *stripeClient) Checkout(ctx context.Context, input billingCheckoutI
 	return client.postForm(ctx, "/checkout/sessions", values, "objectshare-checkout-"+hex.EncodeToString(key[:]))
 }
 
+func (client *stripeClient) TopUp(ctx context.Context, input billingTopUpInput) (billingTopUpResult, error) {
+	values := url.Values{
+		"mode": {"payment"}, "line_items[0][price_data][currency]": {strings.ToLower(input.Currency)},
+		"line_items[0][price_data][unit_amount]":               {strconv.FormatInt(input.AmountMinor, 10)},
+		"line_items[0][price_data][product_data][name]":        {"ObjectShare account credit"},
+		"line_items[0][price_data][product_data][description]": {fmt.Sprintf("%d account credits", input.Credits)},
+		"line_items[0][quantity]":                              {"1"}, "success_url": {input.SuccessURL}, "cancel_url": {input.CancelURL},
+		"client_reference_id": {input.UserID}, "customer_email": {input.Email},
+		"metadata[purpose]": {"credit_topup"}, "metadata[topup_id]": {input.TopUpID},
+		"payment_intent_data[metadata][purpose]": {"credit_topup"}, "payment_intent_data[metadata][topup_id]": {input.TopUpID},
+	}
+	location, err := client.postForm(ctx, "/checkout/sessions", values, "objectshare-topup-"+input.TopUpID)
+	return billingTopUpResult{Location: location}, err
+}
+
 func (client *stripeClient) Portal(ctx context.Context, subscription *db.Subscription, returnURL string) (string, error) {
 	return client.postForm(ctx, "/billing_portal/sessions", url.Values{"customer": {subscription.CustomerID}, "return_url": {returnURL}}, "")
 }
@@ -142,6 +162,16 @@ type stripeSubscription struct {
 	} `json:"items"`
 }
 
+type stripeCheckoutSession struct {
+	ID            string            `json:"id"`
+	Mode          string            `json:"mode"`
+	PaymentStatus string            `json:"payment_status"`
+	PaymentIntent string            `json:"payment_intent"`
+	AmountTotal   int64             `json:"amount_total"`
+	Currency      string            `json:"currency"`
+	Metadata      map[string]string `json:"metadata"`
+}
+
 func (handler *Handler) StripeWebhook(writer http.ResponseWriter, request *http.Request) {
 	gateway, ok := handler.billingGateways[db.BillingGatewayStripe].(stripeBillingGateway)
 	if !ok || handler.billing == nil {
@@ -161,6 +191,43 @@ func (handler *Handler) StripeWebhook(writer http.ResponseWriter, request *http.
 	var event stripeEvent
 	if err := json.Unmarshal(payload, &event); err != nil || event.ID == "" || event.Created <= 0 {
 		http.Error(writer, "Invalid Stripe event.", http.StatusBadRequest)
+		return
+	}
+	if event.Type == "checkout.session.completed" || event.Type == "checkout.session.async_payment_succeeded" {
+		var session stripeCheckoutSession
+		if err := json.Unmarshal(event.Data.Object, &session); err != nil || session.ID == "" {
+			http.Error(writer, "Invalid Stripe Checkout event.", http.StatusBadRequest)
+			return
+		}
+		if session.Metadata["purpose"] != "credit_topup" {
+			writer.WriteHeader(http.StatusNoContent)
+			return
+		}
+		if session.PaymentStatus == "unpaid" && event.Type == "checkout.session.completed" {
+			// Delayed payment methods settle in async_payment_succeeded.
+			writer.WriteHeader(http.StatusNoContent)
+			return
+		}
+		if session.Mode != "payment" || session.PaymentStatus != "paid" || session.PaymentIntent == "" || session.AmountTotal <= 0 {
+			http.Error(writer, "Stripe top-up is not paid.", http.StatusUnprocessableEntity)
+			return
+		}
+		topUpID := session.Metadata["topup_id"]
+		if _, err := uuid.Parse(topUpID); err != nil {
+			http.Error(writer, "Invalid Stripe top-up metadata.", http.StatusUnprocessableEntity)
+			return
+		}
+		_, err = handler.billing.ApplyCreditTopUp(request.Context(), db.CreditPayment{TopUpID: topUpID, Gateway: db.BillingGatewayStripe,
+			GatewayPaymentID: session.PaymentIntent, Currency: session.Currency, AmountMinor: session.AmountTotal}, time.Now().UTC())
+		if errors.Is(err, db.ErrNotFound) || errors.Is(err, db.ErrInvalidCredit) || errors.Is(err, db.ErrConflict) {
+			http.Error(writer, "Stripe top-up did not match a pending account payment.", http.StatusUnprocessableEntity)
+			return
+		}
+		if err != nil {
+			handler.internalError(writer, request, "apply Stripe credit top-up", err)
+			return
+		}
+		writer.WriteHeader(http.StatusNoContent)
 		return
 	}
 	if event.Type != "customer.subscription.created" && event.Type != "customer.subscription.updated" && event.Type != "customer.subscription.deleted" {

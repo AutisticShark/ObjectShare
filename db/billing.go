@@ -3,6 +3,8 @@ package db
 import (
 	"context"
 	"errors"
+	"math"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -25,6 +27,11 @@ type SubscriptionUpdate struct {
 	CancelAtPeriodEnd                                                    bool
 }
 
+type CreditPayment struct {
+	TopUpID, Gateway, GatewayPaymentID, Currency string
+	AmountMinor                                  int64
+}
+
 type BillingRepository interface {
 	PublicPlans(context.Context) ([]PaidPlan, error)
 	AllPlans(context.Context) ([]PaidPlan, error)
@@ -37,6 +44,292 @@ type BillingRepository interface {
 	ReserveBillingCheckout(context.Context, string, string, time.Time) error
 	ReleaseBillingCheckout(context.Context, string, string) error
 	ApplySubscription(context.Context, SubscriptionUpdate) (bool, error)
+	CreateCreditTopUp(context.Context, *CreditTopUp) error
+	BindCreditTopUp(context.Context, string, string, string) error
+	CancelCreditTopUp(context.Context, string, string) error
+	CreditTopUpByID(context.Context, string) (*CreditTopUp, error)
+	ApplyCreditTopUp(context.Context, CreditPayment, time.Time) (bool, error)
+	CreditTransactions(context.Context, string, int) ([]CreditTransaction, error)
+	PurchasePlanWithCredit(context.Context, string, string, string, time.Time) (*Subscription, error)
+	AdjustCredit(context.Context, string, int64, string, string, string, time.Time) (int64, error)
+}
+
+func (repo *GormRepository) CreateCreditTopUp(ctx context.Context, topUp *CreditTopUp) error {
+	if topUp.ID == "" {
+		topUp.ID = uuid.NewString()
+	}
+	if topUp.UserID == "" || topUp.Credits <= 0 || topUp.AmountMinor <= 0 || len(topUp.Currency) != 3 || topUp.ExpiresAt.IsZero() {
+		return ErrInvalidCredit
+	}
+	topUp.Currency = strings.ToUpper(topUp.Currency)
+	topUp.Status = CreditTopUpPending
+	return repo.connection.WithContext(ctx).Create(topUp).Error
+}
+
+func (repo *GormRepository) BindCreditTopUp(ctx context.Context, id, gateway, reference string) error {
+	if reference == "" {
+		return ErrInvalidCredit
+	}
+	return repo.connection.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var topUp CreditTopUp
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ? AND gateway = ?", id, gateway).First(&topUp).Error; errors.Is(err, gorm.ErrRecordNotFound) {
+			return ErrNotFound
+		} else if err != nil {
+			return err
+		}
+		if topUp.Status != CreditTopUpPending {
+			return ErrConflict
+		}
+		if topUp.GatewayReference != nil {
+			if *topUp.GatewayReference == reference {
+				return nil
+			}
+			return ErrConflict
+		}
+		return tx.Model(&CreditTopUp{}).Where("id = ?", id).Update("gateway_reference", reference).Error
+	})
+}
+
+func (repo *GormRepository) CancelCreditTopUp(ctx context.Context, id, gateway string) error {
+	return repo.connection.WithContext(ctx).Model(&CreditTopUp{}).
+		Where("id = ? AND gateway = ? AND status = ?", id, gateway, CreditTopUpPending).
+		Update("status", CreditTopUpCanceled).Error
+}
+
+func (repo *GormRepository) CreditTopUpByID(ctx context.Context, id string) (*CreditTopUp, error) {
+	var topUp CreditTopUp
+	if err := repo.connection.WithContext(ctx).Where("id = ?", id).First(&topUp).Error; errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, ErrNotFound
+	} else if err != nil {
+		return nil, err
+	}
+	return &topUp, nil
+}
+
+func (repo *GormRepository) ApplyCreditTopUp(ctx context.Context, payment CreditPayment, now time.Time) (bool, error) {
+	applied := false
+	err := repo.connection.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var selected CreditTopUp
+		if err := tx.Select("id", "user_id").Where("id = ?", payment.TopUpID).First(&selected).Error; errors.Is(err, gorm.ErrRecordNotFound) {
+			return ErrNotFound
+		} else if err != nil {
+			return err
+		}
+		// Keep the account-row lock first, matching quota reservations,
+		// subscription updates, plan purchases, and account deletion.
+		var user User
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Select("id", "credit_balance").Where("id = ?", selected.UserID).First(&user).Error; errors.Is(err, gorm.ErrRecordNotFound) {
+			return ErrNotFound
+		} else if err != nil {
+			return err
+		}
+		var topUp CreditTopUp
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ?", payment.TopUpID).First(&topUp).Error; errors.Is(err, gorm.ErrRecordNotFound) {
+			return ErrNotFound
+		} else if err != nil {
+			return err
+		}
+		if !creditPaymentMatches(topUp, payment) {
+			return ErrInvalidCredit
+		}
+		deduplicationKey := payment.Gateway + ":" + payment.GatewayPaymentID
+		var existing CreditTransaction
+		if err := tx.Where("deduplication_key = ?", deduplicationKey).First(&existing).Error; err == nil {
+			if existing.UserID == topUp.UserID && existing.ReferenceID == topUp.ID && existing.Delta == topUp.Credits {
+				return nil
+			}
+			return ErrConflict
+		} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+			return err
+		}
+		if topUp.Status == CreditTopUpCompleted {
+			return ErrConflict
+		}
+		if topUp.Status != CreditTopUpPending {
+			return ErrConflict
+		}
+		if topUp.UserID != user.ID {
+			return ErrConflict
+		}
+		balance, err := addCredit(user.CreditBalance, topUp.Credits)
+		if err != nil {
+			return err
+		}
+		entry := CreditTransaction{ID: uuid.NewString(), UserID: user.ID, Delta: topUp.Credits, BalanceAfter: balance,
+			Kind: CreditTransactionTopUp, Gateway: payment.Gateway, GatewayPaymentID: payment.GatewayPaymentID,
+			ReferenceID: topUp.ID, DeduplicationKey: deduplicationKey, Description: "Account credit top-up", CreatedAt: now}
+		if err := tx.Create(&entry).Error; err != nil {
+			return err
+		}
+		if err := tx.Model(&User{}).Where("id = ?", user.ID).Update("credit_balance", balance).Error; err != nil {
+			return err
+		}
+		if err := tx.Model(&CreditTopUp{}).Where("id = ?", topUp.ID).Updates(map[string]any{
+			"status": CreditTopUpCompleted, "gateway_transaction_id": payment.GatewayPaymentID, "completed_at": now,
+		}).Error; err != nil {
+			return err
+		}
+		applied = true
+		return nil
+	})
+	return applied, err
+}
+
+func (repo *GormRepository) CreditTransactions(ctx context.Context, userID string, limit int) ([]CreditTransaction, error) {
+	if limit < 1 || limit > 100 {
+		limit = 20
+	}
+	var transactions []CreditTransaction
+	err := repo.connection.WithContext(ctx).Where("user_id = ?", userID).Order("created_at DESC, id DESC").Limit(limit).Find(&transactions).Error
+	return transactions, err
+}
+
+func (repo *GormRepository) PurchasePlanWithCredit(ctx context.Context, userID, planID, requestID string, now time.Time) (*Subscription, error) {
+	if _, err := uuid.Parse(requestID); err != nil {
+		return nil, ErrInvalidCredit
+	}
+	deduplicationKey := "plan:" + userID + ":" + requestID
+	var result Subscription
+	err := repo.connection.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var user User
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Select("id", "credit_balance").Where("id = ? AND active = ?", userID, true).First(&user).Error; errors.Is(err, gorm.ErrRecordNotFound) {
+			return ErrNotFound
+		} else if err != nil {
+			return err
+		}
+		var previous CreditTransaction
+		if err := tx.Where("deduplication_key = ?", deduplicationKey).First(&previous).Error; err == nil {
+			if previous.UserID != userID || previous.ReferenceID != planID || previous.Kind != CreditTransactionPlan {
+				return ErrConflict
+			}
+			return tx.Preload("Plan").Where("user_id = ?", userID).First(&result).Error
+		} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+			return err
+		}
+		var plan PaidPlan
+		if err := tx.Where("id = ? AND active = ?", planID, true).First(&plan).Error; errors.Is(err, gorm.ErrRecordNotFound) {
+			return ErrNotFound
+		} else if err != nil {
+			return err
+		}
+		if plan.CreditPrice <= 0 || plan.CreditPrice > 1000000000 || plan.CreditDurationDays <= 0 || plan.CreditDurationDays > 36500 {
+			return ErrInvalidCredit
+		}
+		if user.CreditBalance < plan.CreditPrice {
+			return ErrInsufficientCredit
+		}
+		var subscription Subscription
+		subscriptionErr := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("user_id = ?", userID).First(&subscription).Error
+		start := now
+		if subscriptionErr == nil && subscriptionActive(subscription.Status, subscription.CurrentPeriodEnd, now) {
+			if subscription.Gateway != BillingGatewayCredit || subscription.PlanID != plan.ID {
+				return ErrConflict
+			}
+			start = subscription.CurrentPeriodEnd
+		} else if subscriptionErr == nil && subscription.Gateway != BillingGatewayCredit && !subscriptionTerminal(subscription.Status) {
+			return ErrConflict
+		} else if subscriptionErr != nil && !errors.Is(subscriptionErr, gorm.ErrRecordNotFound) {
+			return subscriptionErr
+		}
+		var checkout BillingCheckout
+		if checkoutErr := tx.Where("user_id = ?", userID).First(&checkout).Error; checkoutErr == nil && checkout.ExpiresAt.After(now) {
+			return ErrConflict
+		} else if checkoutErr != nil && !errors.Is(checkoutErr, gorm.ErrRecordNotFound) {
+			return checkoutErr
+		}
+		periodEnd := start.AddDate(0, 0, plan.CreditDurationDays)
+		purchaseID := uuid.NewString()
+		if errors.Is(subscriptionErr, gorm.ErrRecordNotFound) {
+			subscription = Subscription{ID: uuid.NewString(), UserID: userID}
+		}
+		subscription.PlanID, subscription.Gateway, subscription.CustomerID = plan.ID, BillingGatewayCredit, ""
+		subscription.GatewaySubscriptionID, subscription.Status = "credit:"+purchaseID, "active"
+		subscription.CurrentPeriodEnd, subscription.CancelAtPeriodEnd, subscription.LastEventCreated = periodEnd, true, now.Unix()
+		if err := tx.Save(&subscription).Error; err != nil {
+			return err
+		}
+		balance := user.CreditBalance - plan.CreditPrice
+		entry := CreditTransaction{ID: uuid.NewString(), UserID: userID, Delta: -plan.CreditPrice, BalanceAfter: balance,
+			Kind: CreditTransactionPlan, ReferenceID: plan.ID, DeduplicationKey: deduplicationKey,
+			Description: "Plan purchase: " + plan.Name, CreatedAt: now}
+		if err := tx.Create(&entry).Error; err != nil {
+			return err
+		}
+		if err := tx.Model(&User{}).Where("id = ?", userID).Update("credit_balance", balance).Error; err != nil {
+			return err
+		}
+		if err := tx.Where("user_id = ?", userID).Delete(&BillingCheckout{}).Error; err != nil {
+			return err
+		}
+		result = subscription
+		result.Plan = plan
+		return nil
+	})
+	return &result, err
+}
+
+func (repo *GormRepository) AdjustCredit(ctx context.Context, userID string, delta int64, description, administratorID, requestID string, now time.Time) (int64, error) {
+	if _, err := uuid.Parse(requestID); err != nil {
+		return 0, ErrInvalidCredit
+	}
+	if delta == 0 || strings.TrimSpace(description) == "" || len(description) > 200 || administratorID == "" {
+		return 0, ErrInvalidCredit
+	}
+	var balance int64
+	err := repo.connection.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var user User
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Select("id", "credit_balance").Where("id = ?", userID).First(&user).Error; errors.Is(err, gorm.ErrRecordNotFound) {
+			return ErrNotFound
+		} else if err != nil {
+			return err
+		}
+		var err error
+		deduplicationKey := "adjustment:" + userID + ":" + requestID
+		var previous CreditTransaction
+		if err := tx.Where("deduplication_key = ?", deduplicationKey).First(&previous).Error; err == nil {
+			if previous.UserID != userID || previous.ReferenceID != administratorID || previous.Delta != delta || previous.Description != strings.TrimSpace(description) || previous.Kind != CreditTransactionAdjustment {
+				return ErrConflict
+			}
+			balance = previous.BalanceAfter
+			return nil
+		} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+			return err
+		}
+		balance, err = addCredit(user.CreditBalance, delta)
+		if err != nil {
+			return err
+		}
+		adjustmentID := uuid.NewString()
+		entry := CreditTransaction{ID: adjustmentID, UserID: userID, Delta: delta, BalanceAfter: balance,
+			Kind: CreditTransactionAdjustment, ReferenceID: administratorID, DeduplicationKey: deduplicationKey,
+			Description: strings.TrimSpace(description), CreatedAt: now}
+		if err := tx.Create(&entry).Error; err != nil {
+			return err
+		}
+		return tx.Model(&User{}).Where("id = ?", userID).Update("credit_balance", balance).Error
+	})
+	return balance, err
+}
+
+func addCredit(balance, delta int64) (int64, error) {
+	if (delta > 0 && balance > math.MaxInt64-delta) || (delta < 0 && balance < math.MinInt64-delta) {
+		return 0, ErrInvalidCredit
+	}
+	return balance + delta, nil
+}
+
+func creditPaymentMatches(topUp CreditTopUp, payment CreditPayment) bool {
+	return topUp.ID == payment.TopUpID && topUp.Gateway == payment.Gateway && topUp.Currency == strings.ToUpper(payment.Currency) &&
+		topUp.AmountMinor == payment.AmountMinor && payment.AmountMinor > 0 && payment.GatewayPaymentID != ""
+}
+
+func subscriptionTerminal(status string) bool {
+	switch strings.ToLower(status) {
+	case "canceled", "cancelled", "expired", "incomplete_expired":
+		return true
+	default:
+		return false
+	}
 }
 
 func (repo *GormRepository) ReserveBillingCheckout(ctx context.Context, userID, planID string, now time.Time) error {
@@ -128,6 +421,7 @@ func (repo *GormRepository) UpdatePlan(ctx context.Context, plan *PaidPlan) erro
 			"name": plan.Name, "description": plan.Description, "gateway": plan.Gateway, "gateway_plan_id": plan.GatewayPlanID,
 			"price_label": plan.PriceLabel, "storage_quota_bytes": plan.StorageQuotaBytes,
 			"retention_days": plan.RetentionDays, "direct_links": plan.DirectLinks,
+			"credit_price": plan.CreditPrice, "credit_duration_days": plan.CreditDurationDays,
 			"active": plan.Active, "sort_order": plan.SortOrder,
 		}).Error
 	})
@@ -210,6 +504,14 @@ func (repo *GormRepository) ApplySubscription(ctx context.Context, update Subscr
 		}
 		if update.UserID == "" || update.PlanID == "" {
 			return ErrNotFound
+		}
+		// A previously opened provider checkout can settle after its local
+		// reservation expires. Never silently replace already purchased prepaid
+		// time; leave the event unapplied for retry/operator reconciliation.
+		if err == nil && existing.Gateway == BillingGatewayCredit && update.Gateway != BillingGatewayCredit &&
+			subscriptionActive(existing.Status, existing.CurrentPeriodEnd, time.Now().UTC()) &&
+			subscriptionActive(update.Status, update.CurrentPeriodEnd, time.Now().UTC()) {
+			return ErrConflict
 		}
 		if err == nil && existing.Gateway != update.Gateway && !subscriptionActive(update.Status, update.CurrentPeriodEnd, time.Now().UTC()) {
 			return tx.Create(&BillingEvent{EventID: eventID}).Error

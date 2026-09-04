@@ -120,6 +120,72 @@ func TestBillingModelsUseGatewayScopedIdentifiers(t *testing.T) {
 	}
 }
 
+func TestCreditModelsHaveSafeMigrationMetadata(t *testing.T) {
+	user, err := schema.Parse(&User{}, &sync.Map{}, schema.NamingStrategy{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	balance := user.FieldsByDBName["credit_balance"]
+	if balance == nil || !balance.NotNull || !balance.HasDefaultValue || balance.DefaultValueInterface != int64(0) {
+		t.Fatalf("unsafe credit balance metadata: %#v", balance)
+	}
+	plan, err := schema.Parse(&PaidPlan{}, &sync.Map{}, schema.NamingStrategy{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"credit_price", "credit_duration_days"} {
+		field := plan.FieldsByDBName[name]
+		if field == nil || !field.NotNull || !field.HasDefaultValue {
+			t.Fatalf("unsafe plan credit field %s: %#v", name, field)
+		}
+	}
+	topUp, err := schema.Parse(&CreditTopUp{}, &sync.Map{}, schema.NamingStrategy{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if topUp.FieldsByDBName["amount_minor"] == nil || !topUp.FieldsByDBName["amount_minor"].NotNull || topUp.FieldsByDBName["gateway_reference"] == nil {
+		t.Fatalf("unsafe credit top-up metadata: %#v", topUp.FieldsByDBName)
+	}
+	transaction, err := schema.Parse(&CreditTransaction{}, &sync.Map{}, schema.NamingStrategy{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if field := transaction.FieldsByDBName["deduplication_key"]; field == nil || !field.NotNull || field.TagSettings["UNIQUEINDEX"] == "" {
+		t.Fatalf("credit ledger lacks unique deduplication key: %#v", field)
+	}
+}
+
+func TestCreditArithmeticRejectsOverflow(t *testing.T) {
+	if _, err := addCredit(math.MaxInt64, 1); !errors.Is(err, ErrInvalidCredit) {
+		t.Fatalf("positive overflow error=%v", err)
+	}
+	if _, err := addCredit(math.MinInt64, -1); !errors.Is(err, ErrInvalidCredit) {
+		t.Fatalf("negative overflow error=%v", err)
+	}
+	if got, err := addCredit(-5, 10); err != nil || got != 5 {
+		t.Fatalf("balance=%d err=%v", got, err)
+	}
+}
+
+func TestCreditPaymentMustMatchServerReservation(t *testing.T) {
+	topUp := CreditTopUp{ID: "topup-1", Gateway: BillingGatewayStripe, AmountMinor: 2500, Currency: "USD"}
+	payment := CreditPayment{TopUpID: topUp.ID, Gateway: topUp.Gateway, GatewayPaymentID: "pi_1", AmountMinor: topUp.AmountMinor, Currency: "usd"}
+	if !creditPaymentMatches(topUp, payment) {
+		t.Fatal("matching verified payment was rejected")
+	}
+	for _, changed := range []CreditPayment{
+		{TopUpID: "topup-2", Gateway: payment.Gateway, GatewayPaymentID: payment.GatewayPaymentID, AmountMinor: payment.AmountMinor, Currency: payment.Currency},
+		{TopUpID: payment.TopUpID, Gateway: BillingGatewayPayPal, GatewayPaymentID: payment.GatewayPaymentID, AmountMinor: payment.AmountMinor, Currency: payment.Currency},
+		{TopUpID: payment.TopUpID, Gateway: payment.Gateway, GatewayPaymentID: payment.GatewayPaymentID, AmountMinor: 2400, Currency: payment.Currency},
+		{TopUpID: payment.TopUpID, Gateway: payment.Gateway, GatewayPaymentID: payment.GatewayPaymentID, AmountMinor: payment.AmountMinor, Currency: "EUR"},
+		{TopUpID: payment.TopUpID, Gateway: payment.Gateway, AmountMinor: payment.AmountMinor, Currency: payment.Currency},
+	} {
+		if creditPaymentMatches(topUp, changed) {
+			t.Fatalf("mismatched payment was accepted: %#v", changed)
+		}
+	}
+}
+
 func TestApplicationSettingsMigrationMetadata(t *testing.T) {
 	parsed, err := schema.Parse(&ApplicationSetting{}, &sync.Map{}, schema.NamingStrategy{})
 	if err != nil {

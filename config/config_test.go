@@ -192,6 +192,9 @@ func TestStripeBillingEnvironmentAndValidation(t *testing.T) {
 	t.Setenv("OBJECTSHARE_BILLING_PUBLIC_URL", "https://share.example.com")
 	t.Setenv("OBJECTSHARE_STRIPE_SECRET_KEY", "sk_test_example")
 	t.Setenv("OBJECTSHARE_STRIPE_WEBHOOK_SECRET", "whsec_example")
+	t.Setenv("OBJECTSHARE_BILLING_CREDIT_CURRENCY", "eur")
+	t.Setenv("OBJECTSHARE_BILLING_MIN_TOP_UP_CREDITS", "10")
+	t.Setenv("OBJECTSHARE_BILLING_MAX_TOP_UP_CREDITS", "500")
 	cfg := testDefaults()
 	cfg.SecureCookies = true
 	if err := applyEnvironment(cfg); err != nil {
@@ -200,7 +203,7 @@ func TestStripeBillingEnvironmentAndValidation(t *testing.T) {
 	if err := cfg.Validate(); err != nil {
 		t.Fatal(err)
 	}
-	if !cfg.Billing.Stripe.Enabled || cfg.Billing.PublicURL != "https://share.example.com" {
+	if !cfg.Billing.Stripe.Enabled || cfg.Billing.PublicURL != "https://share.example.com" || cfg.Billing.CreditCurrency != "EUR" || cfg.Billing.MinTopUpCredits != 10 || cfg.Billing.MaxTopUpCredits != 500 {
 		t.Fatalf("billing environment was not applied: %#v", cfg.Billing)
 	}
 
@@ -221,6 +224,32 @@ func TestStripeBillingEnvironmentAndValidation(t *testing.T) {
 			candidate.Billing, candidate.SecureCookies = test.billing, test.secure
 			if err := candidate.Validate(); err == nil || !strings.Contains(err.Error(), test.want) {
 				t.Fatalf("error=%v want %q", err, test.want)
+			}
+		})
+	}
+}
+
+func TestCreditBillingDefaultsAndValidation(t *testing.T) {
+	cfg := testDefaults()
+	if err := cfg.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Billing.CreditCurrency != "USD" || cfg.Billing.MinTopUpCredits != 5 || cfg.Billing.MaxTopUpCredits != 1000 {
+		t.Fatalf("credit defaults=%#v", cfg.Billing)
+	}
+	for _, test := range []struct {
+		name, currency   string
+		minimum, maximum int64
+	}{
+		{name: "unsupported currency", currency: "JPY", minimum: 5, maximum: 10},
+		{name: "inverted bounds", currency: "USD", minimum: 20, maximum: 10},
+		{name: "excessive maximum", currency: "USD", minimum: 1, maximum: 1_000_001},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			candidate := testDefaults()
+			candidate.Billing.CreditCurrency, candidate.Billing.MinTopUpCredits, candidate.Billing.MaxTopUpCredits = test.currency, test.minimum, test.maximum
+			if err := candidate.Validate(); err == nil || !strings.Contains(err.Error(), "billing") {
+				t.Fatalf("error=%v", err)
 			}
 		})
 	}

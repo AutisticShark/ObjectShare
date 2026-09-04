@@ -83,9 +83,12 @@ type RetentionConfig struct {
 // without rebuilding the application. The legacy fields are retained only so
 // Stripe-only configuration documents from earlier releases can be migrated.
 type BillingConfig struct {
-	PublicURL string              `json:"public_url"`
-	Stripe    StripeBillingConfig `json:"stripe"`
-	PayPal    PayPalBillingConfig `json:"paypal"`
+	PublicURL       string              `json:"public_url"`
+	CreditCurrency  string              `json:"credit_currency"`
+	MinTopUpCredits int64               `json:"min_top_up_credits"`
+	MaxTopUpCredits int64               `json:"max_top_up_credits"`
+	Stripe          StripeBillingConfig `json:"stripe"`
+	PayPal          PayPalBillingConfig `json:"paypal"`
 
 	Enabled       bool   `json:"enabled,omitempty"`
 	SecretKey     string `json:"secret_key,omitempty"`

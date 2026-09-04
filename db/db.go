@@ -20,13 +20,15 @@ import (
 )
 
 var (
-	ErrNotFound        = errors.New("record not found")
-	ErrConflict        = errors.New("record already exists")
-	ErrUploadQuota     = errors.New("upload quota exceeded")
-	ErrInvalidQuota    = errors.New("upload quota must not be negative")
-	ErrAdminExists     = errors.New("an administrator already exists")
-	ErrLastAdmin       = errors.New("the final active administrator must be preserved")
-	ErrLastLoginMethod = errors.New("the final login method must be preserved")
+	ErrNotFound           = errors.New("record not found")
+	ErrConflict           = errors.New("record already exists")
+	ErrUploadQuota        = errors.New("upload quota exceeded")
+	ErrInvalidQuota       = errors.New("upload quota must not be negative")
+	ErrInsufficientCredit = errors.New("insufficient account credit")
+	ErrInvalidCredit      = errors.New("invalid account credit operation")
+	ErrAdminExists        = errors.New("an administrator already exists")
+	ErrLastAdmin          = errors.New("the final active administrator must be preserved")
+	ErrLastLoginMethod    = errors.New("the final login method must be preserved")
 )
 
 type UploadUsage struct {
@@ -225,7 +227,7 @@ func Open(ctx context.Context, cfg *config.DatabaseConfig) (*GormRepository, err
 			return nil, fmt.Errorf("migrate billing events: %w", err)
 		}
 	}
-	if err := migration.AutoMigrate(&User{}, &OAuthIdentity{}, &RevokedToken{}, &LoginThrottle{}, &RateLimitBucket{}, &FileList{}, &ApplicationSetting{}, &PaidPlan{}, &Subscription{}, &BillingEvent{}, &BillingCheckout{}); err != nil {
+	if err := migration.AutoMigrate(&User{}, &OAuthIdentity{}, &RevokedToken{}, &LoginThrottle{}, &RateLimitBucket{}, &FileList{}, &ApplicationSetting{}, &PaidPlan{}, &Subscription{}, &BillingEvent{}, &BillingCheckout{}, &CreditTopUp{}, &CreditTransaction{}); err != nil {
 		_ = migration.Rollback().Error
 		_ = sqlDB.Close()
 		return nil, fmt.Errorf("migrate PostgreSQL: %w", err)

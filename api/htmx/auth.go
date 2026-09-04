@@ -53,19 +53,27 @@ type accountFile struct {
 }
 
 type accountPageData struct {
-	Version, CSRF, Error, Message, QuotaLabel                 string
-	User                                                      *db.User
-	Files                                                     []accountFile
-	OAuthProviders                                            []oauthAccountProvider
-	HasPassword                                               bool
-	PlanName, PlanRenews, PlanStatus                          string
-	PlanActive, PlanCanceling, BillingEnabled, BillingAccount bool
+	Version, CSRF, Error, Message, QuotaLabel, CreditBalance, CreditCurrency string
+	User                                                                     *db.User
+	Files                                                                    []accountFile
+	OAuthProviders                                                           []oauthAccountProvider
+	CreditTransactions                                                       []creditTransactionRow
+	TopUpGateways                                                            []billingGatewayOption
+	HasPassword                                                              bool
+	PlanName, PlanRenews, PlanStatus                                         string
+	PlanActive, PlanCanceling, BillingEnabled, BillingAccount, CreditPlan    bool
+	MinTopUpCredits, MaxTopUpCredits                                         int64
+}
+
+type creditTransactionRow struct {
+	Delta, Balance, Description, CreatedAt string
+	Positive                               bool
 }
 
 type adminUserRow struct {
-	ID, Email, DisplayName, Role, CreatedAt, LastLogin, StorageUsed string
-	Active, IsCurrent, IsPaid                                       bool
-	UploadQuotaMiB                                                  int64
+	ID, Email, DisplayName, Role, CreatedAt, LastLogin, StorageUsed, CreditBalance, CreditRequestID string
+	Active, IsCurrent, IsPaid                                                                       bool
+	UploadQuotaMiB                                                                                  int64
 }
 
 type adminPageData struct {
@@ -510,10 +518,35 @@ func (handler *Handler) renderAccount(writer http.ResponseWriter, request *http.
 	}
 	data := accountPageData{Version: config.GetVersion(), CSRF: identity.Claims.CSRF, User: identity.User, Files: rows, OAuthProviders: providers, HasPassword: identity.User.PasswordHash != "", Error: formError, Message: message, QuotaLabel: handler.uploadQuotaLabel(request, identity.User)}
 	if handler.billing != nil {
+		data.CreditBalance = fmt.Sprintf("%d credits", identity.User.CreditBalance)
+		if handler.config.Billing != nil {
+			data.CreditCurrency = handler.config.Billing.CreditCurrency
+			data.MinTopUpCredits, data.MaxTopUpCredits = handler.config.Billing.MinTopUpCredits, handler.config.Billing.MaxTopUpCredits
+		}
+		for _, option := range billingGatewayOptions() {
+			if handler.billingGateways[option.Key] != nil {
+				data.TopUpGateways = append(data.TopUpGateways, option)
+			}
+		}
+		transactions, transactionErr := handler.billing.CreditTransactions(request.Context(), identity.User.ID, 20)
+		if transactionErr != nil {
+			handler.internalError(writer, request, "get account credit history", transactionErr)
+			return
+		}
+		for _, transaction := range transactions {
+			data.CreditTransactions = append(data.CreditTransactions, creditTransactionRow{
+				Delta: fmt.Sprintf("%+d", transaction.Delta), Balance: fmt.Sprintf("%d", transaction.BalanceAfter),
+				Description: transaction.Description, CreatedAt: transaction.CreatedAt.UTC().Format("2006-01-02 15:04 UTC"), Positive: transaction.Delta > 0,
+			})
+		}
 		subscription, subscriptionErr := handler.billing.SubscriptionForUser(request.Context(), identity.User.ID)
 		if subscriptionErr == nil {
 			data.BillingAccount, data.PlanName, data.PlanStatus = true, subscription.Plan.Name, subscription.Status
-			data.BillingEnabled = handler.billingGateways[subscription.Gateway] != nil
+			data.CreditPlan = subscription.Gateway == db.BillingGatewayCredit
+			if data.CreditPlan && !subscription.CurrentPeriodEnd.After(time.Now().UTC()) {
+				data.PlanStatus = "expired"
+			}
+			data.BillingEnabled = !data.CreditPlan && handler.billingGateways[subscription.Gateway] != nil
 		} else if !errors.Is(subscriptionErr, db.ErrNotFound) {
 			handler.internalError(writer, request, "get billing account", subscriptionErr)
 			return
@@ -685,6 +718,33 @@ func (handler *Handler) AdminUpdatePaidStatus(writer http.ResponseWriter, reques
 	}, "paid")
 }
 
+func (handler *Handler) AdminAdjustCredit(writer http.ResponseWriter, request *http.Request) {
+	if handler.billing == nil {
+		http.Error(writer, "Billing storage is unavailable.", http.StatusServiceUnavailable)
+		return
+	}
+	identity := currentIdentity(request)
+	handler.adminUserAction(writer, request, func(ctx context.Context, id string) error {
+		delta, err := strconv.ParseInt(strings.TrimSpace(request.FormValue("credit_delta")), 10, 64)
+		description := strings.TrimSpace(request.FormValue("credit_description"))
+		if err != nil || delta == 0 || delta < -1_000_000_000 || delta > 1_000_000_000 || description == "" || len(description) > 200 {
+			return fmt.Errorf("%w: Enter a non-zero adjustment from -1000000000 to 1000000000 credits and a reason of at most 200 characters.", errInvalidAdminForm)
+		}
+		requestID := request.FormValue("credit_request_id")
+		if _, err := uuid.Parse(requestID); err != nil {
+			return fmt.Errorf("%w: Reload the users page before recording an adjustment.", errInvalidAdminForm)
+		}
+		_, err = handler.billing.AdjustCredit(ctx, id, delta, description, identity.User.ID, requestID, time.Now().UTC())
+		if errors.Is(err, db.ErrConflict) {
+			return fmt.Errorf("%w: This form was already used for another adjustment. Reload the users page.", errInvalidAdminForm)
+		}
+		if errors.Is(err, db.ErrInvalidCredit) {
+			return fmt.Errorf("%w: The adjustment would exceed the supported account-credit range.", errInvalidAdminForm)
+		}
+		return err
+	}, "credit")
+}
+
 func (handler *Handler) AdminResetPassword(writer http.ResponseWriter, request *http.Request) {
 	handler.adminUserAction(writer, request, func(ctx context.Context, id string) error {
 		password := request.FormValue("password")
@@ -769,7 +829,7 @@ func (handler *Handler) adminUsersPageData(ctx context.Context, identity *identi
 		rows = append(rows, adminUserRow{ID: user.ID, Email: user.Email, DisplayName: user.DisplayName, Role: user.Role,
 			Active: user.Active, CreatedAt: user.CreatedAt.UTC().Format("2006-01-02"), LastLogin: lastLogin,
 			IsCurrent: user.ID == identity.User.ID, IsPaid: user.IsPaid, UploadQuotaMiB: user.UploadQuotaBytes / mebibyte,
-			StorageUsed: humanSize(storageUsed)})
+			StorageUsed: humanSize(storageUsed), CreditBalance: fmt.Sprintf("%d credits", user.CreditBalance), CreditRequestID: uuid.NewString()})
 	}
 	return adminPageData{Version: config.GetVersion(), CSRF: identity.Claims.CSRF, User: identity.User, Users: rows, TotalStorageUsed: humanSize(totalStorageUsed)}, nil
 }
@@ -987,9 +1047,9 @@ func (handler *Handler) redirectAfterLogin(writer http.ResponseWriter, request *
 }
 
 func accountMessage(value string) string {
-	return map[string]string{"welcome": "Welcome to ObjectShare.", "profile": "Profile updated.", "theme": "Appearance updated.", "password": "Password changed and all earlier JWTs were invalidated.", "oauth-linked": "OAuth login linked.", "oauth-unlinked": "OAuth login removed.", "billing-pending": "Approval received. Plan access will appear after the payment gateway confirms the subscription."}[value]
+	return map[string]string{"welcome": "Welcome to ObjectShare.", "profile": "Profile updated.", "theme": "Appearance updated.", "password": "Password changed and all earlier JWTs were invalidated.", "oauth-linked": "OAuth login linked.", "oauth-unlinked": "OAuth login removed.", "billing-pending": "Approval received. Plan access will appear after the payment gateway confirms the subscription.", "topup-pending": "Checkout returned. Credit will appear after the gateway confirms payment.", "topup-complete": "Your account credit has been added.", "credit-plan": "Plan purchased with account credit."}[value]
 }
 
 func adminMessage(value string) string {
-	return map[string]string{"setup": "Initial administrator created.", "created": "User created.", "updated": "Access updated; that user's earlier JWTs were invalidated.", "quota": "Upload quota updated.", "paid": "Manual retention exemption updated.", "password": "Password reset; that user's earlier JWTs were invalidated.", "deleted": "User deleted."}[value]
+	return map[string]string{"setup": "Initial administrator created.", "created": "User created.", "updated": "Access updated; that user's earlier JWTs were invalidated.", "quota": "Upload quota updated.", "paid": "Manual retention exemption updated.", "credit": "Account credit adjusted.", "password": "Password reset; that user's earlier JWTs were invalidated.", "deleted": "User deleted."}[value]
 }

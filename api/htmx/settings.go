@@ -179,6 +179,15 @@ func updateRuntimeFromForm(runtime *config.RuntimeConfig, request *http.Request)
 	runtime.Auth.SignupEnabled = checked(request, "signup_enabled")
 	runtime.Billing.Stripe.Enabled = checked(request, "stripe_enabled")
 	runtime.Billing.PublicURL = strings.TrimSpace(request.FormValue("billing_public_url"))
+	if request.FormValue("billing_credit_currency") != "" {
+		runtime.Billing.CreditCurrency = strings.ToUpper(strings.TrimSpace(request.FormValue("billing_credit_currency")))
+	}
+	if request.FormValue("billing_min_top_up_credits") != "" {
+		problems = append(problems, formInt64(request, "billing_min_top_up_credits", &runtime.Billing.MinTopUpCredits))
+	}
+	if request.FormValue("billing_max_top_up_credits") != "" {
+		problems = append(problems, formInt64(request, "billing_max_top_up_credits", &runtime.Billing.MaxTopUpCredits))
+	}
 	runtime.Billing.Stripe.SecretKey = updatedSecret(request, "stripe_secret_key", "clear_stripe_secret", runtime.Billing.Stripe.SecretKey)
 	runtime.Billing.Stripe.WebhookSecret = updatedSecret(request, "stripe_webhook_secret", "clear_stripe_webhook_secret", runtime.Billing.Stripe.WebhookSecret)
 	runtime.Billing.PayPal.Enabled = checked(request, "paypal_enabled")

@@ -151,6 +151,9 @@ func TestAdminConfigurationDashboardKeepsSecretsWriteOnlyAndSavesRevision(t *tes
 	values.Set("max_file_size", "77")
 	values.Set("guest_retention_days", "7")
 	values.Set("unpaid_retention_days", "30")
+	values.Set("billing_credit_currency", "eur")
+	values.Set("billing_min_top_up_credits", "10")
+	values.Set("billing_max_top_up_credits", "500")
 	values.Set("captcha_secret_key", "")
 	postRequest := httptest.NewRequest(http.MethodPost, "/admin/settings", strings.NewReader(values.Encode()))
 	postRequest.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -169,6 +172,9 @@ func TestAdminConfigurationDashboardKeepsSecretsWriteOnlyAndSavesRevision(t *tes
 	}
 	if handler.config.MaxFileSize == 77 {
 		t.Fatal("restart-required configuration was applied partially in process")
+	}
+	if saved.Billing.CreditCurrency != "EUR" || saved.Billing.MinTopUpCredits != 10 || saved.Billing.MaxTopUpCredits != 500 {
+		t.Fatalf("credit settings were not normalized and persisted: %#v", saved.Billing)
 	}
 
 	staleValues := runtimeFormValues(runtime)
@@ -193,6 +199,7 @@ func runtimeFormValues(runtime config.RuntimeConfig) url.Values {
 	values := url.Values{
 		"max_file_size": {fmt.Sprint(runtime.MaxFileSize)}, "guest_retention_days": {fmt.Sprint(runtime.Retention.GuestDays)}, "unpaid_retention_days": {fmt.Sprint(runtime.Retention.UnpaidDays)}, "oauth_public_url": {runtime.Auth.OAuth.PublicURL},
 		"billing_public_url": {runtime.Billing.PublicURL}, "paypal_environment": {runtime.Billing.PayPal.Environment}, "paypal_client_id": {runtime.Billing.PayPal.ClientID}, "paypal_webhook_id": {runtime.Billing.PayPal.WebhookID},
+		"billing_credit_currency": {runtime.Billing.CreditCurrency}, "billing_min_top_up_credits": {fmt.Sprint(runtime.Billing.MinTopUpCredits)}, "billing_max_top_up_credits": {fmt.Sprint(runtime.Billing.MaxTopUpCredits)},
 		"google_oauth_client_id": {runtime.Auth.OAuth.Google.ClientID}, "github_oauth_client_id": {runtime.Auth.OAuth.GitHub.ClientID}, "discord_oauth_client_id": {runtime.Auth.OAuth.Discord.ClientID},
 		"captcha_provider": {runtime.Captcha.Provider}, "captcha_site_key": {runtime.Captcha.SiteKey}, "captcha_expected_hostname": {runtime.Captcha.ExpectedHostname},
 		"rate_limit_window": {runtime.RateLimit.Window.String()}, "rate_limit_api": {fmt.Sprint(runtime.RateLimit.APILimit)}, "rate_limit_login": {fmt.Sprint(runtime.RateLimit.LoginLimit)}, "rate_limit_signup": {fmt.Sprint(runtime.RateLimit.SignupLimit)}, "rate_limit_upload": {fmt.Sprint(runtime.RateLimit.UploadLimit)}, "rate_limit_download": {fmt.Sprint(runtime.RateLimit.DownloadLimit)}, "trusted_proxy_cidrs": {strings.Join(runtime.RateLimit.TrustedProxyCIDRs, ",")},
