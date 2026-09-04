@@ -19,6 +19,7 @@ type FileList struct {
 	UploadStatus          string     `gorm:"column:upload_status;type:varchar(16);not null;default:complete;index"`
 	ChecksumStatus        string     `gorm:"column:checksum_status;type:varchar(16);not null;default:verified"`
 	UploadExpiresAt       *time.Time `gorm:"column:upload_expires_at;index"`
+	RetentionClaimedAt    *time.Time `gorm:"column:retention_claimed_at;index"`
 	CreatedAt             time.Time  `gorm:"column:created_at;not null"`
 	UpdatedAt             time.Time  `gorm:"column:updated_at;not null"`
 }
@@ -39,6 +40,7 @@ type User struct {
 	Active           bool       `gorm:"column:active;not null;default:true;index"`
 	TokenVersion     int        `gorm:"column:token_version;not null;default:1"`
 	DarkMode         bool       `gorm:"column:dark_mode;not null;default:false"`
+	IsPaid           bool       `gorm:"column:is_paid;not null;default:false;index"`
 	UploadQuotaBytes int64      `gorm:"column:upload_quota_bytes;not null;default:0;check:chk_users_upload_quota_bytes_nonnegative,upload_quota_bytes >= 0"`
 	LastLoginAt      *time.Time `gorm:"column:last_login_at"`
 	CreatedAt        time.Time  `gorm:"column:created_at;not null"`

@@ -178,7 +178,7 @@ func (repository *authMemoryRepository) ListUsers(context.Context) ([]db.User, e
 func (repository *authMemoryRepository) StorageUsageByUser(context.Context) (map[string]int64, error) {
 	usage := make(map[string]int64)
 	for _, file := range repository.files {
-		if file.FileOwner != nil && (file.UploadStatus == "pending" || file.UploadStatus == "complete") {
+		if file.FileOwner != nil && (file.UploadStatus == "pending" || file.UploadStatus == "complete" || file.UploadStatus == "deleting") {
 			usage[*file.FileOwner] += file.FileSize
 		}
 	}
@@ -230,6 +230,14 @@ func (repository *authMemoryRepository) AdminUpdateUser(_ context.Context, id, r
 		user.TokenVersion++
 	}
 	user.Role, user.Active = role, active
+	return nil
+}
+func (repository *authMemoryRepository) UpdatePaidStatus(_ context.Context, id string, paid bool) error {
+	user, ok := repository.users[id]
+	if !ok {
+		return db.ErrNotFound
+	}
+	user.IsPaid = paid
 	return nil
 }
 func (repository *authMemoryRepository) UpdateUploadQuota(_ context.Context, id string, quotaBytes int64) error {
@@ -765,7 +773,7 @@ func TestAdministratorQuotaUpdateIsAuthorizedAndDoesNotInvalidateJWTs(t *testing
 	router.With(handler.RequireAdmin).Post("/{id}", handler.AdminUpdateUploadQuota)
 
 	request := formRequest("/"+user.ID, url.Values{"upload_quota_mib": {"25"}})
-	request = request.WithContext(context.WithValue(request.Context(), identityContextKey{}, &identity{User: admin, Transport: transportBearer}))
+	request = request.WithContext(context.WithValue(request.Context(), identityContextKey{}, &identity{User: admin, Claims: &appauth.Claims{CSRF: "csrf"}, Transport: transportBearer}))
 	response := httptest.NewRecorder()
 	router.ServeHTTP(response, request)
 	if response.Code != http.StatusSeeOther || repository.users[user.ID].UploadQuotaBytes != 25*mebibyte {
@@ -781,6 +789,66 @@ func TestAdministratorQuotaUpdateIsAuthorizedAndDoesNotInvalidateJWTs(t *testing
 	router.ServeHTTP(response, request)
 	if response.Code != http.StatusForbidden || repository.users[user.ID].UploadQuotaBytes != 25*mebibyte {
 		t.Fatalf("non-admin quota update status=%d quota=%d", response.Code, repository.users[user.ID].UploadQuotaBytes)
+	}
+}
+
+func TestAdministratorPaidStatusUpdateIsAuthorizedAndDoesNotInvalidateJWTs(t *testing.T) {
+	repository := newAuthMemoryRepository()
+	admin := &db.User{ID: "11111111-1111-4111-8111-111111111111", Email: "admin@example.com", DisplayName: "Admin", Role: db.RoleAdmin, Active: true, TokenVersion: 3}
+	user := &db.User{ID: "22222222-2222-4222-8222-222222222222", Email: "user@example.com", DisplayName: "User", Role: db.RoleUser, Active: true, TokenVersion: 7}
+	for _, candidate := range []*db.User{admin, user} {
+		if err := repository.CreateUser(context.Background(), candidate); err != nil {
+			t.Fatal(err)
+		}
+	}
+	handler := newAuthTestHandler(t, repository, false)
+	router := chi.NewRouter()
+	router.With(handler.RequireAdmin).Post("/{id}", handler.AdminUpdatePaidStatus)
+
+	request := formRequest("/"+user.ID, url.Values{"is_paid": {"true"}})
+	request = request.WithContext(context.WithValue(request.Context(), identityContextKey{}, &identity{User: admin, Claims: &appauth.Claims{CSRF: "csrf"}, Transport: transportBearer}))
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusSeeOther || !repository.users[user.ID].IsPaid {
+		t.Fatalf("paid update status=%d paid=%t body=%q", response.Code, repository.users[user.ID].IsPaid, response.Body.String())
+	}
+	if repository.users[user.ID].TokenVersion != 7 {
+		t.Fatal("paid-status update unnecessarily invalidated the user's JWTs")
+	}
+	request = formRequest("/"+user.ID, url.Values{"is_paid": {"yes"}})
+	request = request.WithContext(context.WithValue(request.Context(), identityContextKey{}, &identity{User: admin, Claims: &appauth.Claims{CSRF: "csrf"}, Transport: transportBearer}))
+	response = httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusOK || !repository.users[user.ID].IsPaid || !strings.Contains(response.Body.String(), "Choose a valid payment status.") {
+		t.Fatalf("invalid paid update status=%d paid=%t body=%q", response.Code, repository.users[user.ID].IsPaid, response.Body.String())
+	}
+
+	request = formRequest("/"+user.ID, url.Values{"is_paid": {"false"}})
+	request = request.WithContext(context.WithValue(request.Context(), identityContextKey{}, &identity{User: user, Transport: transportBearer}))
+	response = httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusForbidden || !repository.users[user.ID].IsPaid {
+		t.Fatalf("non-admin paid update status=%d paid=%t", response.Code, repository.users[user.ID].IsPaid)
+	}
+}
+
+func TestAdministratorCanCreatePaidAccount(t *testing.T) {
+	repository := newAuthMemoryRepository()
+	admin := &db.User{ID: "11111111-1111-4111-8111-111111111111", Email: "admin@example.com", DisplayName: "Admin", Role: db.RoleAdmin, Active: true, TokenVersion: 1}
+	if err := repository.CreateUser(context.Background(), admin); err != nil {
+		t.Fatal(err)
+	}
+	handler := newAuthTestHandler(t, repository, false)
+	request := formRequest("/admin/users", url.Values{
+		"email": {"paid@example.com"}, "display_name": {"Paid User"}, "password": {"a sufficiently long password"},
+		"password_confirm": {"a sufficiently long password"}, "role": {db.RoleUser}, "is_paid": {"on"}, "upload_quota_mib": {"25"},
+	})
+	request = request.WithContext(context.WithValue(request.Context(), identityContextKey{}, &identity{User: admin, Transport: transportBearer}))
+	response := httptest.NewRecorder()
+	handler.AdminCreateUser(response, request)
+	created, err := repository.UserByEmail(context.Background(), "paid@example.com")
+	if response.Code != http.StatusSeeOther || err != nil || !created.IsPaid || created.UploadQuotaBytes != 25*mebibyte {
+		t.Fatalf("create paid user status=%d user=%#v err=%v body=%q", response.Code, created, err, response.Body.String())
 	}
 }
 

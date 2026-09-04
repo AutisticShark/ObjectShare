@@ -161,6 +161,8 @@ func updateRuntimeFromForm(runtime *config.RuntimeConfig, request *http.Request)
 	problems = append(problems, formInt64(request, "max_file_size", &runtime.MaxFileSize))
 	runtime.SecureCookies = checked(request, "secure_cookies")
 	runtime.Upload.GuestEnabled = checked(request, "guest_enabled")
+	problems = append(problems, formInt(request, "guest_retention_days", &runtime.Retention.GuestDays))
+	problems = append(problems, formInt(request, "unpaid_retention_days", &runtime.Retention.UnpaidDays))
 	runtime.Auth.SignupEnabled = checked(request, "signup_enabled")
 
 	runtime.Auth.OAuth.PublicURL = strings.TrimSpace(request.FormValue("oauth_public_url"))

@@ -20,6 +20,7 @@ import (
 	appauth "github.com/AutisticShark/ObjectShare/auth"
 	"github.com/AutisticShark/ObjectShare/config"
 	"github.com/AutisticShark/ObjectShare/db"
+	"github.com/AutisticShark/ObjectShare/retention"
 	"github.com/AutisticShark/ObjectShare/service"
 	"github.com/google/uuid"
 )
@@ -80,6 +81,16 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("initialize HTTP handlers: %w", err)
 	}
+	runContext, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	retentionDone := make(chan struct{})
+	go func() {
+		defer close(retentionDone)
+		retention.New(repository, objectStore, *cfg.Retention, logger).Run(runContext)
+	}()
+	defer func() {
+		stop()
+		<-retentionDone
+	}()
 
 	server := &http.Server{
 		Addr: cfg.Address, Handler: api.Router(handler, logger),
@@ -94,15 +105,14 @@ func run() error {
 		serverErrors <- server.ListenAndServe()
 	}()
 
-	signals, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
 	select {
 	case err := <-serverErrors:
+		stop()
 		if errors.Is(err, http.ErrServerClosed) {
 			return nil
 		}
 		return fmt.Errorf("serve HTTP: %w", err)
-	case <-signals.Done():
+	case <-runContext.Done():
 		logger.Info("shutdown requested")
 		shutdownContext, cancel := context.WithTimeout(context.Background(), cfg.ShutdownTimeout.Duration())
 		defer cancel()

@@ -47,6 +47,7 @@ type ServiceConfig struct {
 	SecureCookies   bool               `json:"secure_cookies"`
 	SettingsKey     string             `json:"settings_key,omitempty"`
 	Upload          *UploadConfig      `json:"upload,omitempty"`
+	Retention       *RetentionConfig   `json:"retention,omitempty"`
 	Auth            *AuthConfig        `json:"auth"`
 	Captcha         *CaptchaConfig     `json:"captcha,omitempty"`
 	RateLimit       *RateLimitConfig   `json:"rate_limit,omitempty"`
@@ -66,6 +67,13 @@ type ServiceConfig struct {
 // storage quotas are user data and therefore live in PostgreSQL, not config.
 type UploadConfig struct {
 	GuestEnabled bool `json:"guest_enabled"`
+}
+
+// RetentionConfig controls age-based deletion for files without a paid
+// account. Zero disables automatic deletion for that category.
+type RetentionConfig struct {
+	GuestDays  int `json:"guest_days"`
+	UnpaidDays int `json:"unpaid_days"`
 }
 
 type AuthConfig struct {

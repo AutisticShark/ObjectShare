@@ -15,7 +15,7 @@ ObjectShare is a small self-hosted file sharing service written in Go. Files are
 - PostgreSQL metadata with bounded connection pools
 - Optional AES-256-GCM server-side encryption at rest
 - Owner-only rename and permanent deletion
-- Guest uploads plus database-backed per-user storage quotas
+- Guest uploads, database-backed per-user storage quotas, and automatic guest/unpaid file retention
 - Password, Google, GitHub, and Discord login with separate user and administrator management interfaces
 - Optional server-verified Turnstile protection and shared PostgreSQL request rate limits
 - Encrypted PostgreSQL-backed configuration with a dedicated administrator dashboard
@@ -36,7 +36,7 @@ Anyone with a file URL can still download it. Accounts provide persistent upload
 - [ ] Better upload UI
 - [ ] File sharing & permission
 - [x] File deletion
-- [ ] Auto file deletion after days for guest and unpaid users
+- [x] Auto file deletion after days for guest and unpaid users
 - [x] User management
 - [x] Administrator configuration dashboard
 - [x] Third-party OAuth login support
@@ -103,7 +103,7 @@ Generate an object-encryption key separately with `openssl rand -base64 32` and 
 
 ### User and administrator management
 
-Normal users manage their profile, password, appearance, and account-owned uploads at `/account`. The light/dark theme choice is stored with the account, so it follows the user across browsers and is applied to every authenticated page. Administrators have a dedicated `/admin/settings` configuration dashboard and a separate `/admin/users` interface where they can create normal users or administrators, change roles and active status, reset passwords, and delete accounts. Both routes enforce the administrator role server-side and cookie-authenticated changes require the signed JWT CSRF value. The final active administrator cannot be disabled, demoted, or deleted. Disabling an account, changing its role, or resetting its password increments the account token version so every earlier JWT is rejected. Deleting an account keeps its existing shared files available and converts them to anonymous uploads.
+Normal users manage their profile, password, appearance, and account-owned uploads at `/account`. The light/dark theme choice is stored with the account, so it follows the user across browsers and is applied to every authenticated page. Administrators have a dedicated `/admin/settings` configuration dashboard and a separate `/admin/users` interface where they can create normal users or administrators, change roles, active status, paid status, and quotas, reset passwords, and delete accounts. Both routes enforce the administrator role server-side and cookie-authenticated changes require the signed JWT CSRF value. The final active administrator cannot be disabled, demoted, or deleted. Disabling an account, changing its role, or resetting its password increments the account token version so every earlier JWT is rejected. Paid-status and quota changes do not invalidate JWTs because request authorization reloads current account entitlements from PostgreSQL. Deleting an account keeps its existing shared files available and converts them to anonymous uploads; those files then follow the guest retention policy if it is enabled.
 
 Public signup is changed from the configuration dashboard. `auth.jwt_secret` and `auth.token_lifetime` remain bootstrap JSON settings and are intentionally not editable from the browser.
 
@@ -116,6 +116,21 @@ Storage quota is an entitlement of an individual account. It is stored in Postgr
 Remove the obsolete `guest_quota_mib`, `user_quota_mib`, `admin_quota_mib`, and `panel_quota_mib` JSON keys and the matching `OBJECTSHARE_*_UPLOAD_QUOTA_MB` environment variables when upgrading from an earlier quota implementation. ObjectShare rejects them instead of silently starting with different quota behavior.
 
 Complete files and pending direct-upload reservations both consume that account's quota, preventing concurrent requests or multiple application replicas from overcommitting it. Reservations for the same account are serialized with a database row lock; unrelated accounts do not share a quota lock. Deleting a file, aborting a direct upload, or cleaning up an expired reservation releases its bytes. Lowering a quota below current usage blocks new reservations but does not delete existing files. Anonymous uploads are not charged to an account, so disable guest uploads when every stored object must be quota-controlled. Quotas limit stored capacity; use ingress rate limiting and, where appropriate, CAPTCHA separately to control request abuse.
+
+### Automatic file retention
+
+ObjectShare can permanently delete completed guest files and completed files owned by unpaid accounts after separate administrator-defined numbers of days. Both policies default to `0` (disabled), so an upgrade never starts deleting existing data until an administrator deliberately enables retention. Configure **Guest retention** and **Unpaid retention** at `/admin/settings`, save, and restart every application replica. Paid status is a per-account PostgreSQL entitlement, independent from role and storage quota; set it from `/admin/users`. Paid accounts are exempt from unpaid retention. Existing and newly created accounts default to unpaid; mark entitled accounts paid before restarting with unpaid retention enabled. Changing a paid account to unpaid can make files older than the configured limit eligible at the next sweep.
+
+The legacy first-import inputs are:
+
+```dotenv
+OBJECTSHARE_GUEST_RETENTION_DAYS=0
+OBJECTSHARE_UNPAID_RETENTION_DAYS=0
+```
+
+Their `config.json` equivalent is the top-level `retention` object with `guest_days` and `unpaid_days`. Values are whole days from `0` through `36500`; `0` disables that category. Age is measured from the file's upload creation time. Pending upload authorizations keep their separate short expiry and are not treated as completed retained files.
+
+Each replica performs a sweep at startup and then hourly; a full backlog batch schedules another sweep after one minute. PostgreSQL claims bounded batches with row locking and `SKIP LOCKED`, so replicas cooperate without intentionally processing the same live record. The object is deleted before its metadata; a storage failure releases the claim and keeps the share record for retry, while an interrupted or database-failed deletion is reclaimed later. Once deletion succeeds, the share URL and owner controls stop working. Back up data before enabling a shorter policy because automatic deletion is permanent.
 
 ### CAPTCHA and request rate limiting
 

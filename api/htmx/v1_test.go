@@ -60,7 +60,7 @@ func (repository *memoryRepository) UploadUsage(_ context.Context, userID string
 func (repository *memoryRepository) uploadUsage(userID string) db.UploadUsage {
 	usage := db.UploadUsage{Limit: repository.quotaBytes[userID]}
 	for _, file := range repository.files {
-		if file.UploadStatus != "pending" && file.UploadStatus != "complete" {
+		if file.UploadStatus != "pending" && file.UploadStatus != "complete" && file.UploadStatus != "deleting" {
 			continue
 		}
 		if file.FileOwner != nil && *file.FileOwner == userID {
@@ -441,6 +441,28 @@ func TestIndexReflectsGuestUploadPolicyWithoutGlobalQuota(t *testing.T) {
 	page := enabled.Body.String()
 	if enabled.Code != http.StatusOK || !strings.Contains(page, `id="upload-form"`) || strings.Contains(page, "storage quota") || strings.Contains(page, "Server storage:") {
 		t.Fatalf("enabled guest UI incorrectly showed a storage quota: status=%d", enabled.Code)
+	}
+}
+
+func TestUploadRetentionNoticeExemptsPaidAccounts(t *testing.T) {
+	repository := &memoryRepository{files: make(map[string]*db.FileList), quotaBytes: make(map[string]int64)}
+	storage := &memoryStorage{objects: make(map[string][]byte)}
+	cfg := &config.ServiceConfig{
+		MaxFileSize: 1, StorageService: "filesystem", Upload: &config.UploadConfig{GuestEnabled: true},
+		Retention: &config.RetentionConfig{GuestDays: 1, UnpaidDays: 30}, Encryption: &config.EncryptionConfig{},
+	}
+	handler := newTestHandlerConfig(t, cfg, repository, storage)
+	request := httptest.NewRequest(http.MethodGet, "/", nil)
+	if notice := handler.uploadQuotaLabel(request, nil); !strings.Contains(notice, "Guest files are automatically deleted 1 day after upload") {
+		t.Fatalf("guest notice = %q", notice)
+	}
+	unpaid := &db.User{ID: "unpaid"}
+	if notice := handler.uploadQuotaLabel(request, unpaid); !strings.Contains(notice, "Files on unpaid accounts are automatically deleted 30 days after upload") {
+		t.Fatalf("unpaid notice = %q", notice)
+	}
+	paid := &db.User{ID: "paid", IsPaid: true}
+	if notice := handler.uploadQuotaLabel(request, paid); strings.Contains(notice, "automatically deleted") {
+		t.Fatalf("paid account received retention notice: %q", notice)
 	}
 }
 

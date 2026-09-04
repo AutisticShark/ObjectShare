@@ -141,7 +141,7 @@ func (repo *GormRepository) StorageUsageByUser(ctx context.Context) (map[string]
 	var rows []usageRow
 	err := repo.connection.WithContext(ctx).Model(&FileList{}).
 		Select("file_owner, COALESCE(SUM(file_size), 0) AS used").
-		Where("file_owner IS NOT NULL AND upload_status IN ?", []string{"pending", "complete"}).
+		Where("file_owner IS NOT NULL AND upload_status IN ?", []string{"pending", "complete", "deleting"}).
 		Group("file_owner").Scan(&rows).Error
 	if err != nil {
 		return nil, err
@@ -233,6 +233,17 @@ func (repo *GormRepository) UpdateUploadQuota(ctx context.Context, id string, qu
 	}
 	result := repo.connection.WithContext(ctx).Model(&User{}).Where("id = ?", id).
 		Update("upload_quota_bytes", quotaBytes)
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+func (repo *GormRepository) UpdatePaidStatus(ctx context.Context, id string, paid bool) error {
+	result := repo.connection.WithContext(ctx).Model(&User{}).Where("id = ?", id).Update("is_paid", paid)
 	if result.Error != nil {
 		return result.Error
 	}

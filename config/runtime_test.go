@@ -40,12 +40,14 @@ func TestApplyRuntimePreservesBootstrapBoundary(t *testing.T) {
 	runtime := RuntimeFromService(cfg)
 	runtime.MaxFileSize = 42
 	runtime.Upload.GuestEnabled = false
+	runtime.Retention.GuestDays = 7
+	runtime.Retention.UnpaidDays = 30
 	runtime.Auth.SignupEnabled = false
 	runtime.RateLimit.Window = Duration(2 * time.Minute)
 	if err := ApplyRuntime(cfg, runtime); err != nil {
 		t.Fatal(err)
 	}
-	if cfg.MaxFileSize != 42 || cfg.Upload.GuestEnabled || cfg.Auth.SignupEnabled || cfg.RateLimit.Window != Duration(2*time.Minute) {
+	if cfg.MaxFileSize != 42 || cfg.Upload.GuestEnabled || cfg.Retention.GuestDays != 7 || cfg.Retention.UnpaidDays != 30 || cfg.Auth.SignupEnabled || cfg.RateLimit.Window != Duration(2*time.Minute) {
 		t.Fatalf("runtime fields were not applied: %#v", cfg)
 	}
 	if cfg.Address != wantAddress || *cfg.Db != wantDB || cfg.Auth.JWTSecret != wantJWT || cfg.Auth.TokenLifetime != wantLifetime || cfg.SettingsKey != wantSettingsKey {

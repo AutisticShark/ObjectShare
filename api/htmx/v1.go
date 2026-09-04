@@ -634,17 +634,33 @@ func (handler *Handler) uploadQuotaLabel(request *http.Request, user *db.User) s
 		if !handler.uploadSettings().GuestEnabled {
 			return "Guest uploads are disabled."
 		}
+		if handler.config.Retention != nil && handler.config.Retention.GuestDays > 0 {
+			return retentionNotice("Guest files", handler.config.Retention.GuestDays)
+		}
 		return ""
 	}
+	labels := make([]string, 0, 2)
 	usage, err := handler.repository.UploadUsage(request.Context(), user.ID)
 	if err != nil {
 		handler.logger.Warn("load upload quota usage", "error", err)
-		return "Upload quota is enforced when the upload begins."
+		labels = append(labels, "Upload quota is enforced when the upload begins.")
+	} else if usage.Limit == 0 {
+		labels = append(labels, "Account storage quota: unlimited.")
+	} else {
+		labels = append(labels, fmt.Sprintf("Account storage: %s used of %s.", humanSize(usage.Used), humanSize(usage.Limit)))
 	}
-	if usage.Limit == 0 {
-		return "Account storage quota: unlimited."
+	if !user.IsPaid && handler.config.Retention != nil && handler.config.Retention.UnpaidDays > 0 {
+		labels = append(labels, retentionNotice("Files on unpaid accounts", handler.config.Retention.UnpaidDays))
 	}
-	return fmt.Sprintf("Account storage: %s used of %s.", humanSize(usage.Used), humanSize(usage.Limit))
+	return strings.Join(labels, " ")
+}
+
+func retentionNotice(subject string, days int) string {
+	unit := "days"
+	if days == 1 {
+		unit = "day"
+	}
+	return fmt.Sprintf("%s are automatically deleted %d %s after upload.", subject, days, unit)
 }
 
 func (handler *Handler) proxiedUploadReservationLifetime() time.Duration {

@@ -3,6 +3,7 @@ package db
 import (
 	"errors"
 	"math"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -47,6 +48,43 @@ func TestUserDarkModeMigrationMetadata(t *testing.T) {
 	field := parsed.FieldsByDBName["dark_mode"]
 	if field == nil || !field.NotNull || !field.HasDefaultValue || field.DefaultValueInterface != false {
 		t.Fatalf("unsafe dark mode field metadata: %#v", field)
+	}
+}
+
+func TestPaidStatusAndRetentionClaimMigrationMetadata(t *testing.T) {
+	users, err := schema.Parse(&User{}, &sync.Map{}, schema.NamingStrategy{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	paid := users.FieldsByDBName["is_paid"]
+	if paid == nil || !paid.NotNull || !paid.HasDefaultValue || paid.DefaultValueInterface != false {
+		t.Fatalf("unsafe paid-status field metadata: %#v", paid)
+	}
+	files, err := schema.Parse(&FileList{}, &sync.Map{}, schema.NamingStrategy{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	claim := files.FieldsByDBName["retention_claimed_at"]
+	if claim == nil || claim.TagSettings["INDEX"] == "" {
+		t.Fatalf("retention claim is not indexed: %#v", claim)
+	}
+}
+
+func TestRetentionEligibilityKeepsPaidAccountsOutOfCleanup(t *testing.T) {
+	guestBefore := time.Date(2026, 8, 28, 0, 0, 0, 0, time.UTC)
+	unpaidBefore := time.Date(2026, 8, 5, 0, 0, 0, 0, time.UTC)
+	query, arguments := retentionEligibilitySQL(&guestBefore, &unpaidBefore)
+	for _, clause := range []string{"f.file_owner IS NULL", "f.file_owner IS NOT NULL", "u.id = f.file_owner", "u.is_paid = FALSE"} {
+		if !strings.Contains(query, clause) {
+			t.Fatalf("retention eligibility omitted %q: %s", clause, query)
+		}
+	}
+	if len(arguments) != 2 || arguments[0] != guestBefore || arguments[1] != unpaidBefore {
+		t.Fatalf("retention cutoffs = %#v", arguments)
+	}
+	disabled, arguments := retentionEligibilitySQL(nil, nil)
+	if disabled != "FALSE" || len(arguments) != 0 {
+		t.Fatalf("disabled retention produced %q with %#v", disabled, arguments)
 	}
 }
 

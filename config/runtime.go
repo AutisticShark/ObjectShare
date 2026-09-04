@@ -22,6 +22,7 @@ type RuntimeConfig struct {
 	MaxFileSize    int64             `json:"max_file_size"`
 	SecureCookies  bool              `json:"secure_cookies"`
 	Upload         UploadConfig      `json:"upload"`
+	Retention      RetentionConfig   `json:"retention"`
 	Auth           RuntimeAuthConfig `json:"auth"`
 	Captcha        CaptchaConfig     `json:"captcha"`
 	RateLimit      RateLimitConfig   `json:"rate_limit"`
@@ -49,6 +50,9 @@ func RuntimeFromService(cfg *ServiceConfig) RuntimeConfig {
 		runtime.Upload = *cfg.Upload
 	} else {
 		runtime.Upload.GuestEnabled = true
+	}
+	if cfg.Retention != nil {
+		runtime.Retention = *cfg.Retention
 	}
 	if cfg.Auth != nil {
 		runtime.Auth.SignupEnabled = cfg.Auth.SignupEnabled
@@ -118,6 +122,7 @@ func applyRuntimeUnchecked(cfg *ServiceConfig, runtime RuntimeConfig) {
 	cfg.MaxFileSize = runtime.MaxFileSize
 	cfg.SecureCookies = runtime.SecureCookies
 	cfg.Upload = &runtime.Upload
+	cfg.Retention = &runtime.Retention
 	if cfg.Auth == nil {
 		cfg.Auth = &AuthConfig{}
 	}

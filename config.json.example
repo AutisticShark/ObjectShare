@@ -5,6 +5,13 @@
   "idle_timeout": "1m",
   "shutdown_timeout": "15s",
   "settings_key": "replace-with-a-different-32-byte-random-secret",
+  "upload": {
+    "guest_enabled": true
+  },
+  "retention": {
+    "guest_days": 0,
+    "unpaid_days": 0
+  },
   "auth": {
     "jwt_secret": "replace-with-at-least-32-random-bytes",
     "token_lifetime": "12h",

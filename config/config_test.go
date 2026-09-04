@@ -265,6 +265,31 @@ func TestGuestUploadPolicyAndQuotaConfigRejection(t *testing.T) {
 	}
 }
 
+func TestRetentionDefaultsEnvironmentAndValidation(t *testing.T) {
+	cfg := testDefaults()
+	if cfg.Retention == nil || cfg.Retention.GuestDays != 0 || cfg.Retention.UnpaidDays != 0 {
+		t.Fatalf("retention must default to non-destructive disabled values: %#v", cfg.Retention)
+	}
+	t.Setenv("OBJECTSHARE_GUEST_RETENTION_DAYS", "7")
+	t.Setenv("OBJECTSHARE_UNPAID_RETENTION_DAYS", "30")
+	if err := applyEnvironment(cfg); err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Retention.GuestDays != 7 || cfg.Retention.UnpaidDays != 30 {
+		t.Fatalf("retention environment was not applied: %#v", cfg.Retention)
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	for _, settings := range []*RetentionConfig{{GuestDays: -1}, {UnpaidDays: 36501}} {
+		candidate := testDefaults()
+		candidate.Retention = settings
+		if err := candidate.Validate(); err == nil || !strings.Contains(err.Error(), "retention") {
+			t.Fatalf("invalid retention configuration was accepted: %#v", settings)
+		}
+	}
+}
+
 func TestOAuthEnvironmentAndValidation(t *testing.T) {
 	t.Setenv("OBJECTSHARE_PUBLIC_URL", "https://share.example.com")
 	t.Setenv("OBJECTSHARE_SECURE_COOKIES", "true")

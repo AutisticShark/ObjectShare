@@ -116,6 +116,8 @@ func TestAdminConfigurationDashboardKeepsSecretsWriteOnlyAndSavesRevision(t *tes
 	values.Set("csrf_token", claims.CSRF)
 	values.Set("revision", settingsRevision(repository.setting.Value))
 	values.Set("max_file_size", "77")
+	values.Set("guest_retention_days", "7")
+	values.Set("unpaid_retention_days", "30")
 	values.Set("captcha_secret_key", "")
 	postRequest := httptest.NewRequest(http.MethodPost, "/admin/settings", strings.NewReader(values.Encode()))
 	postRequest.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -129,7 +131,7 @@ func TestAdminConfigurationDashboardKeepsSecretsWriteOnlyAndSavesRevision(t *tes
 	if err != nil {
 		t.Fatal(err)
 	}
-	if saved.MaxFileSize != 77 || saved.Captcha.SecretKey != runtime.Captcha.SecretKey || saved.Auth.OAuth.Discord.ClientSecret != runtime.Auth.OAuth.Discord.ClientSecret {
+	if saved.MaxFileSize != 77 || saved.Retention.GuestDays != 7 || saved.Retention.UnpaidDays != 30 || saved.Captcha.SecretKey != runtime.Captcha.SecretKey || saved.Auth.OAuth.Discord.ClientSecret != runtime.Auth.OAuth.Discord.ClientSecret {
 		t.Fatalf("saved runtime lost values or secrets: %#v", saved)
 	}
 	if handler.config.MaxFileSize == 77 {
@@ -156,7 +158,7 @@ func TestAdminConfigurationDashboardKeepsSecretsWriteOnlyAndSavesRevision(t *tes
 
 func runtimeFormValues(runtime config.RuntimeConfig) url.Values {
 	values := url.Values{
-		"max_file_size": {fmt.Sprint(runtime.MaxFileSize)}, "oauth_public_url": {runtime.Auth.OAuth.PublicURL},
+		"max_file_size": {fmt.Sprint(runtime.MaxFileSize)}, "guest_retention_days": {fmt.Sprint(runtime.Retention.GuestDays)}, "unpaid_retention_days": {fmt.Sprint(runtime.Retention.UnpaidDays)}, "oauth_public_url": {runtime.Auth.OAuth.PublicURL},
 		"google_oauth_client_id": {runtime.Auth.OAuth.Google.ClientID}, "github_oauth_client_id": {runtime.Auth.OAuth.GitHub.ClientID}, "discord_oauth_client_id": {runtime.Auth.OAuth.Discord.ClientID},
 		"captcha_provider": {runtime.Captcha.Provider}, "captcha_site_key": {runtime.Captcha.SiteKey}, "captcha_expected_hostname": {runtime.Captcha.ExpectedHostname},
 		"rate_limit_window": {runtime.RateLimit.Window.String()}, "rate_limit_api": {fmt.Sprint(runtime.RateLimit.APILimit)}, "rate_limit_login": {fmt.Sprint(runtime.RateLimit.LoginLimit)}, "rate_limit_signup": {fmt.Sprint(runtime.RateLimit.SignupLimit)}, "rate_limit_upload": {fmt.Sprint(runtime.RateLimit.UploadLimit)}, "rate_limit_download": {fmt.Sprint(runtime.RateLimit.DownloadLimit)}, "trusted_proxy_cidrs": {strings.Join(runtime.RateLimit.TrustedProxyCIDRs, ",")},

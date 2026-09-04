@@ -62,7 +62,7 @@ type accountPageData struct {
 
 type adminUserRow struct {
 	ID, Email, DisplayName, Role, CreatedAt, LastLogin, StorageUsed string
-	Active, IsCurrent                                               bool
+	Active, IsCurrent, IsPaid                                       bool
 	UploadQuotaMiB                                                  int64
 }
 
@@ -621,7 +621,7 @@ func (handler *Handler) AdminCreateUser(writer http.ResponseWriter, request *htt
 		handler.internalError(writer, request, "hash administrator-created password", err)
 		return
 	}
-	err = handler.users.CreateUser(request.Context(), &db.User{ID: uuid.NewString(), Email: email, DisplayName: displayName, PasswordHash: hash, Role: role, Active: true, TokenVersion: 1, UploadQuotaBytes: uploadQuotaBytes})
+	err = handler.users.CreateUser(request.Context(), &db.User{ID: uuid.NewString(), Email: email, DisplayName: displayName, PasswordHash: hash, Role: role, Active: true, TokenVersion: 1, IsPaid: checked(request, "is_paid"), UploadQuotaBytes: uploadQuotaBytes})
 	if errors.Is(err, db.ErrConflict) {
 		handler.renderAdminError(writer, request, identity, "That email address is already registered.")
 		return
@@ -651,6 +651,16 @@ func (handler *Handler) AdminUpdateUploadQuota(writer http.ResponseWriter, reque
 		}
 		return handler.users.UpdateUploadQuota(ctx, id, quotaBytes)
 	}, "quota")
+}
+
+func (handler *Handler) AdminUpdatePaidStatus(writer http.ResponseWriter, request *http.Request) {
+	handler.adminUserAction(writer, request, func(ctx context.Context, id string) error {
+		paid := request.FormValue("is_paid")
+		if paid != "true" && paid != "false" {
+			return fmt.Errorf("%w: Choose a valid payment status.", errInvalidAdminForm)
+		}
+		return handler.users.UpdatePaidStatus(ctx, id, paid == "true")
+	}, "paid")
 }
 
 func (handler *Handler) AdminResetPassword(writer http.ResponseWriter, request *http.Request) {
@@ -736,7 +746,7 @@ func (handler *Handler) adminUsersPageData(ctx context.Context, identity *identi
 		totalStorageUsed += storageUsed
 		rows = append(rows, adminUserRow{ID: user.ID, Email: user.Email, DisplayName: user.DisplayName, Role: user.Role,
 			Active: user.Active, CreatedAt: user.CreatedAt.UTC().Format("2006-01-02"), LastLogin: lastLogin,
-			IsCurrent: user.ID == identity.User.ID, UploadQuotaMiB: user.UploadQuotaBytes / mebibyte,
+			IsCurrent: user.ID == identity.User.ID, IsPaid: user.IsPaid, UploadQuotaMiB: user.UploadQuotaBytes / mebibyte,
 			StorageUsed: humanSize(storageUsed)})
 	}
 	return adminPageData{Version: config.GetVersion(), CSRF: identity.Claims.CSRF, User: identity.User, Users: rows, TotalStorageUsed: humanSize(totalStorageUsed)}, nil
@@ -959,5 +969,5 @@ func accountMessage(value string) string {
 }
 
 func adminMessage(value string) string {
-	return map[string]string{"setup": "Initial administrator created.", "created": "User created.", "updated": "Access updated; that user's earlier JWTs were invalidated.", "quota": "Upload quota updated.", "password": "Password reset; that user's earlier JWTs were invalidated.", "deleted": "User deleted."}[value]
+	return map[string]string{"setup": "Initial administrator created.", "created": "User created.", "updated": "Access updated; that user's earlier JWTs were invalidated.", "quota": "Upload quota updated.", "paid": "Payment status updated.", "password": "Password reset; that user's earlier JWTs were invalidated.", "deleted": "User deleted."}[value]
 }

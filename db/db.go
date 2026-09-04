@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/url"
 	"strconv"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -59,6 +60,14 @@ type Repository interface {
 	Ping(context.Context) error
 }
 
+// RetentionRepository is kept separate from Repository so HTTP handlers do
+// not receive background-maintenance capabilities they never use.
+type RetentionRepository interface {
+	ClaimFilesForRetention(context.Context, time.Time, time.Time, *time.Time, *time.Time, int) ([]FileList, error)
+	ReleaseRetentionClaim(context.Context, string) error
+	Delete(context.Context, string) error
+}
+
 type AuthRepository interface {
 	AdminCount(context.Context) (int64, error)
 	BootstrapAdmin(context.Context, *User) error
@@ -77,6 +86,7 @@ type AuthRepository interface {
 	UpdatePassword(context.Context, string, string) (*User, error)
 	AdminUpdateUser(context.Context, string, string, bool) error
 	UpdateUploadQuota(context.Context, string, int64) error
+	UpdatePaidStatus(context.Context, string, bool) error
 	DeleteUser(context.Context, string) error
 	ListFilesByOwner(context.Context, string) ([]FileList, error)
 	RecordLogin(context.Context, string, time.Time) error
@@ -251,7 +261,7 @@ func (repo *GormRepository) UploadUsage(ctx context.Context, userID string) (Upl
 }
 
 func uploadBytesUsed(connection *gorm.DB, userID string) (int64, error) {
-	active := []string{"pending", "complete"}
+	active := []string{"pending", "complete", "deleting"}
 	var used int64
 	if err := connection.Model(&FileList{}).Select("COALESCE(SUM(file_size), 0)").
 		Where("upload_status IN ? AND file_owner = ?", active, userID).Scan(&used).Error; err != nil {
@@ -327,6 +337,104 @@ func (repo *GormRepository) Rename(ctx context.Context, fileID, name string) err
 
 func (repo *GormRepository) Delete(ctx context.Context, fileID string) error {
 	result := repo.connection.WithContext(ctx).Where("file_id = ?", fileID).Delete(&FileList{})
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// ClaimFilesForRetention atomically marks a bounded batch before object-store
+// deletion. SKIP LOCKED lets multiple replicas cooperate without deleting the
+// same live row. Stale claims are reclaimed after an interrupted cleanup.
+func (repo *GormRepository) ClaimFilesForRetention(ctx context.Context, now, staleBefore time.Time, guestBefore, unpaidBefore *time.Time, limit int) ([]FileList, error) {
+	if limit <= 0 {
+		return nil, nil
+	}
+	eligibleSQL, eligibilityArgs := retentionEligibilitySQL(guestBefore, unpaidBefore)
+	var claimed []FileList
+	err := repo.connection.WithContext(ctx).Transaction(func(transaction *gorm.DB) error {
+		args := append(eligibilityArgs, staleBefore)
+		var candidates []FileList
+		if err := transaction.Table("file_lists AS f").
+			Clauses(clause.Locking{Strength: "UPDATE", Options: "SKIP LOCKED"}).
+			Where("(f.upload_status = 'complete' AND ("+eligibleSQL+")) OR (f.upload_status = 'deleting' AND f.retention_claimed_at <= ?)", args...).
+			Order("COALESCE(f.retention_claimed_at, f.created_at), f.id").Limit(limit).Find(&candidates).Error; err != nil {
+			return err
+		}
+
+		// Re-read each candidate's entitlement under a shared row lock. A
+		// concurrent paid-status update must therefore commit before this
+		// check or wait until the deletion claim commits.
+		userIDs := make([]string, 0, len(candidates))
+		seenUsers := make(map[string]bool)
+		for _, file := range candidates {
+			if file.UploadStatus == "complete" && file.FileOwner != nil && !seenUsers[*file.FileOwner] {
+				seenUsers[*file.FileOwner] = true
+				userIDs = append(userIDs, *file.FileOwner)
+			}
+		}
+		paidByID := make(map[string]bool, len(userIDs))
+		if len(userIDs) != 0 {
+			var users []User
+			if err := transaction.Clauses(clause.Locking{Strength: "SHARE"}).
+				Select("id", "is_paid").Where("id IN ?", userIDs).Order("id").Find(&users).Error; err != nil {
+				return err
+			}
+			for _, user := range users {
+				paidByID[user.ID] = user.IsPaid
+			}
+		}
+
+		claimed = candidates[:0]
+		ids := make([]uint, 0, len(candidates))
+		for _, file := range candidates {
+			eligible := file.UploadStatus == "deleting" || file.FileOwner == nil
+			if file.UploadStatus == "complete" && file.FileOwner != nil {
+				paid, userExists := paidByID[*file.FileOwner]
+				eligible = userExists && !paid
+			}
+			if eligible {
+				claimed = append(claimed, file)
+				ids = append(ids, file.ID)
+			}
+		}
+		if len(ids) == 0 {
+			return nil
+		}
+		return transaction.Model(&FileList{}).Where("id IN ?", ids).
+			Updates(map[string]any{"upload_status": "deleting", "retention_claimed_at": now, "updated_at": now}).Error
+	})
+	if err != nil {
+		return nil, err
+	}
+	return claimed, nil
+}
+
+func retentionEligibilitySQL(guestBefore, unpaidBefore *time.Time) (string, []any) {
+	var eligibility []string
+	var eligibilityArgs []any
+	if guestBefore != nil {
+		eligibility = append(eligibility, "(f.file_owner IS NULL AND f.created_at <= ?)")
+		eligibilityArgs = append(eligibilityArgs, *guestBefore)
+	}
+	if unpaidBefore != nil {
+		eligibility = append(eligibility, "(f.file_owner IS NOT NULL AND f.created_at <= ? AND EXISTS (SELECT 1 FROM users AS u WHERE u.id = f.file_owner AND u.is_paid = FALSE))")
+		eligibilityArgs = append(eligibilityArgs, *unpaidBefore)
+	}
+	eligibleSQL := "FALSE"
+	if len(eligibility) != 0 {
+		eligibleSQL = strings.Join(eligibility, " OR ")
+	}
+	return eligibleSQL, eligibilityArgs
+}
+
+func (repo *GormRepository) ReleaseRetentionClaim(ctx context.Context, fileID string) error {
+	result := repo.connection.WithContext(ctx).Model(&FileList{}).
+		Where("file_id = ? AND upload_status = ?", fileID, "deleting").
+		Updates(map[string]any{"upload_status": "complete", "retention_claimed_at": nil})
 	if result.Error != nil {
 		return result.Error
 	}

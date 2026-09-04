@@ -128,6 +128,7 @@ func defaults() *ServiceConfig {
 		ShutdownTimeout: Duration(15 * time.Second),
 		MaxFileSize:     100,
 		Upload:          &UploadConfig{GuestEnabled: true},
+		Retention:       &RetentionConfig{},
 		Auth: &AuthConfig{
 			SignupEnabled: true, TokenLifetime: Duration(12 * time.Hour), OAuth: &OAuthConfig{},
 		},
@@ -202,6 +203,11 @@ func applyEnvironment(cfg *ServiceConfig) error {
 		cfg.Upload = &UploadConfig{GuestEnabled: true}
 	}
 	problems = append(problems, setBool("OBJECTSHARE_GUEST_UPLOAD_ENABLED", &cfg.Upload.GuestEnabled))
+	if cfg.Retention == nil {
+		cfg.Retention = &RetentionConfig{}
+	}
+	problems = append(problems, setInt("OBJECTSHARE_GUEST_RETENTION_DAYS", &cfg.Retention.GuestDays))
+	problems = append(problems, setInt("OBJECTSHARE_UNPAID_RETENTION_DAYS", &cfg.Retention.UnpaidDays))
 	for _, name := range []string{
 		"OBJECTSHARE_GUEST_UPLOAD_QUOTA_MB",
 		"OBJECTSHARE_USER_UPLOAD_QUOTA_MB",
@@ -334,6 +340,15 @@ func (cfg *ServiceConfig) Validate() error {
 	}
 	if cfg.Upload == nil {
 		cfg.Upload = &UploadConfig{GuestEnabled: true}
+	}
+	if cfg.Retention == nil {
+		cfg.Retention = &RetentionConfig{}
+	}
+	if cfg.Retention.GuestDays < 0 || cfg.Retention.GuestDays > 36500 {
+		return errors.New("retention guest_days must be between 0 and 36500")
+	}
+	if cfg.Retention.UnpaidDays < 0 || cfg.Retention.UnpaidDays > 36500 {
+		return errors.New("retention unpaid_days must be between 0 and 36500")
 	}
 	if cfg.Timeout > 0 && cfg.ReadTimeout == Duration(5*time.Minute) {
 		cfg.ReadTimeout = Duration(time.Duration(cfg.Timeout) * time.Second)
