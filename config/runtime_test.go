@@ -11,13 +11,14 @@ func TestRuntimeConfigurationRoundTripIsEncrypted(t *testing.T) {
 	cfg.Auth.OAuth.Google.ClientSecret = "google-plaintext-secret"
 	cfg.Auth.OAuth.Discord.ClientSecret = "discord-plaintext-secret"
 	cfg.Captcha.SecretKey = "turnstile-plaintext-secret"
+	cfg.Billing.PayPal.ClientSecret = "paypal-plaintext-secret"
 	cfg.R2.SecretAccessKey = "storage-plaintext-secret"
 	runtime := RuntimeFromService(cfg)
 	sealed, err := SealRuntime(runtime, testJWTSecret)
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, secret := range []string{runtime.Auth.OAuth.Google.ClientSecret, runtime.Auth.OAuth.Discord.ClientSecret, runtime.Captcha.SecretKey, runtime.R2.SecretAccessKey} {
+	for _, secret := range []string{runtime.Auth.OAuth.Google.ClientSecret, runtime.Auth.OAuth.Discord.ClientSecret, runtime.Captcha.SecretKey, runtime.Billing.PayPal.ClientSecret, runtime.R2.SecretAccessKey} {
 		if strings.Contains(sealed, secret) {
 			t.Fatalf("sealed configuration exposed %q", secret)
 		}
@@ -26,7 +27,7 @@ func TestRuntimeConfigurationRoundTripIsEncrypted(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if opened.Auth.OAuth.Google.ClientSecret != runtime.Auth.OAuth.Google.ClientSecret || opened.Auth.OAuth.Discord.ClientSecret != runtime.Auth.OAuth.Discord.ClientSecret || opened.Captcha.SecretKey != runtime.Captcha.SecretKey || opened.R2.SecretAccessKey != runtime.R2.SecretAccessKey {
+	if opened.Auth.OAuth.Google.ClientSecret != runtime.Auth.OAuth.Google.ClientSecret || opened.Auth.OAuth.Discord.ClientSecret != runtime.Auth.OAuth.Discord.ClientSecret || opened.Captcha.SecretKey != runtime.Captcha.SecretKey || opened.Billing.PayPal.ClientSecret != runtime.Billing.PayPal.ClientSecret || opened.R2.SecretAccessKey != runtime.R2.SecretAccessKey {
 		t.Fatal("sealed configuration did not round-trip secrets")
 	}
 	if _, err := OpenRuntime(sealed, "a-different-bootstrap-secret-that-is-long-enough"); err == nil {

@@ -78,14 +78,32 @@ type RetentionConfig struct {
 	UnpaidDays int `json:"unpaid_days"`
 }
 
-// BillingConfig contains the Stripe credentials used only by the server. Plan
-// prices and entitlements live in PostgreSQL so administrators can change the
-// catalogue without rebuilding the application.
+// BillingConfig contains server-side gateway credentials. Plans and
+// entitlements live in PostgreSQL so administrators can change the catalogue
+// without rebuilding the application. The legacy fields are retained only so
+// Stripe-only configuration documents from earlier releases can be migrated.
 type BillingConfig struct {
+	PublicURL string              `json:"public_url"`
+	Stripe    StripeBillingConfig `json:"stripe"`
+	PayPal    PayPalBillingConfig `json:"paypal"`
+
+	Enabled       bool   `json:"enabled,omitempty"`
+	SecretKey     string `json:"secret_key,omitempty"`
+	WebhookSecret string `json:"webhook_secret,omitempty"`
+}
+
+type StripeBillingConfig struct {
 	Enabled       bool   `json:"enabled"`
-	PublicURL     string `json:"public_url"`
 	SecretKey     string `json:"secret_key"`
 	WebhookSecret string `json:"webhook_secret"`
+}
+
+type PayPalBillingConfig struct {
+	Enabled      bool   `json:"enabled"`
+	Environment  string `json:"environment"`
+	ClientID     string `json:"client_id"`
+	ClientSecret string `json:"client_secret"`
+	WebhookID    string `json:"webhook_id"`
 }
 
 type AuthConfig struct {

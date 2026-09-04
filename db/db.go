@@ -165,6 +165,66 @@ func Open(ctx context.Context, cfg *config.DatabaseConfig) (*GormRepository, err
 			return nil, fmt.Errorf("remove legacy uniqueness: %w", err)
 		}
 	}
+	if migration.Migrator().HasTable(&PaidPlan{}) {
+		statements := []string{
+			"ALTER TABLE paid_plans ADD COLUMN IF NOT EXISTS gateway varchar(32)",
+			"ALTER TABLE paid_plans ADD COLUMN IF NOT EXISTS gateway_plan_id varchar(255)",
+			"UPDATE paid_plans SET gateway = 'stripe' WHERE gateway IS NULL OR gateway = ''",
+		}
+		if migration.Migrator().HasColumn(&legacyPaidPlan{}, "StripePriceID") {
+			statements = append(statements,
+				"UPDATE paid_plans SET gateway_plan_id = stripe_price_id WHERE gateway_plan_id IS NULL OR gateway_plan_id = ''",
+				"ALTER TABLE paid_plans ALTER COLUMN stripe_price_id DROP NOT NULL",
+			)
+		}
+		statements = append(statements,
+			"ALTER TABLE paid_plans ALTER COLUMN gateway SET NOT NULL",
+			"ALTER TABLE paid_plans ALTER COLUMN gateway_plan_id SET NOT NULL",
+		)
+		for _, statement := range statements {
+			if err := migration.Exec(statement).Error; err != nil {
+				_ = migration.Rollback().Error
+				_ = sqlDB.Close()
+				return nil, fmt.Errorf("migrate billing plans: %w", err)
+			}
+		}
+	}
+	if migration.Migrator().HasTable(&Subscription{}) {
+		statements := []string{
+			"ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS gateway varchar(32)",
+			"ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS customer_id varchar(255)",
+			"ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS gateway_subscription_id varchar(255)",
+			"UPDATE subscriptions SET gateway = 'stripe' WHERE gateway IS NULL OR gateway = ''",
+		}
+		if migration.Migrator().HasColumn(&legacySubscription{}, "StripeSubscriptionID") {
+			statements = append(statements,
+				"UPDATE subscriptions SET customer_id = stripe_customer_id WHERE customer_id IS NULL",
+				"UPDATE subscriptions SET gateway_subscription_id = stripe_subscription_id WHERE gateway_subscription_id IS NULL OR gateway_subscription_id = ''",
+				"ALTER TABLE subscriptions ALTER COLUMN stripe_customer_id DROP NOT NULL",
+				"ALTER TABLE subscriptions ALTER COLUMN stripe_subscription_id DROP NOT NULL",
+			)
+		}
+		statements = append(statements,
+			"UPDATE subscriptions SET customer_id = '' WHERE customer_id IS NULL",
+			"ALTER TABLE subscriptions ALTER COLUMN gateway SET NOT NULL",
+			"ALTER TABLE subscriptions ALTER COLUMN customer_id SET NOT NULL",
+			"ALTER TABLE subscriptions ALTER COLUMN gateway_subscription_id SET NOT NULL",
+		)
+		for _, statement := range statements {
+			if err := migration.Exec(statement).Error; err != nil {
+				_ = migration.Rollback().Error
+				_ = sqlDB.Close()
+				return nil, fmt.Errorf("migrate billing subscriptions: %w", err)
+			}
+		}
+	}
+	if migration.Migrator().HasTable(&BillingEvent{}) {
+		if err := migration.Exec("UPDATE billing_events SET event_id = 'stripe:' || event_id WHERE POSITION(':' IN event_id) = 0").Error; err != nil {
+			_ = migration.Rollback().Error
+			_ = sqlDB.Close()
+			return nil, fmt.Errorf("migrate billing events: %w", err)
+		}
+	}
 	if err := migration.AutoMigrate(&User{}, &OAuthIdentity{}, &RevokedToken{}, &LoginThrottle{}, &RateLimitBucket{}, &FileList{}, &ApplicationSetting{}, &PaidPlan{}, &Subscription{}, &BillingEvent{}, &BillingCheckout{}); err != nil {
 		_ = migration.Rollback().Error
 		_ = sqlDB.Close()
@@ -181,6 +241,18 @@ func Open(ctx context.Context, cfg *config.DatabaseConfig) (*GormRepository, err
 	}
 	return &GormRepository{connection: connection}, nil
 }
+
+type legacyPaidPlan struct {
+	StripePriceID string `gorm:"column:stripe_price_id"`
+}
+
+func (legacyPaidPlan) TableName() string { return "paid_plans" }
+
+type legacySubscription struct {
+	StripeSubscriptionID string `gorm:"column:stripe_subscription_id"`
+}
+
+func (legacySubscription) TableName() string { return "subscriptions" }
 
 func postgresConfig(cfg *config.DatabaseConfig) (*pgx.ConnConfig, *time.Location, error) {
 	location, err := time.LoadLocation(cfg.TimeZone)

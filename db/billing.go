@@ -18,25 +18,25 @@ type Entitlements struct {
 	CurrentPeriodEnd                       time.Time
 }
 
-type StripeSubscriptionUpdate struct {
-	EventID, UserID, PlanID, StripeCustomerID, StripeSubscriptionID, Status string
-	EventCreated                                                            int64
-	CurrentPeriodEnd                                                        time.Time
-	CancelAtPeriodEnd                                                       bool
+type SubscriptionUpdate struct {
+	Gateway, EventID, UserID, PlanID, CustomerID, SubscriptionID, Status string
+	EventCreated                                                         int64
+	CurrentPeriodEnd                                                     time.Time
+	CancelAtPeriodEnd                                                    bool
 }
 
 type BillingRepository interface {
 	PublicPlans(context.Context) ([]PaidPlan, error)
 	AllPlans(context.Context) ([]PaidPlan, error)
 	PlanByID(context.Context, string, bool) (*PaidPlan, error)
-	PlanByStripePrice(context.Context, string) (*PaidPlan, error)
+	PlanByGatewayID(context.Context, string, string) (*PaidPlan, error)
 	CreatePlan(context.Context, *PaidPlan) error
 	UpdatePlan(context.Context, *PaidPlan) error
 	Entitlements(context.Context, string, time.Time) (Entitlements, error)
 	SubscriptionForUser(context.Context, string) (*Subscription, error)
 	ReserveBillingCheckout(context.Context, string, string, time.Time) error
 	ReleaseBillingCheckout(context.Context, string, string) error
-	ApplyStripeSubscription(context.Context, StripeSubscriptionUpdate) (bool, error)
+	ApplySubscription(context.Context, SubscriptionUpdate) (bool, error)
 }
 
 func (repo *GormRepository) ReserveBillingCheckout(ctx context.Context, userID, planID string, now time.Time) error {
@@ -64,9 +64,9 @@ func (repo *GormRepository) ReleaseBillingCheckout(ctx context.Context, userID, 
 	return repo.connection.WithContext(ctx).Where("user_id = ? AND plan_id = ?", userID, planID).Delete(&BillingCheckout{}).Error
 }
 
-func (repo *GormRepository) PlanByStripePrice(ctx context.Context, priceID string) (*PaidPlan, error) {
+func (repo *GormRepository) PlanByGatewayID(ctx context.Context, gateway, planID string) (*PaidPlan, error) {
 	var plan PaidPlan
-	if err := repo.connection.WithContext(ctx).Where("stripe_price_id = ?", priceID).First(&plan).Error; errors.Is(err, gorm.ErrRecordNotFound) {
+	if err := repo.connection.WithContext(ctx).Where("gateway = ? AND gateway_plan_id = ?", gateway, planID).First(&plan).Error; errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil, ErrNotFound
 	} else if err != nil {
 		return nil, err
@@ -115,7 +115,7 @@ func (repo *GormRepository) UpdatePlan(ctx context.Context, plan *PaidPlan) erro
 		} else if err != nil {
 			return err
 		}
-		if existing.StripePriceID != plan.StripePriceID {
+		if existing.Gateway != plan.Gateway || existing.GatewayPlanID != plan.GatewayPlanID {
 			var subscriptions int64
 			if err := tx.Model(&Subscription{}).Where("plan_id = ?", plan.ID).Count(&subscriptions).Error; err != nil {
 				return err
@@ -125,7 +125,7 @@ func (repo *GormRepository) UpdatePlan(ctx context.Context, plan *PaidPlan) erro
 			}
 		}
 		return tx.Model(&PaidPlan{}).Where("id = ?", plan.ID).Updates(map[string]any{
-			"name": plan.Name, "description": plan.Description, "stripe_price_id": plan.StripePriceID,
+			"name": plan.Name, "description": plan.Description, "gateway": plan.Gateway, "gateway_plan_id": plan.GatewayPlanID,
 			"price_label": plan.PriceLabel, "storage_quota_bytes": plan.StorageQuotaBytes,
 			"retention_days": plan.RetentionDays, "direct_links": plan.DirectLinks,
 			"active": plan.Active, "sort_order": plan.SortOrder,
@@ -171,7 +171,7 @@ func (repo *GormRepository) SubscriptionForUser(ctx context.Context, userID stri
 	return &subscription, nil
 }
 
-func (repo *GormRepository) ApplyStripeSubscription(ctx context.Context, update StripeSubscriptionUpdate) (bool, error) {
+func (repo *GormRepository) ApplySubscription(ctx context.Context, update SubscriptionUpdate) (bool, error) {
 	applied := false
 	err := repo.connection.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		// Serialize subscription changes with quota reservations and retention
@@ -184,14 +184,15 @@ func (repo *GormRepository) ApplyStripeSubscription(ctx context.Context, update 
 				return err
 			}
 		}
+		eventID := update.Gateway + ":" + update.EventID
 		var seen BillingEvent
-		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("event_id = ?", update.EventID).First(&seen).Error; err == nil {
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("event_id = ?", eventID).First(&seen).Error; err == nil {
 			return nil
 		} else if !errors.Is(err, gorm.ErrRecordNotFound) {
 			return err
 		}
 		var existing Subscription
-		err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("stripe_subscription_id = ?", update.StripeSubscriptionID).First(&existing).Error
+		err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("gateway = ? AND gateway_subscription_id = ?", update.Gateway, update.SubscriptionID).First(&existing).Error
 		if errors.Is(err, gorm.ErrRecordNotFound) && update.UserID != "" {
 			err = tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("user_id = ?", update.UserID).First(&existing).Error
 		}
@@ -199,7 +200,7 @@ func (repo *GormRepository) ApplyStripeSubscription(ctx context.Context, update 
 			return err
 		}
 		if err == nil && update.EventCreated < existing.LastEventCreated {
-			return tx.Create(&BillingEvent{EventID: update.EventID}).Error
+			return tx.Create(&BillingEvent{EventID: eventID}).Error
 		}
 		if update.UserID == "" && err == nil {
 			update.UserID = existing.UserID
@@ -210,22 +211,25 @@ func (repo *GormRepository) ApplyStripeSubscription(ctx context.Context, update 
 		if update.UserID == "" || update.PlanID == "" {
 			return ErrNotFound
 		}
+		if err == nil && existing.Gateway != update.Gateway && !subscriptionActive(update.Status, update.CurrentPeriodEnd, time.Now().UTC()) {
+			return tx.Create(&BillingEvent{EventID: eventID}).Error
+		}
 		if err == nil {
-			existing.PlanID, existing.StripeCustomerID, existing.StripeSubscriptionID = update.PlanID, update.StripeCustomerID, update.StripeSubscriptionID
+			existing.PlanID, existing.Gateway, existing.CustomerID, existing.GatewaySubscriptionID = update.PlanID, update.Gateway, update.CustomerID, update.SubscriptionID
 			existing.Status, existing.CurrentPeriodEnd, existing.CancelAtPeriodEnd, existing.LastEventCreated = update.Status, update.CurrentPeriodEnd, update.CancelAtPeriodEnd, update.EventCreated
 			if saveErr := tx.Save(&existing).Error; saveErr != nil {
 				return saveErr
 			}
 		} else {
 			sub := Subscription{ID: uuid.NewString(), UserID: update.UserID, PlanID: update.PlanID,
-				StripeCustomerID: update.StripeCustomerID, StripeSubscriptionID: update.StripeSubscriptionID,
+				Gateway: update.Gateway, CustomerID: update.CustomerID, GatewaySubscriptionID: update.SubscriptionID,
 				Status: update.Status, CurrentPeriodEnd: update.CurrentPeriodEnd,
 				CancelAtPeriodEnd: update.CancelAtPeriodEnd, LastEventCreated: update.EventCreated}
 			if createErr := tx.Create(&sub).Error; createErr != nil {
 				return createErr
 			}
 		}
-		if createErr := tx.Create(&BillingEvent{EventID: update.EventID}).Error; createErr != nil {
+		if createErr := tx.Create(&BillingEvent{EventID: eventID}).Error; createErr != nil {
 			return createErr
 		}
 		if deleteErr := tx.Where("user_id = ?", update.UserID).Delete(&BillingCheckout{}).Error; deleteErr != nil {

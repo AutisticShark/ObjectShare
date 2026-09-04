@@ -508,11 +508,12 @@ func (handler *Handler) renderAccount(writer http.ResponseWriter, request *http.
 		handler.internalError(writer, request, "list linked OAuth identities", err)
 		return
 	}
-	data := accountPageData{Version: config.GetVersion(), CSRF: identity.Claims.CSRF, User: identity.User, Files: rows, OAuthProviders: providers, HasPassword: identity.User.PasswordHash != "", Error: formError, Message: message, QuotaLabel: handler.uploadQuotaLabel(request, identity.User), BillingEnabled: handler.stripe != nil}
+	data := accountPageData{Version: config.GetVersion(), CSRF: identity.Claims.CSRF, User: identity.User, Files: rows, OAuthProviders: providers, HasPassword: identity.User.PasswordHash != "", Error: formError, Message: message, QuotaLabel: handler.uploadQuotaLabel(request, identity.User)}
 	if handler.billing != nil {
 		subscription, subscriptionErr := handler.billing.SubscriptionForUser(request.Context(), identity.User.ID)
 		if subscriptionErr == nil {
 			data.BillingAccount, data.PlanName, data.PlanStatus = true, subscription.Plan.Name, subscription.Status
+			data.BillingEnabled = handler.billingGateways[subscription.Gateway] != nil
 		} else if !errors.Is(subscriptionErr, db.ErrNotFound) {
 			handler.internalError(writer, request, "get billing account", subscriptionErr)
 			return
@@ -986,7 +987,7 @@ func (handler *Handler) redirectAfterLogin(writer http.ResponseWriter, request *
 }
 
 func accountMessage(value string) string {
-	return map[string]string{"welcome": "Welcome to ObjectShare.", "profile": "Profile updated.", "theme": "Appearance updated.", "password": "Password changed and all earlier JWTs were invalidated.", "oauth-linked": "OAuth login linked.", "oauth-unlinked": "OAuth login removed.", "billing-pending": "Payment received. Plan access will appear after Stripe confirms the subscription."}[value]
+	return map[string]string{"welcome": "Welcome to ObjectShare.", "profile": "Profile updated.", "theme": "Appearance updated.", "password": "Password changed and all earlier JWTs were invalidated.", "oauth-linked": "OAuth login linked.", "oauth-unlinked": "OAuth login removed.", "billing-pending": "Approval received. Plan access will appear after the payment gateway confirms the subscription."}[value]
 }
 
 func adminMessage(value string) string {

@@ -14,10 +14,19 @@
     "unpaid_days": 0
   },
   "billing": {
-    "enabled": false,
     "public_url": "http://localhost:8080",
-    "secret_key": "",
-    "webhook_secret": ""
+    "stripe": {
+      "enabled": false,
+      "secret_key": "",
+      "webhook_secret": ""
+    },
+    "paypal": {
+      "enabled": false,
+      "environment": "sandbox",
+      "client_id": "",
+      "client_secret": "",
+      "webhook_id": ""
+    }
   },
   "auth": {
     "jwt_secret": "replace-with-at-least-32-random-bytes",

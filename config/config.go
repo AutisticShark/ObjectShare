@@ -129,7 +129,7 @@ func defaults() *ServiceConfig {
 		MaxFileSize:     100,
 		Upload:          &UploadConfig{GuestEnabled: true, MaxFilesPerBatch: 10},
 		Retention:       &RetentionConfig{},
-		Billing:         &BillingConfig{},
+		Billing:         &BillingConfig{PayPal: PayPalBillingConfig{Environment: "sandbox"}},
 		Auth: &AuthConfig{
 			SignupEnabled: true, TokenLifetime: Duration(12 * time.Hour), OAuth: &OAuthConfig{},
 		},
@@ -211,12 +211,17 @@ func applyEnvironment(cfg *ServiceConfig) error {
 	problems = append(problems, setInt("OBJECTSHARE_GUEST_RETENTION_DAYS", &cfg.Retention.GuestDays))
 	problems = append(problems, setInt("OBJECTSHARE_UNPAID_RETENTION_DAYS", &cfg.Retention.UnpaidDays))
 	if cfg.Billing == nil {
-		cfg.Billing = &BillingConfig{}
+		cfg.Billing = &BillingConfig{PayPal: PayPalBillingConfig{Environment: "sandbox"}}
 	}
-	problems = append(problems, setBool("OBJECTSHARE_STRIPE_ENABLED", &cfg.Billing.Enabled))
+	problems = append(problems, setBool("OBJECTSHARE_STRIPE_ENABLED", &cfg.Billing.Stripe.Enabled))
 	setString("OBJECTSHARE_BILLING_PUBLIC_URL", &cfg.Billing.PublicURL)
-	setString("OBJECTSHARE_STRIPE_SECRET_KEY", &cfg.Billing.SecretKey)
-	setString("OBJECTSHARE_STRIPE_WEBHOOK_SECRET", &cfg.Billing.WebhookSecret)
+	setString("OBJECTSHARE_STRIPE_SECRET_KEY", &cfg.Billing.Stripe.SecretKey)
+	setString("OBJECTSHARE_STRIPE_WEBHOOK_SECRET", &cfg.Billing.Stripe.WebhookSecret)
+	problems = append(problems, setBool("OBJECTSHARE_PAYPAL_ENABLED", &cfg.Billing.PayPal.Enabled))
+	setString("OBJECTSHARE_PAYPAL_ENVIRONMENT", &cfg.Billing.PayPal.Environment)
+	setString("OBJECTSHARE_PAYPAL_CLIENT_ID", &cfg.Billing.PayPal.ClientID)
+	setString("OBJECTSHARE_PAYPAL_CLIENT_SECRET", &cfg.Billing.PayPal.ClientSecret)
+	setString("OBJECTSHARE_PAYPAL_WEBHOOK_ID", &cfg.Billing.PayPal.WebhookID)
 	for _, name := range []string{
 		"OBJECTSHARE_GUEST_UPLOAD_QUOTA_MB",
 		"OBJECTSHARE_USER_UPLOAD_QUOTA_MB",
@@ -366,7 +371,7 @@ func (cfg *ServiceConfig) Validate() error {
 		return errors.New("retention unpaid_days must be between 0 and 36500")
 	}
 	if cfg.Billing == nil {
-		cfg.Billing = &BillingConfig{}
+		cfg.Billing = &BillingConfig{PayPal: PayPalBillingConfig{Environment: "sandbox"}}
 	}
 	if err := validateBilling(cfg.Billing, cfg.SecureCookies); err != nil {
 		return err
@@ -540,12 +545,44 @@ func (cfg *ServiceConfig) Validate() error {
 }
 
 func validateBilling(settings *BillingConfig, secureCookies bool) error {
-	if settings == nil || !settings.Enabled {
+	if settings == nil {
 		return nil
 	}
-	validStripeKey := strings.HasPrefix(settings.SecretKey, "sk_") || strings.HasPrefix(settings.SecretKey, "rk_")
-	if !validStripeKey || !strings.HasPrefix(settings.WebhookSecret, "whsec_") {
-		return errors.New("billing requires Stripe secret_key and webhook_secret")
+	if settings.Enabled || settings.SecretKey != "" || settings.WebhookSecret != "" {
+		if settings.Enabled {
+			settings.Stripe.Enabled = true
+		}
+		if settings.Stripe.SecretKey == "" {
+			settings.Stripe.SecretKey = settings.SecretKey
+		}
+		if settings.Stripe.WebhookSecret == "" {
+			settings.Stripe.WebhookSecret = settings.WebhookSecret
+		}
+		settings.Enabled, settings.SecretKey, settings.WebhookSecret = false, "", ""
+	}
+	if settings.PayPal.Environment == "" {
+		settings.PayPal.Environment = "sandbox"
+	}
+	if settings.Stripe.Enabled {
+		validStripeKey := strings.HasPrefix(settings.Stripe.SecretKey, "sk_") || strings.HasPrefix(settings.Stripe.SecretKey, "rk_")
+		if !validStripeKey || !strings.HasPrefix(settings.Stripe.WebhookSecret, "whsec_") {
+			return errors.New("billing Stripe gateway requires secret_key and webhook_secret")
+		}
+	}
+	settings.PayPal.Environment = strings.ToLower(strings.TrimSpace(settings.PayPal.Environment))
+	settings.PayPal.ClientID = strings.TrimSpace(settings.PayPal.ClientID)
+	settings.PayPal.WebhookID = strings.TrimSpace(settings.PayPal.WebhookID)
+	if settings.PayPal.Environment != "sandbox" && settings.PayPal.Environment != "live" {
+		return errors.New("billing PayPal environment must be sandbox or live")
+	}
+	if settings.PayPal.Enabled && (settings.PayPal.ClientID == "" || strings.TrimSpace(settings.PayPal.ClientSecret) == "" || settings.PayPal.WebhookID == "") {
+		return errors.New("billing PayPal gateway requires client_id, client_secret, and webhook_id")
+	}
+	if !settings.Stripe.Enabled && !settings.PayPal.Enabled {
+		return nil
+	}
+	if strings.TrimSpace(settings.PublicURL) == "" {
+		return errors.New("billing public_url is required when a gateway is enabled")
 	}
 	publicURL, err := url.Parse(settings.PublicURL)
 	if err != nil || publicURL.Host == "" || publicURL.User != nil || publicURL.RawQuery != "" || publicURL.Fragment != "" || (publicURL.Path != "" && publicURL.Path != "/") {

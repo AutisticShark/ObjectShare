@@ -200,7 +200,7 @@ func TestStripeBillingEnvironmentAndValidation(t *testing.T) {
 	if err := cfg.Validate(); err != nil {
 		t.Fatal(err)
 	}
-	if !cfg.Billing.Enabled || cfg.Billing.PublicURL != "https://share.example.com" {
+	if !cfg.Billing.Stripe.Enabled || cfg.Billing.PublicURL != "https://share.example.com" {
 		t.Fatalf("billing environment was not applied: %#v", cfg.Billing)
 	}
 
@@ -210,9 +210,11 @@ func TestStripeBillingEnvironmentAndValidation(t *testing.T) {
 		secure  bool
 		want    string
 	}{
-		{"missing secret", &BillingConfig{Enabled: true, PublicURL: "https://share.example.com", SecretKey: "sk_test_example"}, true, "webhook_secret"},
-		{"unsafe origin", &BillingConfig{Enabled: true, PublicURL: "http://share.example.com", SecretKey: "sk_test_example", WebhookSecret: "whsec_example"}, false, "must use HTTPS"},
-		{"insecure cookie", &BillingConfig{Enabled: true, PublicURL: "https://share.example.com", SecretKey: "sk_test_example", WebhookSecret: "whsec_example"}, false, "secure_cookies"},
+		{"missing secret", &BillingConfig{PublicURL: "https://share.example.com", Stripe: StripeBillingConfig{Enabled: true, SecretKey: "sk_test_example"}}, true, "webhook_secret"},
+		{"unsafe origin", &BillingConfig{PublicURL: "http://share.example.com", Stripe: StripeBillingConfig{Enabled: true, SecretKey: "sk_test_example", WebhookSecret: "whsec_example"}}, false, "must use HTTPS"},
+		{"insecure cookie", &BillingConfig{PublicURL: "https://share.example.com", Stripe: StripeBillingConfig{Enabled: true, SecretKey: "sk_test_example", WebhookSecret: "whsec_example"}}, false, "secure_cookies"},
+		{"incomplete paypal", &BillingConfig{PublicURL: "https://share.example.com", PayPal: PayPalBillingConfig{Enabled: true, Environment: "live", ClientID: "client"}}, true, "client_secret"},
+		{"invalid paypal environment", &BillingConfig{PayPal: PayPalBillingConfig{Environment: "staging"}}, true, "environment"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			candidate := testDefaults()
@@ -221,6 +223,46 @@ func TestStripeBillingEnvironmentAndValidation(t *testing.T) {
 				t.Fatalf("error=%v want %q", err, test.want)
 			}
 		})
+	}
+}
+
+func TestPayPalBillingEnvironmentAndLegacyStripeMigration(t *testing.T) {
+	t.Setenv("OBJECTSHARE_PAYPAL_ENABLED", "true")
+	t.Setenv("OBJECTSHARE_PAYPAL_ENVIRONMENT", "sandbox")
+	t.Setenv("OBJECTSHARE_PAYPAL_CLIENT_ID", "paypal-client")
+	t.Setenv("OBJECTSHARE_PAYPAL_CLIENT_SECRET", "paypal-secret")
+	t.Setenv("OBJECTSHARE_PAYPAL_WEBHOOK_ID", "paypal-webhook")
+	t.Setenv("OBJECTSHARE_BILLING_PUBLIC_URL", "http://localhost:8080")
+	cfg := testDefaults()
+	if err := applyEnvironment(cfg); err != nil {
+		t.Fatal(err)
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.Billing.PayPal.Enabled || cfg.Billing.PayPal.ClientID != "paypal-client" || cfg.Billing.PayPal.Environment != "sandbox" {
+		t.Fatalf("PayPal environment was not applied: %#v", cfg.Billing.PayPal)
+	}
+
+	both := testDefaults()
+	both.SecureCookies = true
+	both.Billing = &BillingConfig{PublicURL: "https://share.example.com",
+		Stripe: StripeBillingConfig{Enabled: true, SecretKey: "rk_live_example", WebhookSecret: "whsec_example"},
+		PayPal: PayPalBillingConfig{Enabled: true, Environment: "live", ClientID: "client", ClientSecret: "secret", WebhookID: "webhook"},
+	}
+	if err := both.Validate(); err != nil {
+		t.Fatalf("independently configured gateways were rejected: %v", err)
+	}
+
+	legacy := testDefaults()
+	if err := json.Unmarshal([]byte(`{"billing":{"enabled":true,"public_url":"http://localhost:8080","secret_key":"sk_test_legacy","webhook_secret":"whsec_legacy"}}`), legacy); err != nil {
+		t.Fatal(err)
+	}
+	if err := legacy.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	if !legacy.Billing.Stripe.Enabled || legacy.Billing.Stripe.SecretKey != "sk_test_legacy" || legacy.Billing.Enabled || legacy.Billing.SecretKey != "" {
+		t.Fatalf("legacy Stripe configuration was not migrated: %#v", legacy.Billing)
 	}
 }
 

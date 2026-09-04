@@ -99,6 +99,27 @@ func TestSubscriptionBenefitsRequireActiveStatusAndFuturePeriod(t *testing.T) {
 	}
 }
 
+func TestBillingModelsUseGatewayScopedIdentifiers(t *testing.T) {
+	plan, err := schema.Parse(&PaidPlan{}, &sync.Map{}, schema.NamingStrategy{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"gateway", "gateway_plan_id"} {
+		if plan.FieldsByDBName[name] == nil || !plan.FieldsByDBName[name].NotNull {
+			t.Fatalf("paid plan %s is missing or nullable", name)
+		}
+	}
+	subscription, err := schema.Parse(&Subscription{}, &sync.Map{}, schema.NamingStrategy{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"gateway", "customer_id", "gateway_subscription_id"} {
+		if subscription.FieldsByDBName[name] == nil || !subscription.FieldsByDBName[name].NotNull {
+			t.Fatalf("subscription %s is missing or nullable", name)
+		}
+	}
+}
+
 func TestApplicationSettingsMigrationMetadata(t *testing.T) {
 	parsed, err := schema.Parse(&ApplicationSetting{}, &sync.Map{}, schema.NamingStrategy{})
 	if err != nil {

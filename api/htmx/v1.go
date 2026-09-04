@@ -63,7 +63,7 @@ type Handler struct {
 	rateLimits      db.RateLimitRepository
 	settings        db.SettingsRepository
 	billing         db.BillingRepository
-	stripe          stripeBillingClient
+	billingGateways map[string]billingGateway
 	settingsKey     string
 	localRateLimits *localRateLimiter
 	trustedProxies  []*net.IPNet
@@ -110,6 +110,7 @@ func New(cfg *config.ServiceConfig, repository db.Repository, storage service.Ob
 	rateLimits, _ := repository.(db.RateLimitRepository)
 	settings, _ := repository.(db.SettingsRepository)
 	billing, _ := repository.(db.BillingRepository)
+	billingGateways := configuredBillingGateways(cfg.Billing)
 	if cfg.RateLimit != nil && cfg.RateLimit.Enabled && rateLimits == nil {
 		return nil, errors.New("enabled rate limiting requires a shared rate-limit repository")
 	}
@@ -118,18 +119,17 @@ func New(cfg *config.ServiceConfig, repository db.Repository, storage service.Ob
 		templates: parsed, themeJS: themeJS, uploadJS: uploadJS, captchaJS: captchaJS,
 		adminUsersJS: adminUsersJS, adminUsersCSS: adminUsersCSS, logger: logger, csrfSecret: csrfSecret,
 		captcha: newCaptchaVerifier(cfg.Captcha), rateLimits: rateLimits,
-		settings: settings, billing: billing,
+		settings: settings, billing: billing, billingGateways: billingGateways,
 		localRateLimits: newLocalRateLimiter(), trustedProxies: trustedProxies,
 	}
 	if cfg.Auth != nil {
 		downloadSecret := sha256.Sum256([]byte("objectshare-download-form-v1\x00" + cfg.Auth.JWTSecret))
 		handler.downloadSecret = downloadSecret[:]
 	}
-	if cfg.Billing != nil && cfg.Billing.Enabled {
+	if len(billingGateways) != 0 {
 		if billing == nil {
 			return nil, errors.New("enabled billing requires a billing repository")
 		}
-		handler.stripe = newStripeClient(cfg.Billing.SecretKey)
 	}
 	if userRepository != nil {
 		if cfg.Auth == nil {

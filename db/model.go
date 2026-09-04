@@ -105,13 +105,19 @@ type ApplicationSetting struct {
 
 func (ApplicationSetting) TableName() string { return "application_settings" }
 
-// PaidPlan maps a Stripe recurring Price to the entitlements ObjectShare
+const (
+	BillingGatewayStripe = "stripe"
+	BillingGatewayPayPal = "paypal"
+)
+
+// PaidPlan maps a gateway-owned recurring plan to the entitlements ObjectShare
 // grants while the matching subscription is active.
 type PaidPlan struct {
 	ID                string    `gorm:"column:id;type:uuid;primaryKey"`
 	Name              string    `gorm:"column:name;type:varchar(80);not null"`
 	Description       string    `gorm:"column:description;type:varchar(500);not null"`
-	StripePriceID     string    `gorm:"column:stripe_price_id;type:varchar(255);uniqueIndex;not null"`
+	Gateway           string    `gorm:"column:gateway;type:varchar(32);not null;default:stripe;uniqueIndex:idx_paid_plans_gateway_plan"`
+	GatewayPlanID     string    `gorm:"column:gateway_plan_id;type:varchar(255);not null;uniqueIndex:idx_paid_plans_gateway_plan"`
 	PriceLabel        string    `gorm:"column:price_label;type:varchar(80);not null"`
 	StorageQuotaBytes int64     `gorm:"column:storage_quota_bytes;not null;check:chk_paid_plans_quota_positive,storage_quota_bytes > 0"`
 	RetentionDays     int       `gorm:"column:retention_days;not null;check:chk_paid_plans_retention_nonnegative,retention_days >= 0"`
@@ -125,24 +131,26 @@ type PaidPlan struct {
 func (PaidPlan) TableName() string { return "paid_plans" }
 
 type Subscription struct {
-	ID                   string    `gorm:"column:id;type:uuid;primaryKey"`
-	UserID               string    `gorm:"column:user_id;type:uuid;not null;uniqueIndex"`
-	PlanID               string    `gorm:"column:plan_id;type:uuid;not null;index"`
-	StripeCustomerID     string    `gorm:"column:stripe_customer_id;type:varchar(255);not null;index"`
-	StripeSubscriptionID string    `gorm:"column:stripe_subscription_id;type:varchar(255);not null;uniqueIndex"`
-	Status               string    `gorm:"column:status;type:varchar(32);not null;index"`
-	CurrentPeriodEnd     time.Time `gorm:"column:current_period_end;not null;index"`
-	CancelAtPeriodEnd    bool      `gorm:"column:cancel_at_period_end;not null;default:false"`
-	LastEventCreated     int64     `gorm:"column:last_event_created;not null;default:0"`
-	CreatedAt            time.Time `gorm:"column:created_at;not null"`
-	UpdatedAt            time.Time `gorm:"column:updated_at;not null"`
-	Plan                 PaidPlan  `gorm:"foreignKey:PlanID;references:ID;constraint:OnUpdate:CASCADE,OnDelete:RESTRICT"`
-	User                 User      `gorm:"foreignKey:UserID;references:ID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE"`
+	ID                    string    `gorm:"column:id;type:uuid;primaryKey"`
+	UserID                string    `gorm:"column:user_id;type:uuid;not null;uniqueIndex"`
+	PlanID                string    `gorm:"column:plan_id;type:uuid;not null;index"`
+	Gateway               string    `gorm:"column:gateway;type:varchar(32);not null;default:stripe;uniqueIndex:idx_subscriptions_gateway_id"`
+	CustomerID            string    `gorm:"column:customer_id;type:varchar(255);not null;default:'';index"`
+	GatewaySubscriptionID string    `gorm:"column:gateway_subscription_id;type:varchar(255);not null;uniqueIndex:idx_subscriptions_gateway_id"`
+	Status                string    `gorm:"column:status;type:varchar(32);not null;index"`
+	CurrentPeriodEnd      time.Time `gorm:"column:current_period_end;not null;index"`
+	CancelAtPeriodEnd     bool      `gorm:"column:cancel_at_period_end;not null;default:false"`
+	LastEventCreated      int64     `gorm:"column:last_event_created;not null;default:0"`
+	CreatedAt             time.Time `gorm:"column:created_at;not null"`
+	UpdatedAt             time.Time `gorm:"column:updated_at;not null"`
+	Plan                  PaidPlan  `gorm:"foreignKey:PlanID;references:ID;constraint:OnUpdate:CASCADE,OnDelete:RESTRICT"`
+	User                  User      `gorm:"foreignKey:UserID;references:ID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE"`
 }
 
 func (Subscription) TableName() string { return "subscriptions" }
 
-// BillingEvent makes webhook handling idempotent across retries and replicas.
+// BillingEvent makes namespaced gateway webhook handling idempotent across
+// retries and replicas.
 type BillingEvent struct {
 	EventID   string    `gorm:"column:event_id;type:varchar(255);primaryKey"`
 	CreatedAt time.Time `gorm:"column:created_at;not null;index"`
@@ -151,7 +159,7 @@ type BillingEvent struct {
 func (BillingEvent) TableName() string { return "billing_events" }
 
 // BillingCheckout prevents an account from opening overlapping subscription
-// checkouts before Stripe's webhook has created the canonical subscription.
+// checkouts before the selected gateway has created the canonical subscription.
 type BillingCheckout struct {
 	UserID    string    `gorm:"column:user_id;type:uuid;primaryKey"`
 	PlanID    string    `gorm:"column:plan_id;type:uuid;not null"`

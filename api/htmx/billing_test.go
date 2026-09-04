@@ -3,11 +3,7 @@ package htmx
 import (
 	"bytes"
 	"context"
-	"crypto/hmac"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
-	"fmt"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
@@ -25,17 +21,20 @@ type entitlementRepository struct {
 	*memoryRepository
 	entitlements db.Entitlements
 	plan         *db.PaidPlan
-	applied      *db.StripeSubscriptionUpdate
+	applied      *db.SubscriptionUpdate
 }
 
 func (repo *entitlementRepository) PublicPlans(context.Context) ([]db.PaidPlan, error) {
 	return nil, nil
 }
 func (repo *entitlementRepository) AllPlans(context.Context) ([]db.PaidPlan, error) { return nil, nil }
-func (repo *entitlementRepository) PlanByID(context.Context, string, bool) (*db.PaidPlan, error) {
-	return nil, db.ErrNotFound
+func (repo *entitlementRepository) PlanByID(_ context.Context, id string, _ bool) (*db.PaidPlan, error) {
+	if repo.plan == nil || repo.plan.ID != id {
+		return nil, db.ErrNotFound
+	}
+	return repo.plan, nil
 }
-func (repo *entitlementRepository) PlanByStripePrice(context.Context, string) (*db.PaidPlan, error) {
+func (repo *entitlementRepository) PlanByGatewayID(context.Context, string, string) (*db.PaidPlan, error) {
 	if repo.plan == nil {
 		return nil, db.ErrNotFound
 	}
@@ -55,17 +54,20 @@ func (repo *entitlementRepository) ReserveBillingCheckout(context.Context, strin
 func (repo *entitlementRepository) ReleaseBillingCheckout(context.Context, string, string) error {
 	return nil
 }
-func (repo *entitlementRepository) ApplyStripeSubscription(_ context.Context, update db.StripeSubscriptionUpdate) (bool, error) {
+func (repo *entitlementRepository) ApplySubscription(_ context.Context, update db.SubscriptionUpdate) (bool, error) {
 	repo.applied = &update
 	return true, nil
 }
 
-type noOpStripeClient struct{}
+type checkoutGatewayStub struct{ input *billingCheckoutInput }
 
-func (noOpStripeClient) Checkout(context.Context, stripeCheckoutInput) (string, error) {
-	return "", nil
+func (stub *checkoutGatewayStub) Checkout(_ context.Context, input billingCheckoutInput) (string, error) {
+	stub.input = &input
+	return "https://www.sandbox.paypal.com/approve", nil
 }
-func (noOpStripeClient) Portal(context.Context, string, string) (string, error) { return "", nil }
+func (*checkoutGatewayStub) Portal(context.Context, *db.Subscription, string) (string, error) {
+	return "https://www.sandbox.paypal.com/myaccount/autopay/connect/", nil
+}
 
 func TestDirectDownloadRequiresActivePlanEntitlement(t *testing.T) {
 	owner := "11111111-1111-4111-8111-111111111111"
@@ -109,45 +111,25 @@ func TestDetailsPageDownloadTokenIsBoundAndExpires(t *testing.T) {
 	}
 }
 
-func TestStripeSignatureVerificationRejectsTamperingAndStaleEvents(t *testing.T) {
-	now := time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC)
-	payload, secret := []byte(`{"id":"evt_1"}`), "whsec_test"
-	mac := hmac.New(sha256.New, []byte(secret))
-	_, _ = mac.Write([]byte("1788523200."))
-	_, _ = mac.Write(payload)
-	header := "t=1788523200,v1=" + hex.EncodeToString(mac.Sum(nil))
-	if !verifyStripeSignature(payload, header, secret, now) {
-		t.Fatal("valid signature was rejected")
-	}
-	if verifyStripeSignature([]byte(`{"id":"evt_2"}`), header, secret, now) {
-		t.Fatal("tampered payload was accepted")
-	}
-	if verifyStripeSignature(payload, header, secret, now.Add(6*time.Minute)) {
-		t.Fatal("stale signature was accepted")
-	}
-}
-
-func TestVerifiedStripeWebhookAppliesServerMappedPlan(t *testing.T) {
-	userID := "11111111-1111-4111-8111-111111111111"
-	planID := "22222222-2222-4222-8222-222222222222"
-	now := time.Now().UTC()
-	repository := &entitlementRepository{memoryRepository: &memoryRepository{files: make(map[string]*db.FileList)}, plan: &db.PaidPlan{ID: planID, StripePriceID: "price_plus"}}
+func TestBillingCheckoutDispatchesTrustedPlanToConfiguredGateway(t *testing.T) {
+	user := &db.User{ID: "11111111-1111-4111-8111-111111111111", Email: "user@example.com"}
+	plan := &db.PaidPlan{ID: "22222222-2222-4222-8222-222222222222", Gateway: db.BillingGatewayPayPal, GatewayPlanID: "P-ABCDEFGHIJKLMNOPQRSTUVWX", Active: true}
+	repository := &entitlementRepository{memoryRepository: &memoryRepository{files: make(map[string]*db.FileList)}, plan: plan}
 	handler := newTestHandler(t, repository, &memoryStorage{objects: make(map[string][]byte)})
-	handler.stripe = noOpStripeClient{}
-	handler.config.Billing = &config.BillingConfig{Enabled: true, WebhookSecret: "whsec_test"}
-	payload := []byte(fmt.Sprintf(`{"id":"evt_1","type":"customer.subscription.updated","created":%d,"data":{"object":{"id":"sub_1","customer":"cus_1","status":"active","current_period_end":%d,"cancel_at_period_end":false,"metadata":{"user_id":"%s"},"items":{"data":[{"price":{"id":"price_plus"}}]}}}}`, now.Unix(), now.Add(30*24*time.Hour).Unix(), userID))
-	mac := hmac.New(sha256.New, []byte("whsec_test"))
-	_, _ = fmt.Fprintf(mac, "%d.", now.Unix())
-	_, _ = mac.Write(payload)
-	request := httptest.NewRequest(http.MethodPost, "/api/v1/billing/stripe/webhook", bytes.NewReader(payload))
-	request.Header.Set("Stripe-Signature", fmt.Sprintf("t=%d,v1=%s", now.Unix(), hex.EncodeToString(mac.Sum(nil))))
+	handler.config.Billing = &config.BillingConfig{PublicURL: "https://share.example.com"}
+	gateway := &checkoutGatewayStub{}
+	handler.billingGateways = map[string]billingGateway{db.BillingGatewayPayPal: gateway}
+	router := chi.NewRouter()
+	router.Post("/{id}", handler.BillingCheckout)
+	request := httptest.NewRequest(http.MethodPost, "/"+plan.ID, nil)
+	request = request.WithContext(context.WithValue(request.Context(), identityContextKey{}, &identity{User: user, Transport: transportBearer}))
 	response := httptest.NewRecorder()
-	handler.StripeWebhook(response, request)
-	if response.Code != http.StatusNoContent {
-		t.Fatalf("status=%d body=%q", response.Code, response.Body.String())
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusSeeOther || response.Header().Get("Location") != "https://www.sandbox.paypal.com/approve" {
+		t.Fatalf("status=%d location=%q body=%q", response.Code, response.Header().Get("Location"), response.Body.String())
 	}
-	if repository.applied == nil || repository.applied.UserID != userID || repository.applied.PlanID != planID || repository.applied.Status != "active" {
-		t.Fatalf("webhook update=%#v", repository.applied)
+	if gateway.input == nil || gateway.input.GatewayPlanID != plan.GatewayPlanID || gateway.input.UserID != user.ID || gateway.input.SuccessURL != "https://share.example.com/account?message=billing-pending" {
+		t.Fatalf("checkout input=%#v", gateway.input)
 	}
 }
 
@@ -207,11 +189,19 @@ func TestDirectBatchAuthorizesEveryFileWithOneRequest(t *testing.T) {
 }
 
 func TestPaidPlanFormRejectsUntrustedPriceIDs(t *testing.T) {
-	values := url.Values{"name": {"Plus"}, "stripe_price_id": {"product_not_a_price"}, "price_label": {"$5/month"}, "storage_quota_gib": {"10"}, "retention_days": {"30"}, "sort_order": {"0"}}
+	values := url.Values{"name": {"Plus"}, "gateway": {"stripe"}, "gateway_plan_id": {"product_not_a_price"}, "price_label": {"$5/month"}, "storage_quota_gib": {"10"}, "retention_days": {"30"}, "sort_order": {"0"}}
 	request := httptest.NewRequest(http.MethodPost, "/admin/plans", strings.NewReader(values.Encode()))
 	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	_ = request.ParseForm()
 	if _, err := paidPlanFromForm(request); err == nil {
 		t.Fatal("non-Price Stripe identifier was accepted")
+	}
+	values.Set("gateway", "paypal")
+	values.Set("gateway_plan_id", "price_not_a_paypal_plan")
+	request = httptest.NewRequest(http.MethodPost, "/admin/plans", strings.NewReader(values.Encode()))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	_ = request.ParseForm()
+	if _, err := paidPlanFromForm(request); err == nil {
+		t.Fatal("invalid PayPal plan identifier was accepted")
 	}
 }

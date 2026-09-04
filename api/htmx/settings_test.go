@@ -22,6 +22,7 @@ import (
 func TestSettingsFormPreservesAndExplicitlyClearsWriteOnlySecrets(t *testing.T) {
 	runtime := config.RuntimeConfig{
 		Captcha: config.CaptchaConfig{SecretKey: "existing-captcha"},
+		Billing: config.BillingConfig{PayPal: config.PayPalBillingConfig{ClientSecret: "existing-paypal"}},
 		Auth: config.RuntimeAuthConfig{OAuth: config.OAuthConfig{
 			Google:  config.OAuthProviderConfig{ClientSecret: "existing-google"},
 			Discord: config.OAuthProviderConfig{ClientSecret: "existing-discord"},
@@ -34,6 +35,7 @@ func TestSettingsFormPreservesAndExplicitlyClearsWriteOnlySecrets(t *testing.T) 
 		"google_oauth_client_secret":  {""},
 		"discord_oauth_client_secret": {""},
 		"clear_discord_oauth_secret":  {"on"},
+		"paypal_client_secret":        {""},
 		"r2_access_key_id":            {"replacement-access"},
 		"r2_secret_access_key":        {""},
 		"encryption_key":              {""},
@@ -46,10 +48,11 @@ func TestSettingsFormPreservesAndExplicitlyClearsWriteOnlySecrets(t *testing.T) 
 	runtime.Captcha.SecretKey = updatedSecret(request, "captcha_secret_key", "clear_captcha_secret", runtime.Captcha.SecretKey)
 	runtime.Auth.OAuth.Google.ClientSecret = updatedSecret(request, "google_oauth_client_secret", "clear_google_oauth_secret", runtime.Auth.OAuth.Google.ClientSecret)
 	runtime.Auth.OAuth.Discord.ClientSecret = updatedSecret(request, "discord_oauth_client_secret", "clear_discord_oauth_secret", runtime.Auth.OAuth.Discord.ClientSecret)
+	runtime.Billing.PayPal.ClientSecret = updatedSecret(request, "paypal_client_secret", "clear_paypal_client_secret", runtime.Billing.PayPal.ClientSecret)
 	runtime.R2.AccessKeyID = updatedSecret(request, "r2_access_key_id", "clear_r2_access_key", runtime.R2.AccessKeyID)
 	runtime.R2.SecretAccessKey = updatedSecret(request, "r2_secret_access_key", "clear_r2_secret_key", runtime.R2.SecretAccessKey)
 	runtime.Encryption.Key = updatedSecret(request, "encryption_key", "clear_encryption_key", runtime.Encryption.Key)
-	if runtime.Captcha.SecretKey != "existing-captcha" || runtime.Auth.OAuth.Google.ClientSecret != "existing-google" || runtime.R2.SecretAccessKey != "existing-storage" {
+	if runtime.Captcha.SecretKey != "existing-captcha" || runtime.Auth.OAuth.Google.ClientSecret != "existing-google" || runtime.Billing.PayPal.ClientSecret != "existing-paypal" || runtime.R2.SecretAccessKey != "existing-storage" {
 		t.Fatal("blank write-only fields did not preserve stored secrets")
 	}
 	if runtime.R2.AccessKeyID != "replacement-access" || runtime.Auth.OAuth.Discord.ClientSecret != "" || runtime.Encryption.Key != "" {
@@ -68,6 +71,32 @@ func TestSettingsConflictDoesNotOverwriteNewerRevision(t *testing.T) {
 	}
 }
 
+func TestDatabaseSettingsReaderMigratesLegacyStripeDocument(t *testing.T) {
+	t.Setenv("OBJECTSHARE_JWT_SECRET", "settings-test-jwt-secret-with-at-least-32-bytes")
+	t.Setenv("OBJECTSHARE_SETTINGS_KEY", "settings-test-settings-key-with-at-least-32-bytes")
+	cfg, err := config.Load("../../config.json.example")
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacy := config.RuntimeFromService(cfg)
+	legacy.Billing = config.BillingConfig{Enabled: true, PublicURL: "http://localhost:8080", SecretKey: "sk_test_legacy", WebhookSecret: "whsec_legacy"}
+	sealed, err := config.SealRuntime(legacy, cfg.SettingsKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repository := newAuthMemoryRepository()
+	repository.setting = &db.ApplicationSetting{Value: sealed}
+	handler := &Handler{config: cfg, settings: repository, settingsKey: cfg.SettingsKey}
+	request := httptest.NewRequest(http.MethodGet, "/admin/settings", nil)
+	_, runtime, err := handler.readDatabaseSettings(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !runtime.Billing.Stripe.Enabled || runtime.Billing.Stripe.SecretKey != "sk_test_legacy" || runtime.Billing.Enabled {
+		t.Fatalf("legacy settings were not normalized: %#v", runtime.Billing)
+	}
+}
+
 func TestAdminConfigurationDashboardKeepsSecretsWriteOnlyAndSavesRevision(t *testing.T) {
 	t.Setenv("OBJECTSHARE_JWT_SECRET", "dashboard-test-jwt-secret-with-at-least-32-bytes")
 	t.Setenv("OBJECTSHARE_SETTINGS_KEY", "dashboard-test-settings-key-with-at-least-32-bytes")
@@ -80,6 +109,7 @@ func TestAdminConfigurationDashboardKeepsSecretsWriteOnlyAndSavesRevision(t *tes
 	runtime.Captcha.SecretKey = "never-render-this-turnstile-secret"
 	runtime.Auth.OAuth.Discord.ClientID = "discord-client"
 	runtime.Auth.OAuth.Discord.ClientSecret = "never-render-this-discord-secret"
+	runtime.Billing.PayPal.ClientSecret = "never-render-this-paypal-secret"
 	runtime.R2.AccessKeyID = "never-render-this-storage-access-key"
 	sealed, err := config.SealRuntime(runtime, cfg.SettingsKey)
 	if err != nil {
@@ -111,6 +141,9 @@ func TestAdminConfigurationDashboardKeepsSecretsWriteOnlyAndSavesRevision(t *tes
 	if strings.Contains(getResponse.Body.String(), runtime.Auth.OAuth.Discord.ClientSecret) {
 		t.Fatal("dashboard rendered a stored Discord secret")
 	}
+	if strings.Contains(getResponse.Body.String(), runtime.Billing.PayPal.ClientSecret) {
+		t.Fatal("dashboard rendered a stored PayPal secret")
+	}
 
 	values := runtimeFormValues(runtime)
 	values.Set("csrf_token", claims.CSRF)
@@ -131,7 +164,7 @@ func TestAdminConfigurationDashboardKeepsSecretsWriteOnlyAndSavesRevision(t *tes
 	if err != nil {
 		t.Fatal(err)
 	}
-	if saved.MaxFileSize != 77 || saved.Retention.GuestDays != 7 || saved.Retention.UnpaidDays != 30 || saved.Captcha.SecretKey != runtime.Captcha.SecretKey || saved.Auth.OAuth.Discord.ClientSecret != runtime.Auth.OAuth.Discord.ClientSecret {
+	if saved.MaxFileSize != 77 || saved.Retention.GuestDays != 7 || saved.Retention.UnpaidDays != 30 || saved.Captcha.SecretKey != runtime.Captcha.SecretKey || saved.Auth.OAuth.Discord.ClientSecret != runtime.Auth.OAuth.Discord.ClientSecret || saved.Billing.PayPal.ClientSecret != runtime.Billing.PayPal.ClientSecret {
 		t.Fatalf("saved runtime lost values or secrets: %#v", saved)
 	}
 	if handler.config.MaxFileSize == 77 {
@@ -159,6 +192,7 @@ func TestAdminConfigurationDashboardKeepsSecretsWriteOnlyAndSavesRevision(t *tes
 func runtimeFormValues(runtime config.RuntimeConfig) url.Values {
 	values := url.Values{
 		"max_file_size": {fmt.Sprint(runtime.MaxFileSize)}, "guest_retention_days": {fmt.Sprint(runtime.Retention.GuestDays)}, "unpaid_retention_days": {fmt.Sprint(runtime.Retention.UnpaidDays)}, "oauth_public_url": {runtime.Auth.OAuth.PublicURL},
+		"billing_public_url": {runtime.Billing.PublicURL}, "paypal_environment": {runtime.Billing.PayPal.Environment}, "paypal_client_id": {runtime.Billing.PayPal.ClientID}, "paypal_webhook_id": {runtime.Billing.PayPal.WebhookID},
 		"google_oauth_client_id": {runtime.Auth.OAuth.Google.ClientID}, "github_oauth_client_id": {runtime.Auth.OAuth.GitHub.ClientID}, "discord_oauth_client_id": {runtime.Auth.OAuth.Discord.ClientID},
 		"captcha_provider": {runtime.Captcha.Provider}, "captcha_site_key": {runtime.Captcha.SiteKey}, "captcha_expected_hostname": {runtime.Captcha.ExpectedHostname},
 		"rate_limit_window": {runtime.RateLimit.Window.String()}, "rate_limit_api": {fmt.Sprint(runtime.RateLimit.APILimit)}, "rate_limit_login": {fmt.Sprint(runtime.RateLimit.LoginLimit)}, "rate_limit_signup": {fmt.Sprint(runtime.RateLimit.SignupLimit)}, "rate_limit_upload": {fmt.Sprint(runtime.RateLimit.UploadLimit)}, "rate_limit_download": {fmt.Sprint(runtime.RateLimit.DownloadLimit)}, "trusted_proxy_cidrs": {strings.Join(runtime.RateLimit.TrustedProxyCIDRs, ",")},
@@ -175,6 +209,7 @@ func runtimeFormValues(runtime config.RuntimeConfig) url.Values {
 		"google_oauth_enabled": runtime.Auth.OAuth.Google.Enabled, "github_oauth_enabled": runtime.Auth.OAuth.GitHub.Enabled, "discord_oauth_enabled": runtime.Auth.OAuth.Discord.Enabled,
 		"captcha_protect_login": runtime.Captcha.ProtectLogin, "captcha_protect_signup": runtime.Captcha.ProtectSignup, "captcha_protect_upload": runtime.Captcha.ProtectUpload, "captcha_protect_download": runtime.Captcha.ProtectDownload,
 		"rate_limit_enabled": runtime.RateLimit.Enabled, "s3_use_path_style": runtime.S3.UsePathStyle, "encryption_enabled": runtime.Encryption.Enabled,
+		"stripe_enabled": runtime.Billing.Stripe.Enabled, "paypal_enabled": runtime.Billing.PayPal.Enabled,
 	} {
 		if enabled {
 			values.Set(name, "on")

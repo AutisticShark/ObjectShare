@@ -5,7 +5,8 @@
 <div class="card mb-4"><div class="card-header"><h3 class="card-title">Add plan</h3></div>
 <form action="/admin/plans" method="post"><input type="hidden" name="csrf_token" value="{{.CSRF}}"><div class="card-body"><div class="row g-3">
 <div class="col-md-4"><label class="form-label">Name</label><input class="form-control" name="name" maxlength="80" required></div>
-<div class="col-md-4"><label class="form-label">Stripe Price ID</label><input class="form-control" name="stripe_price_id" placeholder="price_..." required></div>
+<div class="col-md-4"><label class="form-label">Gateway</label><select class="form-select" name="gateway">{{range .Gateways}}<option value="{{.Key}}">{{.Label}}</option>{{end}}</select></div>
+<div class="col-md-4"><label class="form-label">Gateway plan ID</label><input class="form-control" name="gateway_plan_id" placeholder="Provider product or plan ID" required></div>
 <div class="col-md-4"><label class="form-label">Displayed price</label><input class="form-control" name="price_label" placeholder="$5 / month" required></div>
 <div class="col-12"><label class="form-label">Description</label><input class="form-control" name="description" maxlength="500"></div>
 <div class="col-md-4"><label class="form-label">Storage quota (GiB)</label><input class="form-control" name="storage_quota_gib" type="number" min="0.01" max="10240" step="0.01" required></div>
@@ -17,7 +18,8 @@
 <div class="row row-cards">{{range .Plans}}<div class="col-12"><div class="card"><div class="card-header"><h3 class="card-title">{{.Name}}</h3><div class="card-actions">{{if .Active}}<span class="badge bg-green-lt">Available</span>{{else}}<span class="badge">Hidden</span>{{end}}</div></div>
 <form action="/admin/plans/{{.ID}}" method="post"><input type="hidden" name="csrf_token" value="{{$.CSRF}}"><div class="card-body"><div class="row g-3">
 <div class="col-md-4"><label class="form-label">Name</label><input class="form-control" name="name" maxlength="80" value="{{.Name}}" required></div>
-<div class="col-md-4"><label class="form-label">Stripe Price ID</label><input class="form-control" name="stripe_price_id" value="{{.StripePriceID}}" required></div>
+{{$plan := .}}<div class="col-md-4"><label class="form-label">Gateway</label><select class="form-select" name="gateway">{{range $.Gateways}}<option value="{{.Key}}"{{if eq .Key $plan.Gateway}} selected{{end}}>{{.Label}}</option>{{end}}</select></div>
+<div class="col-md-4"><label class="form-label">Gateway plan ID</label><input class="form-control" name="gateway_plan_id" value="{{.GatewayPlanID}}" required></div>
 <div class="col-md-4"><label class="form-label">Displayed price</label><input class="form-control" name="price_label" value="{{.PriceLabel}}" required></div>
 <div class="col-12"><label class="form-label">Description</label><input class="form-control" name="description" maxlength="500" value="{{.Description}}"></div>
 <div class="col-md-4"><label class="form-label">Storage quota (GiB)</label><input class="form-control" name="storage_quota_gib" type="number" min="0.01" max="10240" step="0.01" value="{{.StorageQuotaGiB}}" required></div>

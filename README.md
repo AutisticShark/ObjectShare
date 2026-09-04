@@ -16,7 +16,7 @@ ObjectShare is a small self-hosted file sharing service written in Go. Files are
 - Optional AES-256-GCM server-side encryption at rest
 - Owner-only rename and permanent deletion
 - Guest uploads, database-backed per-user storage quotas, and automatic guest/unpaid file retention
-- Stripe Checkout paid plans for upgraded storage, longer active-plan retention, and direct download links
+- Stripe Checkout or PayPal Subscriptions plans for upgraded storage, longer active-plan retention, and direct download links
 - Password, Google, GitHub, and Discord login with separate user and administrator management interfaces
 - Optional server-verified Turnstile protection and shared PostgreSQL request rate limits
 - Encrypted PostgreSQL-backed configuration with a dedicated administrator dashboard
@@ -122,26 +122,54 @@ Complete files and pending direct-upload reservations both consume that account'
 
 The uploader offers explicit single-file and multiple-file modes. A batch accepts at most `upload.max_files_per_batch` files (default `10`, range `1`–`100`), with the configured per-file size limit applied independently. The legacy first-import environment setting is `OBJECTSHARE_MAX_FILES_PER_BATCH`. Proxied batches reserve and store each file and roll back earlier files if a later reservation or storage operation fails. Direct-to-storage batches obtain all short-lived, size/type-scoped authorizations with one server request and one CAPTCHA challenge, then verify each object before publishing it.
 
-### Stripe paid plans
+### Paid plans and billing gateways
 
-Stripe Billing is optional and disabled by default. Enable it in `/admin/settings` with the browser-visible public origin, a restricted Stripe secret key, and the endpoint signing secret. Secrets are write-only in the administrator UI: blank preserves the encrypted database value, and the explicit clear control removes it. The legacy first-import variables are:
+Billing is optional and every gateway is disabled by default. Enable Stripe, PayPal, or both in `/admin/settings` with one browser-visible public origin and the selected gateway credentials. Secrets are write-only in the administrator UI: blank preserves the encrypted database value, and the explicit clear control removes it. Gateway configuration is nested so additional providers can be added without changing the shared redirect and plan configuration:
+
+```json
+"billing": {
+  "public_url": "https://share.example.com",
+  "stripe": {
+    "enabled": true,
+    "secret_key": "sk_live_...",
+    "webhook_secret": "whsec_..."
+  },
+  "paypal": {
+    "enabled": false,
+    "environment": "sandbox",
+    "client_id": "",
+    "client_secret": "",
+    "webhook_id": ""
+  }
+}
+```
+
+Earlier Stripe-only documents with `enabled`, `secret_key`, and `webhook_secret` directly under `billing` are migrated in memory and remain valid. The legacy first-import environment variables are:
 
 ```dotenv
 OBJECTSHARE_STRIPE_ENABLED=true
 OBJECTSHARE_BILLING_PUBLIC_URL=https://share.example.com
 OBJECTSHARE_STRIPE_SECRET_KEY=sk_live_...
 OBJECTSHARE_STRIPE_WEBHOOK_SECRET=whsec_...
+
+OBJECTSHARE_PAYPAL_ENABLED=false
+OBJECTSHARE_PAYPAL_ENVIRONMENT=sandbox
+OBJECTSHARE_PAYPAL_CLIENT_ID=
+OBJECTSHARE_PAYPAL_CLIENT_SECRET=
+OBJECTSHARE_PAYPAL_WEBHOOK_ID=
 ```
 
-Create recurring Prices in Stripe, then add one ObjectShare record per Price at `/admin/plans`. Each plan defines its display name/price, storage quota, retention days, direct-link entitlement, availability, and sort order. The displayed price is presentation only; Checkout always receives the trusted Stripe Price ID from PostgreSQL. Do not reuse one Price ID for multiple plans. Configure the Stripe Customer Portal for cancellation and payment-method management.
+Create recurring Prices in Stripe or [products and subscription plans in PayPal](https://developer.paypal.com/platforms/subscriptions/integrate/), then add one ObjectShare record per gateway plan at `/admin/plans`. Select the gateway and store its trusted external identifier: a Stripe Price ID (`price_...`) or a PayPal plan ID (`P-...`). Each record also defines its display name/price, storage quota, retention days, direct-link entitlement, availability, and sort order. The displayed price is presentation only; checkout always receives the trusted gateway plan ID from PostgreSQL. A gateway plan ID can be mapped only once per gateway. Configure the Stripe Customer Portal for Stripe cancellation and payment-method management; PayPal accounts are sent to PayPal's automatic-payment management page.
 
 Register `https://your-origin.example/api/v1/billing/stripe/webhook` in Stripe for `customer.subscription.created`, `customer.subscription.updated`, and `customer.subscription.deleted`. ObjectShare verifies the `Stripe-Signature` against the raw body with a five-minute tolerance, records event IDs for idempotency, ignores older subscription updates, and maps the subscription's Price ID back to a server-side plan. Checkout success pages never grant access. Only a verified `active` or `trialing` subscription whose current period has not ended supplies entitlements. Restart every replica after enabling billing or rotating its secrets.
+
+For PayPal, [create REST API credentials](https://developer.paypal.com/api/rest/authentication/), first test with `environment` set to `sandbox`, then switch the credentials and environment to `live` for production. Register `https://your-origin.example/api/v1/billing/paypal/webhook` for the documented [subscription webhook events](https://developer.paypal.com/docs/subscriptions/reference/webhooks/): `BILLING.SUBSCRIPTION.ACTIVATED`, `BILLING.SUBSCRIPTION.UPDATED`, `BILLING.SUBSCRIPTION.SUSPENDED`, `BILLING.SUBSCRIPTION.CANCELLED`, `BILLING.SUBSCRIPTION.EXPIRED`, and `BILLING.SUBSCRIPTION.PAYMENT.FAILED`. Copy the registered webhook ID into ObjectShare. ObjectShare exchanges the client credentials for a short-lived OAuth access token, asks [PayPal's verification endpoint](https://developer.paypal.com/api/webhooks/v1/verify-webhook-signature-post/) to authenticate every webhook, maps the event's PayPal plan ID to the PostgreSQL plan, and grants benefits only for an `ACTIVE` subscription with a future next-billing time. `BILLING.SUBSCRIPTION.CREATED` is deliberately not persisted because an approval-pending checkout must not create access or permanently block a retry. The local return page remains informational; only a verified webhook updates entitlements.
 
 An active plan raises a finite account quota to at least the plan quota. It applies its own retention window while active; `0` plan-retention days means no age-based deletion during the active subscription. When access ends, the account immediately returns to its standard quota and unpaid retention window, so old files can become eligible during the next sweep. Existing objects are not synchronously deleted merely because the plan ends. Direct-link plans enable `GET /api/v1/download/{id}` only while active; otherwise that URL redirects to the file details page, whose short-lived signed POST authorization prevents method-switch bypasses. If administrator-enforced download CAPTCHA is enabled, it continues to require the details-page flow even for a direct-link plan.
 
 ### Automatic file retention
 
-ObjectShare can permanently delete completed guest files and completed files owned by accounts without an active plan after separate administrator-defined numbers of days. Both policies default to `0` (disabled), so an upgrade never starts deleting existing data until an administrator deliberately enables retention. Configure **Guest retention** and **Unpaid retention** at `/admin/settings`, save, and restart every application replica. Active plans use their plan-specific retention days instead. `/admin/users` retains a manual retention exemption for complimentary or externally billed accounts; it is independent from Stripe, quota, and direct-link access. Removing an exemption or ending a subscription can make older files immediately eligible at the next sweep.
+ObjectShare can permanently delete completed guest files and completed files owned by accounts without an active plan after separate administrator-defined numbers of days. Both policies default to `0` (disabled), so an upgrade never starts deleting existing data until an administrator deliberately enables retention. Configure **Guest retention** and **Unpaid retention** at `/admin/settings`, save, and restart every application replica. Active plans use their plan-specific retention days instead. `/admin/users` retains a manual retention exemption for complimentary or externally billed accounts; it is independent from billing gateways, quota, and direct-link access. Removing an exemption or ending a subscription can make older files immediately eligible at the next sweep.
 
 The legacy first-import inputs are:
 

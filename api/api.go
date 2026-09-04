@@ -36,7 +36,7 @@ func Router(handler *htmx.Handler, logger *slog.Logger) http.Handler {
 		router.Get("/file/{id}", handler.FileView)
 		router.Get("/uploads/complete", handler.UploadResults)
 		router.Get("/plans", handler.Plans)
-		router.Post("/api/v1/billing/stripe/webhook", handler.StripeWebhook)
+		router.Post("/api/v1/billing/{gateway}/webhook", handler.BillingWebhook)
 		router.Get("/login", handler.LoginPage)
 		router.With(requireSameOrigin).Post("/login", handler.Login)
 		router.Get("/oauth/{provider}/start", handler.OAuthStart)
