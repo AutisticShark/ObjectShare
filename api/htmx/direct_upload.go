@@ -17,6 +17,7 @@ import (
 const directRequestLimit = 64 * 1024
 
 type directUploadRequest struct {
+	ShareMode    string `json:"share_mode,omitempty"`
 	FileName     string `json:"file_name"`
 	FileSize     int64  `json:"file_size"`
 	ContentType  string `json:"content_type"`
@@ -108,6 +109,10 @@ func (handler *Handler) BeginDirectUploadBatch(writer http.ResponseWriter, reque
 }
 
 func (handler *Handler) authorizeDirectUpload(request *http.Request, input directUploadRequest) (directUploadAuthorization, *db.FileList, error) {
+	mode, ok := uploadShareMode(input.ShareMode)
+	if !ok {
+		return directUploadAuthorization{}, nil, fmt.Errorf("%w: invalid upload access option", errInvalidUpload)
+	}
 	fileName, err := safeFileName(input.FileName)
 	if err != nil {
 		return directUploadAuthorization{}, nil, fmt.Errorf("%w: %s", errInvalidUpload, err)
@@ -132,7 +137,7 @@ func (handler *Handler) authorizeDirectUpload(request *http.Request, input direc
 	}
 	fileID, now := uuid.NewString(), time.Now().UTC()
 	expiresAt := now.Add(handler.directPolicy.Expires)
-	record := &db.FileList{AnonymousSessionToken: tokenHash, FileID: fileID, FileName: fileName, FileSize: input.FileSize,
+	record := &db.FileList{ShareMode: mode, AnonymousSessionToken: tokenHash, FileID: fileID, FileName: fileName, FileSize: input.FileSize,
 		ContentType: contentType, IsAnonymousUpload: true, StorageService: handler.config.StorageService,
 		UploadStatus: "pending", ChecksumStatus: "unavailable", UploadExpiresAt: &expiresAt, CreatedAt: now, UpdatedAt: now}
 	if identity := currentIdentity(request); identity != nil {
@@ -162,6 +167,11 @@ func (handler *Handler) BeginDirectUpload(writer http.ResponseWriter, request *h
 	var input directUploadRequest
 	if err := decodeJSON(writer, request, &input); err != nil {
 		http.Error(writer, err.Error(), http.StatusBadRequest)
+		return
+	}
+	mode, ok := uploadShareMode(input.ShareMode)
+	if !ok {
+		http.Error(writer, "Invalid upload access option.", http.StatusBadRequest)
 		return
 	}
 	if !handler.verifyCaptcha(writer, request, "upload", input.CaptchaToken) {
@@ -199,6 +209,7 @@ func (handler *Handler) BeginDirectUpload(writer http.ResponseWriter, request *h
 	now := time.Now().UTC()
 	expiresAt := now.Add(handler.directPolicy.Expires)
 	record := &db.FileList{
+		ShareMode:             mode,
 		AnonymousSessionToken: tokenHash, FileID: fileID, FileName: fileName, FileSize: input.FileSize,
 		ContentType: contentType, IsAnonymousUpload: true, StorageService: handler.config.StorageService,
 		UploadStatus: "pending", ChecksumStatus: "unavailable", UploadExpiresAt: &expiresAt,

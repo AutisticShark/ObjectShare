@@ -49,6 +49,7 @@ type Handler struct {
 	templates       *template.Template
 	brandingCSS     []byte
 	themeJS         []byte
+	sharingJS       []byte
 	uploadJS        []byte
 	captchaJS       []byte
 	adminUsersJS    []byte
@@ -84,6 +85,10 @@ func New(cfg *config.ServiceConfig, repository db.Repository, storage service.Ob
 	themeJS, err := fs.ReadFile(templates, "template/theme.js")
 	if err != nil {
 		return nil, fmt.Errorf("read theme script: %w", err)
+	}
+	sharingJS, err := fs.ReadFile(templates, "template/sharing.js")
+	if err != nil {
+		return nil, fmt.Errorf("read sharing script: %w", err)
 	}
 	uploadJS, err := fs.ReadFile(templates, "template/upload.js")
 	if err != nil {
@@ -123,7 +128,7 @@ func New(cfg *config.ServiceConfig, repository db.Repository, storage service.Ob
 	}
 	handler := &Handler{
 		config: cfg, repository: repository, users: userRepository, storage: storage,
-		templates: parsed, brandingCSS: brandingCSS, themeJS: themeJS, uploadJS: uploadJS, captchaJS: captchaJS,
+		templates: parsed, sharingJS: sharingJS, brandingCSS: brandingCSS, themeJS: themeJS, uploadJS: uploadJS, captchaJS: captchaJS,
 		adminUsersJS: adminUsersJS, adminUsersCSS: adminUsersCSS, logger: logger, csrfSecret: csrfSecret,
 		captcha: newCaptchaVerifier(cfg.Captcha), rateLimits: rateLimits,
 		settings: settings, billing: billing, billingGateways: billingGateways,
@@ -208,6 +213,12 @@ func (handler *Handler) UploadScript(writer http.ResponseWriter, request *http.R
 	http.ServeContent(writer, request, "upload.js", time.Time{}, bytes.NewReader(handler.uploadJS))
 }
 
+func (handler *Handler) SharingScript(writer http.ResponseWriter, request *http.Request) {
+	writer.Header().Set("Content-Type", "text/javascript; charset=utf-8")
+	writer.Header().Set("Cache-Control", "public, max-age=86400")
+	http.ServeContent(writer, request, "sharing.js", time.Time{}, bytes.NewReader(handler.sharingJS))
+}
+
 func (handler *Handler) ThemeScript(writer http.ResponseWriter, request *http.Request) {
 	writer.Header().Set("Content-Type", "text/javascript; charset=utf-8")
 	writer.Header().Set("Cache-Control", "public, max-age=86400")
@@ -233,6 +244,7 @@ func (handler *Handler) AdminUsersStyles(writer http.ResponseWriter, request *ht
 }
 
 func (handler *Handler) FileView(writer http.ResponseWriter, request *http.Request) {
+	writer.Header().Set("Cache-Control", "private, no-store")
 	fileID, ok := validFileID(request)
 	if !ok {
 		http.NotFound(writer, request)
@@ -247,7 +259,7 @@ func (handler *Handler) FileView(writer http.ResponseWriter, request *http.Reque
 		handler.internalError(writer, request, "get file", err)
 		return
 	}
-	if file.UploadStatus != "complete" {
+	if !handler.canReadFile(request, file) {
 		http.NotFound(writer, request)
 		return
 	}
@@ -266,7 +278,7 @@ func (handler *Handler) FileView(writer http.ResponseWriter, request *http.Reque
 		CreatedAt: file.CreatedAt.UTC().Format(time.RFC3339), UpdatedAt: file.UpdatedAt.UTC().Format(time.RFC3339),
 		CanManage: handler.isOwner(request, file), Encrypted: file.IsEncrypted,
 		ChecksumsVerified: file.ChecksumStatus == "verified",
-		SignupEnabled:     handler.config.Auth.SignupEnabled,
+		SignupEnabled:     handler.config.Auth != nil && handler.config.Auth.SignupEnabled,
 		User:              identityUser(request), CSRF: identityCSRF(request), Captcha: handler.captchaWidget("download"),
 		CanDirectLink: canDirectLink,
 		DownloadToken: handler.downloadFormToken(file.FileID, time.Now().UTC().Add(10*time.Minute)),
@@ -317,6 +329,11 @@ func (handler *Handler) Upload(writer http.ResponseWriter, request *http.Request
 		http.Error(writer, "A file is required and must be within the configured size limit.", http.StatusBadRequest)
 		return
 	}
+	if _, ok := uploadShareMode(request.FormValue("share_mode")); !ok {
+		_ = fileObject.Close()
+		http.Error(writer, "Invalid upload access option.", http.StatusBadRequest)
+		return
+	}
 	headers := request.MultipartForm.File["file"]
 	if len(headers) > maxFiles {
 		_ = fileObject.Close()
@@ -365,6 +382,7 @@ func (handler *Handler) Upload(writer http.ResponseWriter, request *http.Request
 	if handler.cipher != nil {
 		record.EncryptionMethod = "aes-256-gcm"
 	}
+	record.ShareMode, _ = uploadShareMode(request.FormValue("share_mode"))
 	if !handler.reserveUpload(writer, request, record) {
 		return
 	}
@@ -485,6 +503,7 @@ func (handler *Handler) storeProxiedHeader(request *http.Request, header *multip
 	if handler.cipher != nil {
 		record.EncryptionMethod = "aes-256-gcm"
 	}
+	record.ShareMode, _ = uploadShareMode(request.FormValue("share_mode"))
 	if err := handler.repository.ReserveUpload(request.Context(), record); err != nil {
 		return uploadedFileResult{}, "", err
 	}
@@ -554,6 +573,7 @@ func (handler *Handler) UploadResults(writer http.ResponseWriter, request *http.
 }
 
 func (handler *Handler) Download(writer http.ResponseWriter, request *http.Request) {
+	writer.Header().Set("Cache-Control", "private, no-store")
 	if !handler.allowRequest(writer, request, "download", handler.rateLimitSettings().DownloadLimit) {
 		return
 	}
@@ -585,7 +605,7 @@ func (handler *Handler) Download(writer http.ResponseWriter, request *http.Reque
 		handler.internalError(writer, request, "get file", err)
 		return
 	}
-	if file.UploadStatus != "complete" {
+	if !handler.canReadFile(request, file) {
 		http.NotFound(writer, request)
 		return
 	}
@@ -598,7 +618,7 @@ func (handler *Handler) Download(writer http.ResponseWriter, request *http.Reque
 		http.Error(writer, "Open the file details page before downloading.", http.StatusForbidden)
 		return
 	}
-	if !file.IsEncrypted {
+	if !file.IsEncrypted && fileShareMode(file) == db.ShareLink {
 		if location, err := handler.storage.PresignGet(request.Context(), fileID, file.FileName); err == nil {
 			status := http.StatusTemporaryRedirect
 			if request.Method == http.MethodPost {

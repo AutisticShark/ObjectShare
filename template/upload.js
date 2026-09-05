@@ -51,7 +51,7 @@
     try {
       showStatus(`Authorizing ${files.length} direct upload${files.length === 1 ? "" : "s"}…`);
       const begin = await fetch("/api/v1/uploads/direct/batch", {method: "POST", headers: {"Content-Type": "application/json", ...csrfHeaders}, body: JSON.stringify({
-        files: files.map((file) => ({file_name: file.name, file_size: file.size, content_type: file.type || "application/octet-stream"})), captcha_token: captchaToken()
+        files: files.map((file) => ({share_mode: form.elements.share_mode.value, file_name: file.name, file_size: file.size, content_type: file.type || "application/octet-stream"})), captcha_token: captchaToken()
       })});
       if (!begin.ok) throw await responseError(begin);
       authorizations = (await begin.json()).uploads;

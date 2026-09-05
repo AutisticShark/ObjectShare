@@ -1,6 +1,6 @@
 # ObjectShare
 
-ObjectShare is a small self-hosted file sharing service written in Go. Files are shared through unlisted UUID links; the uploading browser receives an HTTP-only owner token that permits rename and deletion.
+ObjectShare is a small self-hosted file sharing service written in Go. Files use UUID share links with per-file access controls; the uploading browser receives an HTTP-only owner token that permits sharing changes, rename, and deletion.
 
 ## Preview
 
@@ -29,7 +29,7 @@ ObjectShare is a small self-hosted file sharing service written in Go. Files are
 - Docker Compose development/single-node deployment
 - CI, vulnerability scanning, SBOM/provenance, and multi-architecture publishing to Docker Hub and GHCR
 
-File detail URLs remain unlisted rather than private. Guest and standard-account downloads must start on that details page; a stable direct download URL works only while the owning account has an active plan that includes direct links. Put ObjectShare behind an authentication-aware reverse proxy if every file view must require authentication.
+File links are unlisted by default; owners can restrict details and downloads to signed-in users, selected accounts, or themselves. Guest and standard-account downloads must start on that details page; a stable direct download URL works only while the owning account has an active plan that includes direct links. Put ObjectShare behind an authentication-aware reverse proxy if every file view must require authentication.
 
 ## Roadmap
 
@@ -41,7 +41,7 @@ File detail URLs remain unlisted rather than private. Guest and standard-account
 - [x] Paid storage, retention, and direct-link plans
 - [x] Account credit, top-ups, and prepaid plan purchases
 - [ ] Better upload UI
-- [ ] File sharing & permission
+- [x] File sharing & permission
 - [x] File deletion
 - [x] Auto file deletion after days for guest and unpaid users
 - [x] User management
@@ -51,7 +51,7 @@ File detail URLs remain unlisted rather than private. Guest and standard-account
 - [x] Server-side encryption & decryption
 - [ ] Client-side encryption & decryption
 
-HTMX is intentionally part of the frontend architecture. The native forms are accessibility and no-JavaScript fallbacks; login, account, and user-management interactions use HTMX progressive enhancement, and planned permission flows will follow the same pattern.
+HTMX is intentionally part of the frontend architecture. The native forms are accessibility and no-JavaScript fallbacks; login, account, and user-management interactions use HTMX progressive enhancement, and file-sharing permissions follow the same pattern.
 
 ### Supported Object Storage Services
 
@@ -435,11 +435,41 @@ unset OBJECTSHARE_BOOTSTRAP_PASSWORD
 
 The CLI bootstrap is intentionally one-time and refuses to create an administrator after one already exists. Further administrators must be created by an authenticated administrator. `OBJECTSHARE_ADMIN_PASSWORD` is also accepted for automation, but a password file or secret mount is preferred.
 
+### File sharing and permissions
+
+Open **Sharing & permissions** from a file's details page, or **Share** beside an upload in **My account**. The dedicated owner page is `GET /file/{id}/sharing`; recipients use the existing `/file/{id}` link. The page includes a copy-link button and a native form enhanced with HTMX.
+
+| Access option | Who can view details and download? |
+| --- | --- |
+| Anyone with the link (`link`) | Anyone who has the unlisted UUID link. |
+| Signed-in users (`signed_in`) | Any active account authenticated by JWT. |
+| Selected accounts (`selected`) | Only the active accounts selected by the owner, authenticated by JWT. |
+| Private (`private`) | Only the owner. |
+
+The owner always retains access and is the only person who can change sharing, rename, or delete. Administrators receive no implicit file-access override. For guest uploads, the original browser's owner cookie remains the ownership credential; losing or expiring that cookie loses management access and access to private guest files. For account uploads, the owning account can manage files across devices using its JWT.
+
+Selected-account sharing accepts up to 50 existing active account email addresses, separated by commas, semicolons, or newlines. Permissions store account IDs, so changing an email does not remove access and recreating a deleted email does not inherit access. Recipients must log in and then open the file link. Send the link yourself; saving permissions does not send invitations. Saving another access option clears the selected-account list. Unauthorized requests receive a generic 404 without the file's metadata or recipient list.
+
+The upload form lets you select `link`, `signed_in`, or `private` before any file is published. To share with selected accounts without an initial public window, upload privately, then add recipients on the sharing page. The same choice applies to every file in a browser batch. Multipart API uploads accept the `share_mode` form field; direct-upload authorization accepts `share_mode` in its JSON file object (each entry in `files` for `/api/v1/uploads/direct/batch`). Omitted values preserve the existing `link` default; invalid values are rejected. Completion cannot override the policy saved at authorization.
+
+Owners can also submit a URL-encoded `POST /file/{id}/sharing` with `share_mode` and, for `selected`, `recipients`. Account API clients use their bearer JWT; browser submissions require CSRF protection as well as ownership. For example:
+
+```sh
+curl -i -X POST https://share.example.com/file/FILE_UUID/sharing \
+  -H 'Authorization: Bearer <access_token>' \
+  --data-urlencode 'share_mode=selected' \
+  --data-urlencode 'recipients=reader@example.com'
+```
+
+Permissions are stored in PostgreSQL on `file_lists` (`share_mode` and `share_user_ids`) and updated atomically. Startup migration adds the columns, preserving existing files as `link`; no new configuration option is required. Existing download CAPTCHA, rate limits, and paid direct-link entitlements still apply and never override file permissions. File details, permission pages, and download responses use `Cache-Control: private, no-store`.
+
+Restricted downloads stream through the application to recheck authorization on every new request. Permission changes do not recall downloaded copies, interrupt requests already authorized, or revoke storage URLs issued while the file was shared with anyone; those URLs remain valid until their existing expiry. Keep object-storage buckets private, since public bucket access bypasses application authorization.
+
 ### Object storage
 
 All five object-storage providers use private buckets and the S3 API. When server-side encryption is disabled, JavaScript-enabled browsers upload directly to a short-lived URL bound to one object key, exact size, and content type. ObjectShare creates a pending database record first, then verifies the stored object's size and content type before publishing its share page. Expired or aborted pending uploads are removed. Only authorization and completion requests pass through ObjectShare, so a reverse proxy or CDN in front of the app does not carry the file body.
 
-Downloads use short-lived presigned URLs unless ObjectShare server-side encryption is enabled. The direct path cannot provide application-verified SHA checksums because ObjectShare never receives the file bytes; the details page labels those checksums as unavailable. Encryption and direct upload are intentionally mutually exclusive because encryption keys remain on the server.
+Files shared with anyone use short-lived presigned download URLs unless ObjectShare server-side encryption is enabled. Signed-in, selected-account, and private downloads stream through ObjectShare after authorization on each request; provision application bandwidth and proxy download timeouts accordingly. The direct path cannot provide application-verified SHA checksums because ObjectShare never receives the file bytes; the details page labels those checksums as unavailable. Encryption and direct upload are intentionally mutually exclusive because encryption keys remain on the server.
 
 Grant the configured identity only read, write, and delete access to the selected bucket. Do not grant account-wide bucket administration. Direct uploads require a bucket CORS rule allowing the exact public ObjectShare origin, the `PUT` method, and the `Content-Type` header. The S3-style equivalent is:
 

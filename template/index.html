@@ -6,7 +6,7 @@
   <title>{{(branding).SiteName}}</title>
   {{if not .User}}{{template "auto-theme" .}}{{end}}
   {{template "tabler-head" .}}
-  <script defer src="/assets/upload.js"></script>
+  <script defer src="/assets/upload.js?v=sharing-v1"></script>
   {{if .Captcha}}<script defer src="/assets/captcha.js"></script><script defer src="https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit&amp;onload=objectShareTurnstileReady"></script>{{end}}
 </head>
 <body>
@@ -56,13 +56,18 @@
                   {{if .User}}<input type="hidden" name="csrf_token" value="{{.CSRF}}">{{end}}
                   <div class="card-body">
                     <p class="text-secondary">
-                      Files are shared through an unlisted link. {{if .User}}Uploads are saved to your account so you can manage them later.{{else}}This browser receives an owner token that permits rename and deletion.{{end}}
+                      Choose who can view and download your files. {{if .User}}Uploads are saved to your account so you can manage them later.{{else}}This browser receives an owner token that permits sharing changes, rename, and deletion.{{end}}
                     </p>
                     <div class="mb-3">
                       <label class="form-label">Upload mode</label><div class="form-selectgroup mb-3"><label class="form-selectgroup-item"><input class="form-selectgroup-input" type="radio" name="upload_mode" value="single" checked><span class="form-selectgroup-label">Single file</span></label><label class="form-selectgroup-item"><input class="form-selectgroup-input" type="radio" name="upload_mode" value="multiple"><span class="form-selectgroup-label">Multiple files</span></label></div>
                       <label class="form-label" for="file">Choose file</label>
                       <input class="form-control" id="file" type="file" name="file" multiple required>
                       <small class="form-hint">Maximum file size: {{.MaxFileSize}} MiB each; up to {{.MaxFiles}} files per batch.{{if .QuotaLabel}} {{.QuotaLabel}}{{end}}</small>
+                    </div>
+                    <div class="mb-3">
+                      <label class="form-label" for="share-mode">Who can access these files?</label>
+                      <select class="form-select" id="share-mode" name="share_mode"><option value="link">Anyone with the link</option><option value="signed_in">Signed-in users</option><option value="private">Private — only me</option></select>
+                      <div class="form-hint">To share with selected accounts, upload privately and add recipients on the sharing page.{{if not .User}} Keep this browser's owner cookie to manage or access private uploads.{{end}}</div>
                     </div>
                     <div id="upload-status" class="alert alert-info d-none" role="status" aria-live="polite"></div>
                     <div id="upload-progress-wrap" class="progress d-none" aria-hidden="true">

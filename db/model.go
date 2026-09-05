@@ -17,6 +17,8 @@ type FileList struct {
 	EncryptionMethod      string     `gorm:"column:encryption_method;type:varchar(32)"`
 	StorageService        string     `gorm:"column:storage_service;type:varchar(32);not null"`
 	UploadStatus          string     `gorm:"column:upload_status;type:varchar(16);not null;default:complete;index"`
+	ShareMode             string     `gorm:"column:share_mode;type:varchar(16);not null;default:link;check:chk_file_share_mode,share_mode IN ('link','signed_in','selected','private')"`
+	ShareUserIDs          []string   `gorm:"column:share_user_ids;type:jsonb;serializer:json;not null;default:'[]'"`
 	ChecksumStatus        string     `gorm:"column:checksum_status;type:varchar(16);not null;default:verified"`
 	UploadExpiresAt       *time.Time `gorm:"column:upload_expires_at;index"`
 	RetentionClaimedAt    *time.Time `gorm:"column:retention_claimed_at;index"`

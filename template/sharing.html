@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en"{{if and .User .User.DarkMode}} data-bs-theme="dark"{{end}}>
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Share {{.FileName}} · {{(branding).SiteName}}</title>
+  {{if not .User}}{{template "auto-theme" .}}{{end}}{{template "tabler-head" .}}
+  <script defer src="/assets/sharing.js"></script>
+</head>
+<body><div class="page">
+  {{if .User}}{{template "app-nav" .}}{{else}}<header class="navbar"><div class="container-xl"><a class="navbar-brand text-decoration-none" href="/">{{template "brand" .}}</a><a class="btn" href="/login">Log in</a></div></header>{{end}}
+  <div class="page-wrapper">
+    <div class="page-header"><div class="container-xl"><div class="row g-2 align-items-center"><div class="col"><div class="page-pretitle">Sharing &amp; permissions</div><h1 class="page-title text-break">{{.FileName}}</h1></div><div class="col-auto"><a class="btn" href="/file/{{.FileID}}">Back to file</a></div></div></div></div>
+    <div class="page-body"><div class="container-xl"><div class="row justify-content-center"><div class="col-12 col-lg-8">
+      {{if .Message}}<div class="alert alert-success" role="status">{{.Message}}</div>{{end}}
+      {{if .Error}}<div class="alert alert-danger" role="alert">{{.Error}}</div>{{end}}
+      <div class="card mb-3"><div class="card-body">
+        <label class="form-label" for="share-url">Share link</label>
+        <div class="input-group"><input class="form-control" id="share-url" value="{{.ShareURL}}" readonly><button class="btn" id="copy-share-link" type="button" hidden>Copy link</button><a class="btn" href="{{.ShareURL}}">Open</a></div>
+        <div class="form-hint">Recipients use this link to view file details and download. Access follows the saved permissions below.</div>
+        <div id="copy-status" class="text-secondary small mt-2" role="status" aria-live="polite"></div>
+      </div></div>
+      <form class="card" action="/file/{{.FileID}}/sharing" method="post" hx-post="/file/{{.FileID}}/sharing" hx-target=".page" hx-select=".page" hx-swap="outerHTML" hx-disabled-elt="button[type='submit']">
+        <input type="hidden" name="csrf_token" value="{{.CSRF}}">
+        <div class="card-header"><h2 class="card-title">Who can access this file?</h2></div>
+        <div class="card-body">
+          <div class="mb-3"><label class="form-label" for="share-mode">Access</label><select class="form-select" id="share-mode" name="share_mode">
+            <option value="link"{{if eq .Mode "link"}} selected{{end}}>Anyone with the link</option>
+            <option value="signed_in"{{if eq .Mode "signed_in"}} selected{{end}}>Signed-in users</option>
+            <option value="selected"{{if eq .Mode "selected"}} selected{{end}}>Selected accounts</option>
+            <option value="private"{{if eq .Mode "private"}} selected{{end}}>Private — only me</option>
+          </select><div class="form-hint">Only you can change sharing, rename, or delete. Shared recipients can view and download.</div></div>
+          <div class="mb-3"><label class="form-label" for="recipients">Selected account email addresses</label><textarea class="form-control" id="recipients" name="recipients" rows="4" maxlength="20000" placeholder="person@example.com" aria-describedby="recipient-help">{{.Recipients}}</textarea><div class="form-hint" id="recipient-help">Used only for Selected accounts. Enter up to 50 existing account addresses, separated by commas or new lines. Recipients must log in; send them the link yourself. Saving another access option clears this list.</div></div>
+          {{if not .User}}<div class="alert alert-info">This browser's owner cookie controls this guest upload. Keep it to manage the file or open it when private.</div>{{end}}
+          <p class="text-secondary mb-0">Changes apply to new requests. Downloads already in progress or copies already saved cannot be recalled. Storage download links issued while sharing with anyone remain usable until they expire.</p>
+        </div><div class="card-footer text-end"><button class="btn btn-primary" type="submit">Save permissions</button></div>
+      </form>
+    </div></div></div></div>{{template "footer" .}}
+  </div>
+</div></body></html>
