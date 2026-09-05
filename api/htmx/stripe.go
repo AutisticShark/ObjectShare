@@ -29,9 +29,6 @@ func init() { registerBillingGatewayModule(stripeGatewayModule{}) }
 func (stripeGatewayModule) Key() string   { return db.BillingGatewayStripe }
 func (stripeGatewayModule) Label() string { return "Stripe" }
 func (stripeGatewayModule) Order() int    { return 100 }
-func (stripeGatewayModule) ValidPlanID(planID string) bool {
-	return len(planID) <= 255 && strings.HasPrefix(planID, "price_")
-}
 func (stripeGatewayModule) Configure(settings *config.BillingConfig) billingGateway {
 	if settings == nil || !settings.Stripe.Enabled {
 		return nil
@@ -98,23 +95,6 @@ func (client *stripeClient) postForm(ctx context.Context, endpoint string, value
 		return "", errors.New("Stripe returned an unsafe session URL")
 	}
 	return result.URL, nil
-}
-
-func (client *stripeClient) Checkout(ctx context.Context, input billingCheckoutInput) (string, error) {
-	values := url.Values{
-		"mode": {"subscription"}, "line_items[0][price]": {input.GatewayPlanID}, "line_items[0][quantity]": {"1"},
-		"success_url": {input.SuccessURL}, "cancel_url": {input.CancelURL}, "client_reference_id": {input.UserID},
-		"metadata[user_id]": {input.UserID}, "subscription_data[metadata][user_id]": {input.UserID},
-		"allow_promotion_codes": {"true"},
-	}
-	if input.CustomerID != "" {
-		values.Set("customer", input.CustomerID)
-	} else {
-		values.Set("customer_email", input.Email)
-	}
-	keyMaterial := fmt.Sprintf("%s\x00%s\x00%d", input.UserID, input.GatewayPlanID, time.Now().UTC().Unix()/300)
-	key := sha256.Sum256([]byte(keyMaterial))
-	return client.postForm(ctx, "/checkout/sessions", values, "objectshare-checkout-"+hex.EncodeToString(key[:]))
 }
 
 func (client *stripeClient) TopUp(ctx context.Context, input billingTopUpInput) (billingTopUpResult, error) {

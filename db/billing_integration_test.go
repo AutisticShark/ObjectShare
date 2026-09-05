@@ -148,7 +148,7 @@ func TestPostgresCreditTopUpReplayAndValidation(t *testing.T) {
 func TestPostgresCreditPurchasesCannotOverspend(t *testing.T) {
 	repo := creditTestRepository(t)
 	user := creditTestUser(t, repo, 15)
-	plan := PaidPlan{ID: uuid.NewString(), Name: "Credit plan", Gateway: BillingGatewayStripe, GatewayPlanID: "price_test", StorageQuotaBytes: 1024, Active: true, CreditPrice: 10, CreditDurationDays: 30}
+	plan := PaidPlan{ID: uuid.NewString(), Name: "Local plan", StorageQuotaBytes: 1024, Active: true, Price: 10, DurationDays: 30}
 	if err := repo.CreatePlan(t.Context(), &plan); err != nil {
 		t.Fatal(err)
 	}
@@ -210,4 +210,60 @@ func TestPostgresCreditAdjustmentReplayAndRollback(t *testing.T) {
 		t.Fatal("expected balance update failure")
 	}
 	assertCreditState(t, repo, user.ID, -7, 1)
+}
+
+func TestPostgresLocalPlansKeepOnePriceAndLegacyValues(t *testing.T) {
+	repo := creditTestRepository(t)
+	ctx := t.Context()
+	first := PaidPlan{Name: "Local one", Price: 7, DurationDays: 10, StorageQuotaBytes: 1024, Active: true}
+	second := PaidPlan{Name: "Local two", Price: 12, DurationDays: 30, StorageQuotaBytes: 2048, Active: true}
+	for _, plan := range []*PaidPlan{&first, &second} {
+		if err := repo.CreatePlan(ctx, plan); err != nil {
+			t.Fatal(err)
+		}
+		if plan.Gateway != BillingGatewayCredit || plan.GatewayPlanID != plan.ID {
+			t.Fatalf("plan requires an external identifier: %#v", plan)
+		}
+	}
+	// Simulate an old row without rewriting or converting any stored values.
+	legacy := PaidPlan{ID: uuid.NewString(), Name: "Legacy", Gateway: BillingGatewayStripe, GatewayPlanID: "price_legacy", LegacyPriceLabel: "$99 / month", Price: 9, DurationDays: 20, StorageQuotaBytes: 1024, Active: true}
+	if err := repo.connection.Create(&legacy).Error; err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := repo.PlanByID(ctx, legacy.ID, false)
+	if err != nil || loaded.Price != 9 || loaded.DurationDays != 20 {
+		t.Fatalf("legacy values: %#v %v", loaded, err)
+	}
+	replacement := PaidPlan{ID: legacy.ID, Name: "Updated", Price: 11, DurationDays: 25, StorageQuotaBytes: 1024, Active: true}
+	if err := repo.UpdatePlan(ctx, &replacement); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err = repo.PlanByID(ctx, legacy.ID, false)
+	if err != nil || loaded.Price != 11 || loaded.DurationDays != 25 || loaded.GatewayPlanID != "price_legacy" || loaded.LegacyPriceLabel != "$99 / month" {
+		t.Fatalf("updated values: %#v %v", loaded, err)
+	}
+	user := creditTestUser(t, repo, 30)
+	now := time.Now().UTC()
+	for range 2 {
+		if _, err := repo.PurchasePlanWithCredit(ctx, user.ID, legacy.ID, uuid.NewString(), now); err != nil {
+			t.Fatal(err)
+		}
+	}
+	assertCreditState(t, repo, user.ID, 8, 2)
+	sub, err := repo.SubscriptionForUser(ctx, user.ID)
+	if err != nil || sub.CurrentPeriodEnd.Sub(now.AddDate(0, 0, 50)).Abs() > time.Millisecond {
+		t.Fatalf("renewal: %#v %v", sub, err)
+	}
+	// A display label alone must never become an amount or a public purchase offer.
+	if err := repo.connection.Model(&PaidPlan{}).Where("id = ?", legacy.ID).Updates(map[string]any{"credit_price": 0, "credit_duration_days": 0}).Error; err != nil {
+		t.Fatal(err)
+	}
+	plans, err := repo.PublicPlans(ctx)
+	if err != nil || len(plans) != 2 {
+		t.Fatalf("public plans=%#v err=%v", plans, err)
+	}
+	if _, err := repo.PurchasePlanWithCredit(ctx, user.ID, legacy.ID, uuid.NewString(), now); !errors.Is(err, ErrInvalidCredit) {
+		t.Fatalf("unpriced plan purchase=%v", err)
+	}
+	assertCreditState(t, repo, user.ID, 8, 2)
 }

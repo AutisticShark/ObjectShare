@@ -23,9 +23,6 @@ type paypalGatewayStub struct {
 	captureCalls int
 }
 
-func (stub *paypalGatewayStub) Checkout(context.Context, billingCheckoutInput) (string, error) {
-	return "https://www.sandbox.paypal.com/approve", nil
-}
 func (*paypalGatewayStub) TopUp(context.Context, billingTopUpInput) (billingTopUpResult, error) {
 	return billingTopUpResult{Location: "https://www.sandbox.paypal.com/approve", GatewayReference: "ORDER-1"}, nil
 }
@@ -157,26 +154,27 @@ func TestPayPalClientUsesOAuthAndReturnsOnlyPayPalApprovalURL(t *testing.T) {
 			}
 			writer.Header().Set("Content-Type", "application/json")
 			_, _ = io.WriteString(writer, `{"access_token":"token","expires_in":3600}`)
-		case "/v1/billing/subscriptions":
+		case "/v2/checkout/orders":
 			checkoutCalls++
 			if request.Header.Get("Authorization") != "Bearer token" || request.Header.Get("PayPal-Request-Id") == "" {
 				t.Errorf("missing authenticated or idempotent request headers")
 			}
 			var body map[string]any
-			if json.NewDecoder(request.Body).Decode(&body) != nil || body["plan_id"] != "P-ABCDEFGHIJKLMNOPQRSTUVWX" || body["custom_id"] != "11111111-1111-4111-8111-111111111111" {
+			if json.NewDecoder(request.Body).Decode(&body) != nil || body["intent"] != "CAPTURE" {
 				t.Errorf("unexpected checkout body: %#v", body)
 			}
 			writer.Header().Set("Content-Type", "application/json")
-			_, _ = io.WriteString(writer, `{"links":[{"rel":"approve","href":"https://www.sandbox.paypal.com/webapps/billing/subscriptions?ba_token=BA-1"}]}`)
+			_, _ = io.WriteString(writer, `{"id":"ORDER-1","links":[{"rel":"approve","href":"https://www.sandbox.paypal.com/checkoutnow?token=ORDER-1"}]}`)
 		default:
 			http.NotFound(writer, request)
 		}
 	}))
 	defer server.Close()
 	client := &paypalClient{settings: config.PayPalBillingConfig{Environment: "sandbox", ClientID: "client", ClientSecret: "secret"}, apiBase: server.URL, webBase: "https://www.sandbox.paypal.com", client: server.Client()}
-	input := billingCheckoutInput{GatewayPlanID: "P-ABCDEFGHIJKLMNOPQRSTUVWX", UserID: "11111111-1111-4111-8111-111111111111", Email: "user@example.com", SuccessURL: "https://share.example.com/account", CancelURL: "https://share.example.com/plans"}
+	input := billingTopUpInput{TopUpID: "topup-1", Currency: "USD", Credits: 10, AmountMinor: 1000, UserID: "11111111-1111-4111-8111-111111111111", Email: "user@example.com", SuccessURL: "https://share.example.com/account", CancelURL: "https://share.example.com/plans"}
 	for range 2 {
-		location, err := client.Checkout(t.Context(), input)
+		result, err := client.TopUp(t.Context(), input)
+		location := result.Location
 		if err != nil || !strings.HasPrefix(location, "https://www.sandbox.paypal.com/") {
 			t.Fatalf("location=%q err=%v", location, err)
 		}

@@ -1047,7 +1047,7 @@ func (handler *Handler) redirectAfterLogin(writer http.ResponseWriter, request *
 }
 
 func accountMessage(value string) string {
-	return map[string]string{"welcome": "Welcome to ObjectShare.", "profile": "Profile updated.", "theme": "Appearance updated.", "password": "Password changed and all earlier JWTs were invalidated.", "oauth-linked": "OAuth login linked.", "oauth-unlinked": "OAuth login removed.", "billing-pending": "Approval received. Plan access will appear after the payment gateway confirms the subscription.", "topup-pending": "Checkout returned. Credit will appear after the gateway confirms payment.", "topup-complete": "Your account credit has been added.", "credit-plan": "Plan purchased with account credit."}[value]
+	return map[string]string{"welcome": "Welcome to ObjectShare.", "profile": "Profile updated.", "theme": "Appearance updated.", "password": "Password changed and all earlier JWTs were invalidated.", "oauth-linked": "OAuth login linked.", "oauth-unlinked": "OAuth login removed.", "topup-pending": "Checkout returned. Credit will appear after the gateway confirms payment.", "topup-complete": "Your account credit has been added.", "credit-plan": "Plan purchased with account credit."}[value]
 }
 
 func adminMessage(value string) string {

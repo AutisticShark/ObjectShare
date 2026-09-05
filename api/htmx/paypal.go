@@ -27,17 +27,6 @@ func init() { registerBillingGatewayModule(paypalGatewayModule{}) }
 func (paypalGatewayModule) Key() string   { return db.BillingGatewayPayPal }
 func (paypalGatewayModule) Label() string { return "PayPal" }
 func (paypalGatewayModule) Order() int    { return 200 }
-func (paypalGatewayModule) ValidPlanID(planID string) bool {
-	if !strings.HasPrefix(planID, "P-") || len(planID) < 3 || len(planID) > 50 {
-		return false
-	}
-	for _, character := range planID {
-		if (character < 'A' || character > 'Z') && (character < '0' || character > '9') && character != '-' {
-			return false
-		}
-	}
-	return true
-}
 func (paypalGatewayModule) Configure(settings *config.BillingConfig) billingGateway {
 	if settings == nil || !settings.PayPal.Enabled {
 		return nil
@@ -98,46 +87,6 @@ func newPayPalClient(settings config.PayPalBillingConfig) billingGateway {
 		apiBase, webBase = "https://api-m.sandbox.paypal.com", "https://www.sandbox.paypal.com"
 	}
 	return &paypalClient{settings: settings, apiBase: apiBase, webBase: webBase, client: &http.Client{Timeout: 15 * time.Second}}
-}
-
-func (client *paypalClient) Checkout(ctx context.Context, input billingCheckoutInput) (string, error) {
-	body := struct {
-		PlanID     string `json:"plan_id"`
-		CustomID   string `json:"custom_id"`
-		Subscriber struct {
-			Email string `json:"email_address"`
-		} `json:"subscriber"`
-		ApplicationContext struct {
-			BrandName          string `json:"brand_name"`
-			ShippingPreference string `json:"shipping_preference"`
-			UserAction         string `json:"user_action"`
-			ReturnURL          string `json:"return_url"`
-			CancelURL          string `json:"cancel_url"`
-		} `json:"application_context"`
-	}{PlanID: input.GatewayPlanID, CustomID: input.UserID}
-	body.Subscriber.Email = input.Email
-	body.ApplicationContext.BrandName = "ObjectShare"
-	body.ApplicationContext.ShippingPreference = "NO_SHIPPING"
-	body.ApplicationContext.UserAction = "SUBSCRIBE_NOW"
-	body.ApplicationContext.ReturnURL = input.SuccessURL
-	body.ApplicationContext.CancelURL = input.CancelURL
-
-	requestID := uuid.NewSHA1(uuid.NameSpaceURL, []byte(input.UserID+"\x00"+input.GatewayPlanID+"\x00"+fmt.Sprint(time.Now().UTC().Unix()/300))).String()
-	var response struct {
-		Links []struct {
-			Href string `json:"href"`
-			Rel  string `json:"rel"`
-		} `json:"links"`
-	}
-	if err := client.requestJSON(ctx, http.MethodPost, "/v1/billing/subscriptions", body, &response, map[string]string{"PayPal-Request-Id": requestID}); err != nil {
-		return "", err
-	}
-	for _, link := range response.Links {
-		if link.Rel == "approve" && client.safeBrowserURL(link.Href) {
-			return link.Href, nil
-		}
-	}
-	return "", errors.New("PayPal returned no safe approval URL")
 }
 
 func (client *paypalClient) TopUp(ctx context.Context, input billingTopUpInput) (billingTopUpResult, error) {

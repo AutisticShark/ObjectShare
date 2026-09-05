@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -36,6 +37,9 @@ type creditAdjustment struct {
 }
 
 func (repo *entitlementRepository) PublicPlans(context.Context) ([]db.PaidPlan, error) {
+	if repo.plan != nil {
+		return []db.PaidPlan{*repo.plan}, nil
+	}
 	return nil, nil
 }
 func (repo *entitlementRepository) AllPlans(context.Context) ([]db.PaidPlan, error) { return nil, nil }
@@ -107,14 +111,9 @@ func (repo *entitlementRepository) AdjustCredit(_ context.Context, userID string
 }
 
 type checkoutGatewayStub struct {
-	input      *billingCheckoutInput
 	topUpInput *billingTopUpInput
 }
 
-func (stub *checkoutGatewayStub) Checkout(_ context.Context, input billingCheckoutInput) (string, error) {
-	stub.input = &input
-	return "https://www.sandbox.paypal.com/approve", nil
-}
 func (stub *checkoutGatewayStub) TopUp(_ context.Context, input billingTopUpInput) (billingTopUpResult, error) {
 	stub.topUpInput = &input
 	return billingTopUpResult{Location: "https://www.sandbox.paypal.com/approve"}, nil
@@ -165,25 +164,15 @@ func TestDetailsPageDownloadTokenIsBoundAndExpires(t *testing.T) {
 	}
 }
 
-func TestBillingCheckoutDispatchesTrustedPlanToConfiguredGateway(t *testing.T) {
-	user := &db.User{ID: "11111111-1111-4111-8111-111111111111", Email: "user@example.com"}
-	plan := &db.PaidPlan{ID: "22222222-2222-4222-8222-222222222222", Gateway: db.BillingGatewayPayPal, GatewayPlanID: "P-ABCDEFGHIJKLMNOPQRSTUVWX", Active: true}
-	repository := &entitlementRepository{memoryRepository: &memoryRepository{files: make(map[string]*db.FileList)}, plan: plan}
-	handler := newTestHandler(t, repository, &memoryStorage{objects: make(map[string][]byte)})
-	handler.config.Billing = &config.BillingConfig{PublicURL: "https://share.example.com"}
-	gateway := &checkoutGatewayStub{}
-	handler.billingGateways = map[string]billingGateway{db.BillingGatewayPayPal: gateway}
-	router := chi.NewRouter()
-	router.Post("/{id}", handler.BillingCheckout)
-	request := httptest.NewRequest(http.MethodPost, "/"+plan.ID, nil)
-	request = request.WithContext(context.WithValue(request.Context(), identityContextKey{}, &identity{User: user, Transport: transportBearer}))
-	response := httptest.NewRecorder()
-	router.ServeHTTP(response, request)
-	if response.Code != http.StatusSeeOther || response.Header().Get("Location") != "https://www.sandbox.paypal.com/approve" {
-		t.Fatalf("status=%d location=%q body=%q", response.Code, response.Header().Get("Location"), response.Body.String())
-	}
-	if gateway.input == nil || gateway.input.GatewayPlanID != plan.GatewayPlanID || gateway.input.UserID != user.ID || gateway.input.SuccessURL != "https://share.example.com/account?message=billing-pending" {
-		t.Fatalf("checkout input=%#v", gateway.input)
+func TestExternalPlanCheckoutIsRetired(t *testing.T) {
+	handler := newTestHandler(t, &entitlementRepository{memoryRepository: &memoryRepository{files: make(map[string]*db.FileList)}}, &memoryStorage{objects: make(map[string][]byte)})
+	for _, gateway := range []string{db.BillingGatewayStripe, db.BillingGatewayPayPal} {
+		handler.billingGateways = map[string]billingGateway{gateway: &checkoutGatewayStub{}}
+		response := httptest.NewRecorder()
+		handler.BillingCheckout(response, httptest.NewRequest(http.MethodPost, "/billing/checkout/plan", nil))
+		if response.Code != http.StatusGone || response.Header().Get("Location") != "" {
+			t.Fatalf("status=%d location=%q", response.Code, response.Header().Get("Location"))
+		}
 	}
 }
 
@@ -341,48 +330,64 @@ func TestDirectBatchAuthorizesEveryFileWithOneRequest(t *testing.T) {
 	}
 }
 
-func TestPaidPlanFormRejectsUntrustedPriceIDs(t *testing.T) {
-	values := url.Values{"name": {"Plus"}, "gateway": {"stripe"}, "gateway_plan_id": {"product_not_a_price"}, "price_label": {"$5/month"}, "storage_quota_gib": {"10"}, "retention_days": {"30"}, "credit_price": {"0"}, "credit_duration_days": {"0"}, "sort_order": {"0"}}
-	request := httptest.NewRequest(http.MethodPost, "/admin/plans", strings.NewReader(values.Encode()))
-	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	_ = request.ParseForm()
-	if _, err := paidPlanFromForm(request); err == nil {
-		t.Fatal("non-Price Stripe identifier was accepted")
+func TestLocalPlanFormUsesOnePriceWithoutGateway(t *testing.T) {
+	values := url.Values{"name": {"Plus"}, "price": {"10"}, "duration_days": {"30"}, "storage_quota_gib": {"10"}, "retention_days": {"30"}, "sort_order": {"0"}}
+	parse := func() (*db.PaidPlan, error) {
+		request := httptest.NewRequest(http.MethodPost, "/admin/plans", strings.NewReader(values.Encode()))
+		request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		return paidPlanFromForm(request)
 	}
-	values.Set("gateway", "paypal")
-	values.Set("gateway_plan_id", "price_not_a_paypal_plan")
-	request = httptest.NewRequest(http.MethodPost, "/admin/plans", strings.NewReader(values.Encode()))
-	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	_ = request.ParseForm()
-	if _, err := paidPlanFromForm(request); err == nil {
-		t.Fatal("invalid PayPal plan identifier was accepted")
-	}
-}
-
-func TestPaidPlanFormRequiresCompleteCreditOffer(t *testing.T) {
-	values := url.Values{"name": {"Plus"}, "gateway": {"stripe"}, "gateway_plan_id": {"price_plus"}, "price_label": {"$5/month"}, "storage_quota_gib": {"10"}, "retention_days": {"30"}, "credit_price": {"10"}, "credit_duration_days": {"0"}, "sort_order": {"0"}}
-	request := httptest.NewRequest(http.MethodPost, "/admin/plans", strings.NewReader(values.Encode()))
-	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	_ = request.ParseForm()
-	if _, err := paidPlanFromForm(request); err == nil {
-		t.Fatal("partial credit offer was accepted")
-	}
-	values.Set("credit_duration_days", "30")
-	request = httptest.NewRequest(http.MethodPost, "/admin/plans", strings.NewReader(values.Encode()))
-	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	_ = request.ParseForm()
-	plan, err := paidPlanFromForm(request)
-	if err != nil || plan.CreditPrice != 10 || plan.CreditDurationDays != 30 {
+	plan, err := parse()
+	if err != nil || plan.Price != 10 || plan.DurationDays != 30 || plan.Gateway != "" || plan.GatewayPlanID != "" {
 		t.Fatalf("plan=%#v err=%v", plan, err)
 	}
+	// Old or forged provider and alternate-price fields cannot alter the local offer.
+	values.Set("gateway", "stripe")
+	values.Set("gateway_plan_id", "price_attacker")
+	values.Set("price_label", "$1/month")
+	values.Set("credit_price", "1")
+	plan, err = parse()
+	if err != nil || plan.Price != 10 || plan.Gateway != "" || plan.GatewayPlanID != "" || plan.LegacyPriceLabel != "" {
+		t.Fatalf("plan=%#v err=%v", plan, err)
+	}
+	for field, invalid := range map[string][]string{"price": {"", "0", "-1", "1.5", "1000000001", "9223372036854775808"}, "duration_days": {"", "0", "-1", "36501"}, "storage_quota_gib": {"NaN", "+Inf", "0.001"}} {
+		original := values.Get(field)
+		for _, value := range invalid {
+			values.Set(field, value)
+			if _, err := parse(); err == nil {
+				t.Errorf("accepted %s=%q", field, value)
+			}
+		}
+		values.Set(field, original)
+	}
 }
 
-func TestExpiredCreditPlanAllowsGatewayCheckout(t *testing.T) {
-	now := time.Now().UTC()
-	if !subscriptionAllowsCheckout(&db.Subscription{Gateway: db.BillingGatewayCredit, Status: "active", CurrentPeriodEnd: now.Add(-time.Second)}, now) {
-		t.Fatal("expired prepaid plan blocked a new checkout")
+func TestPlansDisplayStoredPriceWithoutConfiguredGateway(t *testing.T) {
+	repo := &entitlementRepository{memoryRepository: &memoryRepository{files: make(map[string]*db.FileList)}, plan: &db.PaidPlan{ID: "plan", Name: "Plus", LegacyPriceLabel: "$999 / month", Price: 10, DurationDays: 30, StorageQuotaBytes: 1024}}
+	handler := newTestHandler(t, repo, &memoryStorage{objects: make(map[string][]byte)})
+	handler.billingGateways = nil
+	var err error
+	handler.templates, err = parseTemplates(os.DirFS("../.."), config.BrandingConfig{})
+	if err != nil {
+		t.Fatal(err)
 	}
-	if subscriptionAllowsCheckout(&db.Subscription{Gateway: db.BillingGatewayCredit, Status: "active", CurrentPeriodEnd: now.Add(time.Second)}, now) {
-		t.Fatal("active prepaid plan allowed an overlapping checkout")
+	request := httptest.NewRequest(http.MethodGet, "/plans", nil)
+	request = request.WithContext(context.WithValue(request.Context(), identityContextKey{}, &identity{User: &db.User{ID: "user"}, Claims: &appauth.Claims{CSRF: "csrf"}, Transport: transportBearer}))
+	response := httptest.NewRecorder()
+	handler.Plans(response, request)
+	body := response.Body.String()
+	if response.Code != http.StatusOK || !strings.Contains(body, "10 credits") || !strings.Contains(body, "30 days") || !strings.Contains(body, `action="/billing/credit/plan"`) {
+		t.Fatalf("status=%d body=%s", response.Code, body)
+	}
+	for _, forbidden := range []string{"$999", "/billing/checkout/", "Subscribe with", "No plans are currently available"} {
+		if strings.Contains(body, forbidden) {
+			t.Errorf("unexpected %q", forbidden)
+		}
+	}
+	repo.plan.Price = 0
+	response = httptest.NewRecorder()
+	handler.Plans(response, request)
+	if strings.Contains(response.Body.String(), `action="/billing/credit/plan"`) {
+		t.Fatal("offered a legacy plan without a numeric price")
 	}
 }

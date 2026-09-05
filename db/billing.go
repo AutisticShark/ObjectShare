@@ -212,10 +212,10 @@ func (repo *GormRepository) PurchasePlanWithCredit(ctx context.Context, userID, 
 		} else if err != nil {
 			return err
 		}
-		if plan.CreditPrice <= 0 || plan.CreditPrice > 1000000000 || plan.CreditDurationDays <= 0 || plan.CreditDurationDays > 36500 {
+		if plan.Price <= 0 || plan.Price > 1000000000 || plan.DurationDays <= 0 || plan.DurationDays > 36500 {
 			return ErrInvalidCredit
 		}
-		if user.CreditBalance < plan.CreditPrice {
+		if user.CreditBalance < plan.Price {
 			return ErrInsufficientCredit
 		}
 		var subscription Subscription
@@ -237,7 +237,7 @@ func (repo *GormRepository) PurchasePlanWithCredit(ctx context.Context, userID, 
 		} else if checkoutErr != nil && !errors.Is(checkoutErr, gorm.ErrRecordNotFound) {
 			return checkoutErr
 		}
-		periodEnd := start.AddDate(0, 0, plan.CreditDurationDays)
+		periodEnd := start.AddDate(0, 0, plan.DurationDays)
 		purchaseID := uuid.NewString()
 		if errors.Is(subscriptionErr, gorm.ErrRecordNotFound) {
 			subscription = Subscription{ID: uuid.NewString(), UserID: userID}
@@ -248,8 +248,8 @@ func (repo *GormRepository) PurchasePlanWithCredit(ctx context.Context, userID, 
 		if err := tx.Save(&subscription).Error; err != nil {
 			return err
 		}
-		balance := user.CreditBalance - plan.CreditPrice
-		entry := CreditTransaction{ID: uuid.NewString(), UserID: userID, Delta: -plan.CreditPrice, BalanceAfter: balance,
+		balance := user.CreditBalance - plan.Price
+		entry := CreditTransaction{ID: uuid.NewString(), UserID: userID, Delta: -plan.Price, BalanceAfter: balance,
 			Kind: CreditTransactionPlan, ReferenceID: plan.ID, DeduplicationKey: deduplicationKey,
 			Description: "Plan purchase: " + plan.Name, CreatedAt: now}
 		if err := tx.Create(&entry).Error; err != nil {
@@ -369,7 +369,7 @@ func (repo *GormRepository) PlanByGatewayID(ctx context.Context, gateway, planID
 
 func (repo *GormRepository) PublicPlans(ctx context.Context) ([]PaidPlan, error) {
 	var plans []PaidPlan
-	err := repo.connection.WithContext(ctx).Where("active = ?", true).Order("sort_order ASC, name ASC").Find(&plans).Error
+	err := repo.connection.WithContext(ctx).Where("active = ? AND credit_price > 0 AND credit_duration_days > 0", true).Order("sort_order ASC, name ASC").Find(&plans).Error
 	return plans, err
 }
 
@@ -394,13 +394,21 @@ func (repo *GormRepository) PlanByID(ctx context.Context, id string, activeOnly 
 }
 
 func (repo *GormRepository) CreatePlan(ctx context.Context, plan *PaidPlan) error {
+	if !validLocalPlan(plan) {
+		return ErrInvalidCredit
+	}
 	if plan.ID == "" {
 		plan.ID = uuid.NewString()
 	}
+	// Local identifiers satisfy the legacy unique index without linking to a provider.
+	plan.Gateway, plan.GatewayPlanID, plan.LegacyPriceLabel = BillingGatewayCredit, plan.ID, ""
 	return repo.connection.WithContext(ctx).Create(plan).Error
 }
 
 func (repo *GormRepository) UpdatePlan(ctx context.Context, plan *PaidPlan) error {
+	if !validLocalPlan(plan) {
+		return ErrInvalidCredit
+	}
 	return repo.connection.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var existing PaidPlan
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ?", plan.ID).First(&existing).Error; errors.Is(err, gorm.ErrRecordNotFound) {
@@ -408,20 +416,10 @@ func (repo *GormRepository) UpdatePlan(ctx context.Context, plan *PaidPlan) erro
 		} else if err != nil {
 			return err
 		}
-		if existing.Gateway != plan.Gateway || existing.GatewayPlanID != plan.GatewayPlanID {
-			var subscriptions int64
-			if err := tx.Model(&Subscription{}).Where("plan_id = ?", plan.ID).Count(&subscriptions).Error; err != nil {
-				return err
-			}
-			if subscriptions != 0 {
-				return ErrConflict
-			}
-		}
 		return tx.Model(&PaidPlan{}).Where("id = ?", plan.ID).Updates(map[string]any{
-			"name": plan.Name, "description": plan.Description, "gateway": plan.Gateway, "gateway_plan_id": plan.GatewayPlanID,
-			"price_label": plan.PriceLabel, "storage_quota_bytes": plan.StorageQuotaBytes,
+			"name": plan.Name, "description": plan.Description, "storage_quota_bytes": plan.StorageQuotaBytes,
 			"retention_days": plan.RetentionDays, "direct_links": plan.DirectLinks,
-			"credit_price": plan.CreditPrice, "credit_duration_days": plan.CreditDurationDays,
+			"credit_price": plan.Price, "credit_duration_days": plan.DurationDays,
 			"active": plan.Active, "sort_order": plan.SortOrder,
 		}).Error
 	})
@@ -541,4 +539,8 @@ func (repo *GormRepository) ApplySubscription(ctx context.Context, update Subscr
 		return nil
 	})
 	return applied, err
+}
+
+func validLocalPlan(plan *PaidPlan) bool {
+	return plan != nil && plan.Price > 0 && plan.Price <= 1_000_000_000 && plan.DurationDays > 0 && plan.DurationDays <= 36500
 }

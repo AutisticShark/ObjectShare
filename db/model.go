@@ -114,24 +114,25 @@ const (
 	BillingGatewayCredit = "credit"
 )
 
-// PaidPlan maps a gateway-owned recurring plan to the entitlements ObjectShare
-// grants while the matching subscription is active.
+// PaidPlan defines a local price, access duration, and entitlements.
+// Legacy gateway mappings and display labels are retained for existing subscriptions.
+// Price and DurationDays reuse the original columns to preserve stored values.
 type PaidPlan struct {
-	ID                 string    `gorm:"column:id;type:uuid;primaryKey"`
-	Name               string    `gorm:"column:name;type:varchar(80);not null"`
-	Description        string    `gorm:"column:description;type:varchar(500);not null"`
-	Gateway            string    `gorm:"column:gateway;type:varchar(32);not null;default:stripe;uniqueIndex:idx_paid_plans_gateway_plan"`
-	GatewayPlanID      string    `gorm:"column:gateway_plan_id;type:varchar(255);not null;uniqueIndex:idx_paid_plans_gateway_plan"`
-	PriceLabel         string    `gorm:"column:price_label;type:varchar(80);not null"`
-	StorageQuotaBytes  int64     `gorm:"column:storage_quota_bytes;not null;check:chk_paid_plans_quota_positive,storage_quota_bytes > 0"`
-	RetentionDays      int       `gorm:"column:retention_days;not null;check:chk_paid_plans_retention_nonnegative,retention_days >= 0"`
-	DirectLinks        bool      `gorm:"column:direct_links;not null;default:false"`
-	CreditPrice        int64     `gorm:"column:credit_price;not null;default:0;check:chk_paid_plans_credit_price_nonnegative,credit_price >= 0"`
-	CreditDurationDays int       `gorm:"column:credit_duration_days;not null;default:0;check:chk_paid_plans_credit_duration_nonnegative,credit_duration_days >= 0"`
-	Active             bool      `gorm:"column:active;not null;default:true;index"`
-	SortOrder          int       `gorm:"column:sort_order;not null;default:0;index"`
-	CreatedAt          time.Time `gorm:"column:created_at;not null"`
-	UpdatedAt          time.Time `gorm:"column:updated_at;not null"`
+	ID                string    `gorm:"column:id;type:uuid;primaryKey"`
+	Name              string    `gorm:"column:name;type:varchar(80);not null"`
+	Description       string    `gorm:"column:description;type:varchar(500);not null"`
+	Gateway           string    `gorm:"column:gateway;type:varchar(32);not null;default:credit;uniqueIndex:idx_paid_plans_gateway_plan"`
+	GatewayPlanID     string    `gorm:"column:gateway_plan_id;type:varchar(255);not null;uniqueIndex:idx_paid_plans_gateway_plan"`
+	LegacyPriceLabel  string    `gorm:"column:price_label;type:varchar(80);not null"`
+	StorageQuotaBytes int64     `gorm:"column:storage_quota_bytes;not null;check:chk_paid_plans_quota_positive,storage_quota_bytes > 0"`
+	RetentionDays     int       `gorm:"column:retention_days;not null;check:chk_paid_plans_retention_nonnegative,retention_days >= 0"`
+	DirectLinks       bool      `gorm:"column:direct_links;not null;default:false"`
+	Price             int64     `gorm:"column:credit_price;not null;default:0;check:chk_paid_plans_credit_price_nonnegative,credit_price >= 0"`
+	DurationDays      int       `gorm:"column:credit_duration_days;not null;default:0;check:chk_paid_plans_credit_duration_nonnegative,credit_duration_days >= 0"`
+	Active            bool      `gorm:"column:active;not null;default:true;index"`
+	SortOrder         int       `gorm:"column:sort_order;not null;default:0;index"`
+	CreatedAt         time.Time `gorm:"column:created_at;not null"`
+	UpdatedAt         time.Time `gorm:"column:updated_at;not null"`
 }
 
 func (PaidPlan) TableName() string { return "paid_plans" }

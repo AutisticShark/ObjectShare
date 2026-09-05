@@ -232,3 +232,21 @@ func TestPostgresConfigRejectsUnknownTimeZone(t *testing.T) {
 		t.Fatal("expected an invalid timezone error")
 	}
 }
+
+func TestLocalPlanFieldsPreserveExistingPricingColumns(t *testing.T) {
+	plan, err := schema.Parse(&PaidPlan{}, &sync.Map{}, schema.NamingStrategy{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.FieldsByDBName["credit_price"].Name != "Price" || plan.FieldsByDBName["credit_duration_days"].Name != "DurationDays" || plan.FieldsByDBName["price_label"].Name != "LegacyPriceLabel" {
+		t.Fatal("local pricing would lose existing stored values")
+	}
+	for _, invalid := range []*PaidPlan{nil, {}, {Price: 1}, {Price: -1, DurationDays: 30}, {Price: 1_000_000_001, DurationDays: 30}, {Price: 1, DurationDays: 36501}} {
+		if validLocalPlan(invalid) {
+			t.Fatalf("accepted invalid local plan: %#v", invalid)
+		}
+	}
+	if !validLocalPlan(&PaidPlan{Price: 5, DurationDays: 30}) {
+		t.Fatal("local plan requires external fields")
+	}
+}

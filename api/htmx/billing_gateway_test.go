@@ -10,7 +10,7 @@ import (
 	"github.com/go-chi/chi/v5"
 )
 
-func TestBillingGatewayModulesOwnConfigurationAndPlanValidation(t *testing.T) {
+func TestBillingGatewayModulesOwnTopUpConfiguration(t *testing.T) {
 	settings := &config.BillingConfig{
 		Stripe: config.StripeBillingConfig{Enabled: true, SecretKey: "sk_test"},
 		PayPal: config.PayPalBillingConfig{Enabled: true, Environment: "sandbox", ClientID: "client", ClientSecret: "secret", WebhookID: "hook"},
@@ -21,19 +21,6 @@ func TestBillingGatewayModulesOwnConfigurationAndPlanValidation(t *testing.T) {
 	}
 	if _, ok := gateways[db.BillingGatewayPayPal].(*paypalClient); !ok {
 		t.Fatalf("PayPal gateway type = %T", gateways[db.BillingGatewayPayPal])
-	}
-
-	valid := map[string]string{db.BillingGatewayStripe: "price_plus", db.BillingGatewayPayPal: "P-ABCDEFGHIJKLMNOPQRSTUVWX"}
-	for gateway, planID := range valid {
-		if !validGatewayPlanID(gateway, planID) {
-			t.Errorf("%s module rejected valid plan ID %q", gateway, planID)
-		}
-	}
-	invalid := map[string]string{db.BillingGatewayStripe: "P-INVALID", db.BillingGatewayPayPal: "price_invalid", "unknown": "plan_1"}
-	for gateway, planID := range invalid {
-		if validGatewayPlanID(gateway, planID) {
-			t.Errorf("%s module accepted invalid plan ID %q", gateway, planID)
-		}
 	}
 
 	options := billingGatewayOptions()

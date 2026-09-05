@@ -26,12 +26,12 @@ func TestCreditTemplatesRenderFormsHistoryAndPrepaidState(t *testing.T) {
 			CreditTransactions: []creditTransactionRow{{Description: "<script>alert(1)</script>", Delta: "+5", Balance: "5", Positive: true}}},
 			[]string{"0 credits", `action="/billing/topup/stripe"`, `action="/billing/topup/paypal"`, `min="5" max="1000"`, "Purchased with account credit", "&lt;script&gt;"},
 			[]string{`action="/billing/portal"`, "<script>alert(1)</script>"}},
-		{"plans.html", plansPageData{User: user, CreditBalance: "25 credits", CreditRequestID: "request-key", Plans: []planCard{{ID: "plan", CreditEnabled: true, CreditPrice: "10 credits", CreditDuration: "30 days"}}},
-			[]string{`action="/billing/credit/plan"`, `name="credit_request_id" value="request-key"`, "10 credits", "30 days"}, nil},
+		{"plans.html", plansPageData{User: user, CreditBalance: "25 credits", CreditRequestID: "request-key", Plans: []planCard{{ID: "plan", Price: "10 credits", Duration: "30 days"}}},
+			[]string{`action="/billing/credit/plan"`, `name="credit_request_id" value="request-key"`, "10 credits", "30 days"}, []string{`action="/billing/checkout/`, "Subscribe with", "Unknown gateway"}},
 		{"admin_users.html", adminPageData{User: user, Users: []adminUserRow{{ID: "target", CreditBalance: "-7 credits", CreditRequestID: "adjustment-key"}}},
 			[]string{`action="/admin/users/target/credit"`, `name="credit_request_id" value="adjustment-key"`, "-7 credits", `name="credit_description"`}, nil},
-		{"admin_plans.html", adminPlansPageData{User: user, Gateways: billingGatewayOptions(), Plans: []adminPlanRow{{PaidPlan: db.PaidPlan{ID: "plan", CreditPrice: 10, CreditDurationDays: 30}}}},
-			[]string{`name="credit_price"`, `name="credit_duration_days"`, `value="10"`, `value="30"`}, nil},
+		{"admin_plans.html", adminPlansPageData{User: user, Plans: []adminPlanRow{{PaidPlan: db.PaidPlan{ID: "plan", Price: 10, DurationDays: 30}}}},
+			[]string{`name="price"`, `name="duration_days"`, `value="10"`, `value="30"`}, []string{"Credit price", "Displayed price", `name="gateway"`, `name="gateway_plan_id"`, `name="price_label"`, `name="credit_price"`}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			var output bytes.Buffer

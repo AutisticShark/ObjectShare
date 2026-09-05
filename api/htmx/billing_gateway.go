@@ -11,18 +11,8 @@ import (
 )
 
 type billingGateway interface {
-	Checkout(context.Context, billingCheckoutInput) (string, error)
 	TopUp(context.Context, billingTopUpInput) (billingTopUpResult, error)
 	Portal(context.Context, *db.Subscription, string) (string, error)
-}
-
-type billingCheckoutInput struct {
-	GatewayPlanID string
-	UserID        string
-	Email         string
-	CustomerID    string
-	SuccessURL    string
-	CancelURL     string
 }
 
 type billingTopUpInput struct {
@@ -38,7 +28,6 @@ type billingGatewayModule interface {
 	Key() string
 	Label() string
 	Order() int
-	ValidPlanID(string) bool
 	Configure(*config.BillingConfig) billingGateway
 	HandleWebhook(*Handler, http.ResponseWriter, *http.Request)
 }
@@ -76,11 +65,6 @@ func billingGatewayModuleFor(key string) billingGatewayModule {
 		}
 	}
 	return nil
-}
-
-func validGatewayPlanID(gateway, planID string) bool {
-	module := billingGatewayModuleFor(gateway)
-	return module != nil && module.ValidPlanID(planID)
 }
 
 func billingGatewayLabel(gateway string) string {
