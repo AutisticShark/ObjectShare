@@ -97,3 +97,44 @@ func TestSendCancellationAndNoRetry(t *testing.T) {
 		t.Fatal("canceled context reached provider")
 	}
 }
+
+// Model a parent whose deadline has elapsed before its cancellation callback
+// has run. The socket deadline can wake SMTP in precisely this interval.
+type pendingDeadlineContext struct {
+	context.Context
+	deadline time.Time
+}
+
+func (ctx pendingDeadlineContext) Deadline() (time.Time, bool) { return ctx.deadline, true }
+
+func TestSendResultBeforeDeadlineCancellationCallback(t *testing.T) {
+	providerErr := deliveryError("SMTP", "greeting")
+	for _, test := range []struct {
+		name         string
+		deadline     time.Time
+		result, want error
+	}{
+		{"elapsed deadline", time.Unix(1, 0), providerErr, context.DeadlineExceeded},
+		{"accepted despite elapsed deadline", time.Unix(1, 0), nil, nil},
+		{"provider failure before deadline", time.Now().Add(time.Hour), providerErr, providerErr},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			ctx := pendingDeadlineContext{Context: context.Background(), deadline: test.deadline}
+			calls := 0
+			s := &sender{config: testConfig("smtp"), transport: transportFunc(func(ctx context.Context, _ Message) error {
+				calls++
+				if ctx.Err() != nil {
+					t.Fatal("cancellation callback already ran")
+				}
+				return test.result
+			})}
+			err := s.Send(ctx, Message{To: "recipient@example.com", Subject: "test", Text: "body"})
+			if !errors.Is(err, test.want) {
+				t.Fatalf("Send returned %v, want %v", err, test.want)
+			}
+			if calls != 1 {
+				t.Fatalf("transport calls = %d, want 1", calls)
+			}
+		})
+	}
+}

@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"github.com/AutisticShark/ObjectShare/config"
@@ -84,8 +85,15 @@ func (s *sender) Send(ctx context.Context, message Message) error {
 		return err
 	}
 	err := s.transport.send(ctx, message)
-	if err != nil && ctx.Err() != nil {
-		return ctx.Err()
+	if err != nil {
+		if contextErr := ctx.Err(); contextErr != nil {
+			return contextErr
+		}
+		// The socket deadline can fire before the context's cancellation
+		// callback. Classify an elapsed deadline independently of that order.
+		if deadline, ok := ctx.Deadline(); ok && !time.Now().Before(deadline) {
+			return context.DeadlineExceeded
+		}
 	}
 	return err
 }
