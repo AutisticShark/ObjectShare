@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en"{{if .User.DarkMode}} data-bs-theme="dark"{{end}}><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Plan catalog · ObjectShare</title>{{template "tabler-head" .}}</head>
+<html lang="en"{{if .User.DarkMode}} data-bs-theme="dark"{{end}}><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Plan catalog · {{(branding).SiteName}}</title>{{template "tabler-head" .}}</head>
 <body><div class="page">{{template "app-nav" .}}<div class="page-wrapper"><div class="page-header"><div class="container-xl"><div class="page-pretitle">Administration</div><h2 class="page-title">Paid plan catalog</h2></div></div><div class="page-body"><div class="container-xl">
 {{if .Error}}<div class="alert alert-danger">{{.Error}}</div>{{end}}<div class="alert alert-info">A plan raises a finite per-account quota but never reduces an account whose standard quota is <strong>0 (unlimited)</strong>. Set finite standard quotas in <a href="/admin/users">Users</a> before advertising storage as an upgrade.</div>
 <div class="card mb-4"><div class="card-header"><h3 class="card-title">Add plan</h3></div>

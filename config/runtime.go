@@ -19,6 +19,7 @@ const sealedRuntimePrefix = "enc:v1:"
 // PostgreSQL. Listener, database, and JWT bootstrap settings deliberately stay
 // in ServiceConfig because they are required before this document can be read.
 type RuntimeConfig struct {
+	Branding       BrandingConfig    `json:"branding"`
 	MaxFileSize    int64             `json:"max_file_size"`
 	SecureCookies  bool              `json:"secure_cookies"`
 	Upload         UploadConfig      `json:"upload"`
@@ -45,6 +46,7 @@ type RuntimeAuthConfig struct {
 
 func RuntimeFromService(cfg *ServiceConfig) RuntimeConfig {
 	runtime := RuntimeConfig{
+		Branding:    cfg.Branding,
 		MaxFileSize: cfg.MaxFileSize, SecureCookies: cfg.SecureCookies,
 		StorageService: cfg.StorageService, StoragePath: cfg.StoragePath,
 	}
@@ -128,6 +130,7 @@ func NormalizeRuntime(cfg *ServiceConfig, runtime RuntimeConfig) (RuntimeConfig,
 }
 
 func applyRuntimeUnchecked(cfg *ServiceConfig, runtime RuntimeConfig) {
+	cfg.Branding = runtime.Branding
 	cfg.MaxFileSize = runtime.MaxFileSize
 	cfg.SecureCookies = runtime.SecureCookies
 	cfg.Upload = &runtime.Upload

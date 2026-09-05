@@ -2,7 +2,7 @@
 <html lang="en"{{if .User.DarkMode}} data-bs-theme="dark"{{end}}>
 <head>
   <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>My account · ObjectShare</title>{{template "tabler-head" .}}
+  <title>My account · {{(branding).SiteName}}</title>{{template "tabler-head" .}}
 </head>
 <body><div class="page">{{template "app-nav" .}}<div class="page-wrapper">
   <div class="page-header d-print-none"><div class="container-xl"><div class="row g-2 align-items-center"><div class="col"><div class="page-pretitle">Account</div><h2 class="page-title">My account</h2></div><div class="col-auto ms-auto"><a class="btn btn-primary" href="/">Upload a file</a></div></div></div></div>

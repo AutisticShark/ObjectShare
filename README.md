@@ -10,6 +10,7 @@ ObjectShare is a small self-hosted file sharing service written in Go. Files are
 
 - Single-file and multiple-file, size-limited uploads with SHA-256 and SHA3-256 checksums
 - Tabler UI with HTMX progressive enhancement and native-form fallbacks
+- Administrator-managed site name, logo, header banner, favicon, tagline, and footer
 - Filesystem, Cloudflare R2, AWS S3, Backblaze B2, Alibaba Cloud OSS, or Tencent Cloud COS object storage
 - Direct-to-object-storage uploads that avoid reverse-proxy request-body limits
 - PostgreSQL metadata with bounded connection pools
@@ -45,7 +46,7 @@ File detail URLs remain unlisted rather than private. Guest and standard-account
 - [x] Auto file deletion after days for guest and unpaid users
 - [x] User management
 - [x] Administrator configuration dashboard
-- [ ] Custom branding support
+- [x] Custom branding support
 - [x] Third-party OAuth login support
 - [x] Server-side encryption & decryption
 - [ ] Client-side encryption & decryption
@@ -192,6 +193,52 @@ Generate an object-encryption key separately with `openssl rand -base64 32` and 
 Normal users manage their profile, password, appearance, paid plan, and account-owned uploads at `/account`. The light/dark theme choice is stored with the account, so it follows the user across browsers and is applied to every authenticated page. Administrators have dedicated `/admin/settings`, `/admin/plans`, and `/admin/users` interfaces for configuration, the purchasable plan catalog, and account management. These routes enforce the administrator role server-side and cookie-authenticated changes require the signed JWT CSRF value. The final active administrator cannot be disabled, demoted, or deleted. Disabling an account, changing its role, or resetting its password increments the account token version so every earlier JWT is rejected. Manual retention-exemption and quota changes do not invalidate JWTs because request authorization reloads current account entitlements from PostgreSQL. Deleting an account keeps its existing shared files available and converts them to anonymous uploads; those files then follow the guest retention policy if it is enabled.
 
 Public signup is changed from the configuration dashboard. `auth.jwt_secret` and `auth.token_lifetime` remain bootstrap JSON settings and are intentionally not editable from the browser.
+
+### Custom branding
+
+Administrators can configure **Configuration → Custom branding** at `/admin/settings`.
+Set the site name, tagline, navigation logo, upload-page header banner, browser tab
+icon (favicon), multiline footer message, and an optional footer link. The site
+name appears in page titles and navigation on public, login, setup, account, and
+administrator pages. The tagline also supplies the HTML page description. The
+existing ObjectShare version and “Made with” heart / “by Cat” credit remain visible.
+
+Save the configuration and **restart every application replica** to activate the
+branding and its image Content Security Policy together. These settings use the
+same encrypted PostgreSQL runtime document, administrator authorization, CSRF
+protection, and revision checks as other dashboard settings. No schema migration
+is needed. Existing installations keep the ObjectShare name and no custom images
+or messages until configured. An empty site name restores `ObjectShare`; empty
+optional fields remove that customization. Clear both footer-link fields together.
+
+Images must have stable, public HTTPS URLs, or root-relative paths such as
+`/branding/logo.png` that your reverse proxy already serves. ObjectShare does not
+upload, host, or fetch branding images. Use a transparent logo for both themes, a
+wide banner, and a square PNG or ICO favicon. Browsers load these assets directly;
+private share-page URLs and expiring presigned download URLs are unsuitable.
+Only configured image origins are added to `img-src`; branding does not grant
+permission to load scripts or styles from those origins. Footer links accept HTTPS URLs or root-relative paths. URLs
+with credentials, fragments, or executable schemes are rejected. All text is
+escaped plain text, not custom HTML, CSS, or JavaScript.
+
+For **first-import seeding only**, the JSON keys belong in a top-level `branding`
+object in `config.json`. Environment equivalents are shown below and passed
+through by `compose.yaml`. After the database configuration row exists, edit the
+dashboard; changing seed values does not replace database settings.
+
+| JSON key within `branding` | Environment variable | Default / limit |
+| --- | --- | --- |
+| `site_name` | `OBJECTSHARE_BRANDING_SITE_NAME` | `ObjectShare`; 80 characters |
+| `tagline` | `OBJECTSHARE_BRANDING_TAGLINE` | Empty; 240 characters |
+| `logo_url` | `OBJECTSHARE_BRANDING_LOGO_URL` | Empty; 2048 bytes |
+| `header_image_url` | `OBJECTSHARE_BRANDING_HEADER_IMAGE_URL` | Empty; 2048 bytes |
+| `favicon_url` | `OBJECTSHARE_BRANDING_FAVICON_URL` | Empty; 2048 bytes |
+| `footer_message` | `OBJECTSHARE_BRANDING_FOOTER_MESSAGE` | Empty; 2000 characters; newlines preserved |
+| `footer_link_text` | `OBJECTSHARE_BRANDING_FOOTER_LINK_TEXT` | Empty; 80 characters; requires a URL |
+| `footer_link_url` | `OBJECTSHARE_BRANDING_FOOTER_LINK_URL` | Empty; 2048 bytes; requires link text |
+
+Email sender identity remains independently configured under **Outgoing email**;
+branding does not change JWT identifiers, API paths, or payment-provider settings.
 
 ### Guest uploads and per-user storage quotas
 

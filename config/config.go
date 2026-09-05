@@ -195,6 +195,7 @@ func applyEnvironment(cfg *ServiceConfig) error {
 		cfg.Email = &EmailConfig{}
 	}
 	problems = append(problems, applyEmailEnvironment(cfg.Email))
+	applyBrandingEnvironment(&cfg.Branding)
 	setString("OBJECTSHARE_ADDRESS", &cfg.Address)
 	problems = append(problems, setInt("OBJECTSHARE_PORT", &cfg.Port))
 	problems = append(problems, setDuration("OBJECTSHARE_READ_TIMEOUT", &cfg.ReadTimeout))
@@ -351,6 +352,9 @@ func applyS3Environment(prefix string, settings *S3CompatibleConfig, problems *[
 }
 
 func (cfg *ServiceConfig) Validate() error {
+	if err := cfg.Branding.Validate(); err != nil {
+		return err
+	}
 	if cfg.Email == nil {
 		cfg.Email = &EmailConfig{}
 	}

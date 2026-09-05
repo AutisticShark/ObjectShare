@@ -17,9 +17,10 @@ func Router(handler *htmx.Handler, logger *slog.Logger) http.Handler {
 	router.Use(middleware.RequestID)
 	router.Use(accessLog(logger))
 	router.Use(middleware.Recoverer)
-	router.Use(securityHeaders(handler.CaptchaCSPEnabled(), handler.DirectUploadConnectSources()...))
+	router.Use(securityHeaders(handler.CaptchaCSPEnabled(), handler.BrandingImageSources(), handler.DirectUploadConnectSources()...))
 	router.Use(handler.Authenticate)
 
+	router.Get("/assets/branding.css", handler.BrandingStyles)
 	router.Get("/assets/theme.js", handler.ThemeScript)
 	router.Get("/assets/upload.js", handler.UploadScript)
 	router.Get("/assets/captcha.js", handler.CaptchaScript)
@@ -102,9 +103,13 @@ func accessLog(logger *slog.Logger) func(http.Handler) http.Handler {
 	}
 }
 
-func securityHeaders(captchaEnabled bool, connectSources ...string) func(http.Handler) http.Handler {
+func securityHeaders(captchaEnabled bool, imageSources []string, connectSources ...string) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+			imageSource := "'self' data:"
+			if len(imageSources) > 0 {
+				imageSource += " " + strings.Join(imageSources, " ")
+			}
 			connectSource := "'self'"
 			if len(connectSources) > 0 {
 				connectSource += " " + strings.Join(connectSources, " ")
@@ -116,7 +121,7 @@ func securityHeaders(captchaEnabled bool, connectSources ...string) func(http.Ha
 				connectSource += " https://challenges.cloudflare.com"
 				frameSource = "https://challenges.cloudflare.com"
 			}
-			writer.Header().Set("Content-Security-Policy", "default-src 'none'; script-src "+scriptSource+"; connect-src "+connectSource+"; frame-src "+frameSource+"; style-src 'self' https://cdn.jsdelivr.net; font-src https://cdn.jsdelivr.net; img-src 'self' data:; form-action 'self'; base-uri 'none'; frame-ancestors 'none'")
+			writer.Header().Set("Content-Security-Policy", "default-src 'none'; script-src "+scriptSource+"; connect-src "+connectSource+"; frame-src "+frameSource+"; style-src 'self' https://cdn.jsdelivr.net; font-src https://cdn.jsdelivr.net; img-src "+imageSource+"; form-action 'self'; base-uri 'none'; frame-ancestors 'none'")
 			writer.Header().Set("Permissions-Policy", "camera=(), geolocation=(), microphone=()")
 			writer.Header().Set("Referrer-Policy", "no-referrer")
 			writer.Header().Set("X-Content-Type-Options", "nosniff")

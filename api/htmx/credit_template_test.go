@@ -2,16 +2,16 @@ package htmx
 
 import (
 	"bytes"
-	"html/template"
 	"os"
 	"strings"
 	"testing"
 
+	"github.com/AutisticShark/ObjectShare/config"
 	"github.com/AutisticShark/ObjectShare/db"
 )
 
 func TestCreditTemplatesRenderFormsHistoryAndPrepaidState(t *testing.T) {
-	parsed, err := template.ParseFS(os.DirFS("../.."), "template/*.html")
+	parsed, err := parseTemplates(os.DirFS("../.."), config.BrandingConfig{})
 	if err != nil {
 		t.Fatal(err)
 	}

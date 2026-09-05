@@ -2,12 +2,12 @@
 <html lang="en">
 <head>
   <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Sign up · ObjectShare</title>{{template "auto-theme" .}}{{template "tabler-head" .}}
+  <title>Sign up · {{(branding).SiteName}}</title>{{template "auto-theme" .}}{{template "tabler-head" .}}
   {{if .Captcha}}<script defer src="/assets/captcha.js"></script><script defer src="https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit&amp;onload=objectShareTurnstileReady"></script>{{end}}
 </head>
 <body class="d-flex flex-column">
   <div class="page page-center"><div class="container container-tight py-4">
-    <div class="text-center mb-4"><a href="/" class="navbar-brand navbar-brand-autodark justify-content-center">ObjectShare</a></div>
+    <div class="text-center mb-4"><a href="/" class="navbar-brand navbar-brand-autodark justify-content-center">{{template "brand" .}}</a></div>
     <form class="card card-md" action="/signup" method="post" hx-post="/signup" hx-disabled-elt="button">
       <input type="hidden" name="csrf_token" value="{{.CSRF}}">
       <div class="card-body">

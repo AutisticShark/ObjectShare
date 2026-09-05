@@ -5,6 +5,16 @@
   "idle_timeout": "1m",
   "shutdown_timeout": "15s",
   "settings_key": "replace-with-a-different-32-byte-random-secret",
+  "branding": {
+    "site_name": "ObjectShare",
+    "tagline": "",
+    "logo_url": "",
+    "header_image_url": "",
+    "favicon_url": "",
+    "footer_message": "",
+    "footer_link_text": "",
+    "footer_link_url": ""
+  },
   "upload": {
     "guest_enabled": true,
     "max_files_per_batch": 10

@@ -2,7 +2,7 @@
 <html lang="en"{{if .User.DarkMode}} data-bs-theme="dark"{{end}}>
 <head>
   <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>User management · ObjectShare</title>{{template "tabler-head" .}}
+  <title>User management · {{(branding).SiteName}}</title>{{template "tabler-head" .}}
   <link rel="stylesheet" href="/assets/admin-users.css">
   <script defer src="/assets/admin-users.js"></script>
 </head>

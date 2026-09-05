@@ -957,6 +957,7 @@ func newAuthTestHandler(t *testing.T, repository *authMemoryRepository, secure b
 		"template/index.html":          {Data: []byte(`{{define "index.html"}}index{{end}}`)},
 		"template/file_view.html":      {Data: []byte(`{{define "file_view.html"}}file{{end}}`)},
 		"template/oauth_error.html":    {Data: []byte(`{{define "oauth_error.html"}}{{.Error}}{{end}}`)},
+		"template/branding.css":        {Data: []byte(`.site-logo { height: 2rem; }`)},
 		"template/theme.js":            {Data: []byte(`console.log("theme test")`)},
 		"template/upload.js":           {Data: []byte(`console.log("test")`)},
 		"template/captcha.js":          {Data: []byte(`console.log("captcha test")`)},

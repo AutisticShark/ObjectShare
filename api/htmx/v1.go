@@ -47,6 +47,7 @@ type Handler struct {
 	direct          service.DirectUploader
 	directPolicy    service.DirectUploadPolicy
 	templates       *template.Template
+	brandingCSS     []byte
 	themeJS         []byte
 	uploadJS        []byte
 	captchaJS       []byte
@@ -72,9 +73,13 @@ type Handler struct {
 }
 
 func New(cfg *config.ServiceConfig, repository db.Repository, storage service.ObjectStore, templates fs.FS, logger *slog.Logger) (*Handler, error) {
-	parsed, err := template.ParseFS(templates, "template/*.html")
+	parsed, err := parseTemplates(templates, cfg.Branding)
 	if err != nil {
 		return nil, fmt.Errorf("parse templates: %w", err)
+	}
+	brandingCSS, err := fs.ReadFile(templates, "template/branding.css")
+	if err != nil {
+		return nil, fmt.Errorf("read branding stylesheet: %w", err)
 	}
 	themeJS, err := fs.ReadFile(templates, "template/theme.js")
 	if err != nil {
@@ -118,7 +123,7 @@ func New(cfg *config.ServiceConfig, repository db.Repository, storage service.Ob
 	}
 	handler := &Handler{
 		config: cfg, repository: repository, users: userRepository, storage: storage,
-		templates: parsed, themeJS: themeJS, uploadJS: uploadJS, captchaJS: captchaJS,
+		templates: parsed, brandingCSS: brandingCSS, themeJS: themeJS, uploadJS: uploadJS, captchaJS: captchaJS,
 		adminUsersJS: adminUsersJS, adminUsersCSS: adminUsersCSS, logger: logger, csrfSecret: csrfSecret,
 		captcha: newCaptchaVerifier(cfg.Captcha), rateLimits: rateLimits,
 		settings: settings, billing: billing, billingGateways: billingGateways,

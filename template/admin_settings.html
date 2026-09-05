@@ -2,7 +2,7 @@
 <html lang="en"{{if .User.DarkMode}} data-bs-theme="dark"{{end}}>
 <head>
   <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Configuration · ObjectShare</title>{{template "tabler-head" .}}
+  <title>Configuration · {{(branding).SiteName}}</title>{{template "tabler-head" .}}
 </head>
 <body><div class="page">{{template "app-nav" .}}<div class="page-wrapper">
   <div class="page-header d-print-none"><div class="container-xl"><div class="row g-2 align-items-center">
@@ -19,6 +19,7 @@
       <input type="hidden" name="csrf_token" value="{{.CSRF}}">
       <input type="hidden" name="revision" value="{{.Revision}}">
       <div class="row row-cards">
+        {{template "branding-settings" .}}
         {{template "email-settings" .}}
         <div class="col-12 col-xl-6"><div class="card h-100">
           <div class="card-header"><h3 class="card-title">Application policy</h3></div><div class="card-body">

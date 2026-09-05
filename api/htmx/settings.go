@@ -176,6 +176,12 @@ func (handler *Handler) parseSettingsForm(writer http.ResponseWriter, request *h
 }
 
 func updateRuntimeFromForm(runtime *config.RuntimeConfig, request *http.Request) error {
+	runtime.Branding = config.BrandingConfig{
+		SiteName: request.FormValue("branding_site_name"), Tagline: request.FormValue("branding_tagline"),
+		LogoURL: request.FormValue("branding_logo_url"), HeaderImageURL: request.FormValue("branding_header_image_url"),
+		FaviconURL: request.FormValue("branding_favicon_url"), FooterMessage: request.FormValue("branding_footer_message"),
+		FooterLinkText: request.FormValue("branding_footer_link_text"), FooterLinkURL: request.FormValue("branding_footer_link_url"),
+	}
 	var problems []error
 	problems = append(problems, updateEmailFromForm(&runtime.Email, request))
 	problems = append(problems, formInt64(request, "max_file_size", &runtime.MaxFileSize))

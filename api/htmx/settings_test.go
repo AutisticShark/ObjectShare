@@ -160,6 +160,14 @@ func TestAdminConfigurationDashboardKeepsSecretsWriteOnlyAndSavesRevision(t *tes
 	values.Set("csrf_token", claims.CSRF)
 	values.Set("revision", settingsRevision(repository.setting.Value))
 	values.Set("max_file_size", "77")
+	values.Set("branding_site_name", "Cat Cloud")
+	values.Set("branding_tagline", "Private file sharing")
+	values.Set("branding_logo_url", "https://cdn.example.com/logo.png")
+	values.Set("branding_header_image_url", "/branding/banner.png")
+	values.Set("branding_favicon_url", "https://cdn.example.com/icon.png")
+	values.Set("branding_footer_message", "Welcome\nPlease share responsibly")
+	values.Set("branding_footer_link_text", "Privacy")
+	values.Set("branding_footer_link_url", "https://example.com/privacy")
 	values.Set("guest_retention_days", "7")
 	values.Set("unpaid_retention_days", "30")
 	values.Set("billing_credit_currency", "eur")
@@ -185,6 +193,10 @@ func TestAdminConfigurationDashboardKeepsSecretsWriteOnlyAndSavesRevision(t *tes
 	}
 	if saved.MaxFileSize != 77 || saved.Retention.GuestDays != 7 || saved.Retention.UnpaidDays != 30 || saved.Captcha.SecretKey != runtime.Captcha.SecretKey || saved.Auth.OAuth.Discord.ClientSecret != runtime.Auth.OAuth.Discord.ClientSecret || saved.Billing.PayPal.ClientSecret != runtime.Billing.PayPal.ClientSecret {
 		t.Fatalf("saved runtime lost values or secrets: %#v", saved)
+	}
+	wantBranding := config.BrandingConfig{SiteName: "Cat Cloud", Tagline: "Private file sharing", LogoURL: "https://cdn.example.com/logo.png", HeaderImageURL: "/branding/banner.png", FaviconURL: "https://cdn.example.com/icon.png", FooterMessage: "Welcome\nPlease share responsibly", FooterLinkText: "Privacy", FooterLinkURL: "https://example.com/privacy"}
+	if saved.Branding != wantBranding || handler.config.Branding.SiteName != "ObjectShare" {
+		t.Fatal("branding was lost or activated before restart")
 	}
 	if handler.config.MaxFileSize == 77 {
 		t.Fatal("restart-required configuration was applied partially in process")

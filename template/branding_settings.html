@@ -1,0 +1,18 @@
+{{define "branding-settings"}}
+<div class="col-12"><div class="card">
+  <div class="card-header"><h3 class="card-title">Custom branding</h3></div>
+  <div class="card-body">
+    <div class="row g-3">
+      <div class="col-md-6"><label class="form-label" for="branding-site-name">Site name</label><input class="form-control" id="branding-site-name" name="branding_site_name" maxlength="80" value="{{.Config.Branding.SiteName}}" placeholder="ObjectShare"><div class="form-hint">Used in navigation and page titles. Empty restores ObjectShare.</div></div>
+      <div class="col-md-6"><label class="form-label" for="branding-tagline">Tagline</label><input class="form-control" id="branding-tagline" name="branding_tagline" maxlength="240" value="{{.Config.Branding.Tagline}}"><div class="form-hint">Shown above the uploader and used as the page description.</div></div>
+      <div class="col-lg-4"><label class="form-label" for="branding-logo">Logo image URL</label><input class="form-control" id="branding-logo" name="branding_logo_url" maxlength="2048" value="{{.Config.Branding.LogoURL}}" placeholder="https://assets.example.com/logo.png"><div class="form-hint">Shown beside the site name. A transparent image works with both themes.</div></div>
+      <div class="col-lg-4"><label class="form-label" for="branding-header">Header image URL</label><input class="form-control" id="branding-header" name="branding_header_image_url" maxlength="2048" value="{{.Config.Branding.HeaderImageURL}}" placeholder="https://assets.example.com/banner.webp"><div class="form-hint">An optional banner above the upload page.</div></div>
+      <div class="col-lg-4"><label class="form-label" for="branding-favicon">Site icon URL</label><input class="form-control" id="branding-favicon" name="branding_favicon_url" maxlength="2048" value="{{.Config.Branding.FaviconURL}}" placeholder="https://assets.example.com/favicon.png"><div class="form-hint">Browser tab icon (favicon). Use a square image or ICO file.</div></div>
+      <div class="col-12"><label class="form-label" for="branding-footer">Footer message</label><textarea class="form-control" id="branding-footer" name="branding_footer_message" rows="3" maxlength="2000">{{.Config.Branding.FooterMessage}}</textarea><div class="form-hint">Plain text, including multiple lines. Shown alongside the existing ObjectShare version and author credit.</div></div>
+      <div class="col-md-6"><label class="form-label" for="branding-footer-link-text">Footer link text</label><input class="form-control" id="branding-footer-link-text" name="branding_footer_link_text" maxlength="80" value="{{.Config.Branding.FooterLinkText}}" placeholder="Privacy policy"></div>
+      <div class="col-md-6"><label class="form-label" for="branding-footer-link-url">Footer link URL</label><input class="form-control" id="branding-footer-link-url" name="branding_footer_link_url" maxlength="2048" value="{{.Config.Branding.FooterLinkURL}}" placeholder="https://example.com/privacy"><div class="form-hint">Set both link fields, or leave both empty.</div></div>
+    </div>
+    <div class="form-hint mt-3">Use public HTTPS image URLs or root-relative paths already served by your reverse proxy. Browsers load images directly; host them at stable URLs without login or expiring signatures. Empty optional fields remove that customization. HTML is displayed as plain text. Save below, then restart every application replica to apply branding.</div>
+  </div>
+</div></div>
+{{end}}

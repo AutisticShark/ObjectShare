@@ -5,10 +5,12 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/AutisticShark/ObjectShare/config"
 )
 
 func TestSecurityHeaders(t *testing.T) {
-	handler := securityHeaders(false)(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) { writer.WriteHeader(http.StatusNoContent) }))
+	handler := securityHeaders(false, nil)(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) { writer.WriteHeader(http.StatusNoContent) }))
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/", nil))
 	for _, name := range []string{"Content-Security-Policy", "Permissions-Policy", "Referrer-Policy", "X-Content-Type-Options", "X-Frame-Options"} {
@@ -18,8 +20,35 @@ func TestSecurityHeaders(t *testing.T) {
 	}
 }
 
+func TestBrandingCSPAllowsOnlyConfiguredImageOrigins(t *testing.T) {
+	for _, branding := range []config.BrandingConfig{
+		{},
+		{LogoURL: "https://cdn.example.com/logo.png", HeaderImageURL: "/branding/header.png", FaviconURL: "https://icons.example.com/icon.png", FooterLinkURL: "https://legal.example.com/privacy"},
+	} {
+		handler := securityHeaders(true, branding.ImageSources(), "https://storage.example.com")(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) }))
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/", nil))
+		policy := response.Header().Get("Content-Security-Policy")
+		want := "img-src 'self' data:"
+		if branding.LogoURL != "" {
+			want += " https://cdn.example.com https://icons.example.com"
+		}
+		if !strings.Contains(policy, want+";") {
+			t.Fatalf("image CSP: %s", policy)
+		}
+		for _, expected := range []string{"connect-src 'self' https://storage.example.com https://challenges.cloudflare.com;", "script-src 'self' https://cdn.jsdelivr.net https://challenges.cloudflare.com;", "style-src 'self' https://cdn.jsdelivr.net;", "form-action 'self';"} {
+			if !strings.Contains(policy, expected) {
+				t.Fatalf("branding changed other policy: %s", policy)
+			}
+		}
+		if strings.Contains(policy, "legal.example.com") || strings.Contains(policy, "img-src https:") || strings.Contains(policy, "unsafe-inline") {
+			t.Fatalf("overbroad CSP: %s", policy)
+		}
+	}
+}
+
 func TestSecurityHeadersIncludeConfiguredObjectStorageOrigin(t *testing.T) {
-	handler := securityHeaders(false, "https://bucket.s3.example.com")(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+	handler := securityHeaders(false, nil, "https://bucket.s3.example.com")(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
 		writer.WriteHeader(http.StatusNoContent)
 	}))
 	response := httptest.NewRecorder()
@@ -31,7 +60,7 @@ func TestSecurityHeadersIncludeConfiguredObjectStorageOrigin(t *testing.T) {
 }
 
 func TestSecurityHeadersAllowTurnstileOnlyWhenConfigured(t *testing.T) {
-	handler := securityHeaders(true)(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) { writer.WriteHeader(http.StatusNoContent) }))
+	handler := securityHeaders(true, nil)(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) { writer.WriteHeader(http.StatusNoContent) }))
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/login", nil))
 	policy := response.Header().Get("Content-Security-Policy")

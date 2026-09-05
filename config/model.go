@@ -35,6 +35,7 @@ func (duration *Duration) UnmarshalJSON(data []byte) error {
 }
 
 type ServiceConfig struct {
+	Branding        BrandingConfig `json:"branding"`
 	seedProblems    error
 	Address         string             `json:"address"`
 	Port            int                `json:"port,omitempty"`

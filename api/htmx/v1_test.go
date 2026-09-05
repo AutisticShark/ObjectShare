@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"html/template"
 	"io"
 	"io/fs"
 	"log/slog"
@@ -403,14 +402,17 @@ func TestSafeFileName(t *testing.T) {
 }
 
 func TestTemplatesKeepTablerHtmxAndAuthorCredit(t *testing.T) {
+	parsed, err := parseTemplates(os.DirFS("../.."), config.BrandingConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
 	for _, name := range []string{"index.html", "file_view.html"} {
-		contents, err := os.ReadFile("../../template/" + name)
-		if err != nil {
+		var output strings.Builder
+		if err := parsed.ExecuteTemplate(&output, name, map[string]any{"Version": "test"}); err != nil {
 			t.Fatal(err)
 		}
-		page := string(contents)
 		for _, expected := range []string{"@tabler/core@1.4.0", "htmx.org@2.0.10", "Made with", "by Cat"} {
-			if !strings.Contains(page, expected) {
+			if !strings.Contains(output.String(), expected) {
 				t.Errorf("%s no longer contains %q", name, expected)
 			}
 		}
@@ -467,7 +469,7 @@ func TestUploadRetentionNoticeExemptsPaidAccounts(t *testing.T) {
 }
 
 func TestAllProductionTemplatesParse(t *testing.T) {
-	parsed, err := template.ParseFS(os.DirFS("../.."), "template/*.html")
+	parsed, err := parseTemplates(os.DirFS("../.."), config.BrandingConfig{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -519,7 +521,7 @@ func TestAllProductionTemplatesParse(t *testing.T) {
 }
 
 func TestAuthenticatedTemplatesUsePersistedDarkTheme(t *testing.T) {
-	parsed, err := template.ParseFS(os.DirFS("../.."), "template/*.html")
+	parsed, err := parseTemplates(os.DirFS("../.."), config.BrandingConfig{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -573,7 +575,7 @@ func TestAuthenticatedTemplatesUsePersistedDarkTheme(t *testing.T) {
 }
 
 func TestAdministratorUserTemplateUsesStorageDisplayAndModalActions(t *testing.T) {
-	parsed, err := template.ParseFS(os.DirFS("../.."), "template/*.html")
+	parsed, err := parseTemplates(os.DirFS("../.."), config.BrandingConfig{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -629,7 +631,7 @@ func TestAdministratorUserTemplateUsesStorageDisplayAndModalActions(t *testing.T
 }
 
 func TestGuestEntryPagesUseAutomaticSystemTheme(t *testing.T) {
-	parsed, err := template.ParseFS(os.DirFS("../.."), "template/*.html")
+	parsed, err := parseTemplates(os.DirFS("../.."), config.BrandingConfig{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -782,6 +784,7 @@ func newTestHandlerConfig(t *testing.T, cfg *config.ServiceConfig, repository db
 	templates := fstest.MapFS{
 		"template/index.html":      {Data: []byte(`{{define "index.html"}}index{{end}}`)},
 		"template/file_view.html":  {Data: []byte(`{{define "file_view.html"}}file{{end}}`)},
+		"template/branding.css":    {Data: []byte(`.site-logo { height: 2rem; }`)},
 		"template/theme.js":        {Data: []byte(`console.log("theme test")`)},
 		"template/upload.js":       {Data: []byte(`console.log("test")`)},
 		"template/captcha.js":      {Data: []byte(`console.log("captcha test")`)},
