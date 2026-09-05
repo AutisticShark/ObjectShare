@@ -61,6 +61,7 @@ func Router(handler *htmx.Handler, logger *slog.Logger) http.Handler {
 		router.With(handler.RequireAdmin, requireSameOrigin).Post("/admin/plans", handler.AdminSavePlan)
 		router.With(handler.RequireAdmin, requireSameOrigin).Post("/admin/plans/{id}", handler.AdminSavePlan)
 		router.With(handler.RequireAdmin, requireSameOrigin).Post("/admin/settings", handler.AdminSaveSettings)
+		router.With(handler.RequireAdmin, requireSameOrigin).Post("/admin/settings/email/test", handler.AdminTestEmail)
 		router.With(handler.RequireAdmin, requireSameOrigin).Post("/admin/users", handler.AdminCreateUser)
 		router.With(handler.RequireAdmin, requireSameOrigin).Post("/admin/users/{id}/access", handler.AdminUpdateAccess)
 		router.With(handler.RequireAdmin, requireSameOrigin).Post("/admin/users/{id}/quota", handler.AdminUpdateUploadQuota)

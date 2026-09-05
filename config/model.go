@@ -49,6 +49,7 @@ type ServiceConfig struct {
 	Upload          *UploadConfig      `json:"upload,omitempty"`
 	Retention       *RetentionConfig   `json:"retention,omitempty"`
 	Billing         *BillingConfig     `json:"billing,omitempty"`
+	Email           *EmailConfig       `json:"email,omitempty"`
 	Auth            *AuthConfig        `json:"auth"`
 	Captcha         *CaptchaConfig     `json:"captcha,omitempty"`
 	RateLimit       *RateLimitConfig   `json:"rate_limit,omitempty"`

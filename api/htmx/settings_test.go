@@ -111,6 +111,12 @@ func TestAdminConfigurationDashboardKeepsSecretsWriteOnlyAndSavesRevision(t *tes
 	runtime.Auth.OAuth.Discord.ClientSecret = "never-render-this-discord-secret"
 	runtime.Billing.PayPal.ClientSecret = "never-render-this-paypal-secret"
 	runtime.R2.AccessKeyID = "never-render-this-storage-access-key"
+	runtime.Email.SMTP.Password = "never-render-email-smtp-password"
+	runtime.Email.Alibaba.AccessKeyID = "never-render-email-alibaba-id"
+	runtime.Email.Alibaba.AccessKeySecret = "never-render-email-alibaba-secret"
+	runtime.Email.SES.AccessKeyID = "never-render-email-ses-id"
+	runtime.Email.SES.SecretAccessKey = "never-render-email-ses-secret"
+	runtime.Email.SES.SessionToken = "never-render-email-ses-session"
 	sealed, err := config.SealRuntime(runtime, cfg.SettingsKey)
 	if err != nil {
 		t.Fatal(err)
@@ -144,6 +150,11 @@ func TestAdminConfigurationDashboardKeepsSecretsWriteOnlyAndSavesRevision(t *tes
 	if strings.Contains(getResponse.Body.String(), runtime.Billing.PayPal.ClientSecret) {
 		t.Fatal("dashboard rendered a stored PayPal secret")
 	}
+	for _, secret := range []string{runtime.Email.SMTP.Password, runtime.Email.Alibaba.AccessKeyID, runtime.Email.Alibaba.AccessKeySecret, runtime.Email.SES.AccessKeyID, runtime.Email.SES.SecretAccessKey, runtime.Email.SES.SessionToken} {
+		if strings.Contains(getResponse.Body.String(), secret) {
+			t.Fatal("dashboard rendered an email credential")
+		}
+	}
 
 	values := runtimeFormValues(runtime)
 	values.Set("csrf_token", claims.CSRF)
@@ -155,6 +166,11 @@ func TestAdminConfigurationDashboardKeepsSecretsWriteOnlyAndSavesRevision(t *tes
 	values.Set("billing_min_top_up_credits", "10")
 	values.Set("billing_max_top_up_credits", "500")
 	values.Set("captcha_secret_key", "")
+	values.Set("email_provider", "ses")
+	values.Set("email_from_address", "sender@example.com")
+	values.Set("email_smtp_port", "587")
+	values.Set("email_timeout", "15s")
+	values.Set("email_ses_region", "eu-west-1")
 	postRequest := httptest.NewRequest(http.MethodPost, "/admin/settings", strings.NewReader(values.Encode()))
 	postRequest.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	postRequest = postRequest.WithContext(context.WithValue(postRequest.Context(), identityContextKey{}, &identity{User: admin, Claims: claims, Transport: transportCookie}))
@@ -172,6 +188,12 @@ func TestAdminConfigurationDashboardKeepsSecretsWriteOnlyAndSavesRevision(t *tes
 	}
 	if handler.config.MaxFileSize == 77 {
 		t.Fatal("restart-required configuration was applied partially in process")
+	}
+	if saved.Email.Provider != "ses" || saved.Email.FromAddress != "sender@example.com" || saved.Email.SES.Region != "eu-west-1" || saved.Email.SES.SecretAccessKey != runtime.Email.SES.SecretAccessKey || saved.Email.SMTP.Password != runtime.Email.SMTP.Password {
+		t.Fatal("email settings or preserved credentials were lost on save")
+	}
+	if handler.config.Email.Provider != "none" {
+		t.Fatal("email config activated before restart")
 	}
 	if saved.Billing.CreditCurrency != "EUR" || saved.Billing.MinTopUpCredits != 10 || saved.Billing.MaxTopUpCredits != 500 {
 		t.Fatalf("credit settings were not normalized and persisted: %#v", saved.Billing)

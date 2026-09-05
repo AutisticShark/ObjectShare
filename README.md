@@ -21,6 +21,7 @@ ObjectShare is a small self-hosted file sharing service written in Go. Files are
 - Password, Google, GitHub, and Discord login with separate user and administrator management interfaces
 - Optional server-verified Turnstile protection and shared PostgreSQL request rate limits
 - Encrypted PostgreSQL-backed configuration with a dedicated administrator dashboard
+- Modular outgoing email through SMTP, Alibaba Cloud Direct Mail, or AWS SES, with an administrator test-email action
 - One-time administrator bootstrap through the web setup or CLI
 - Graceful shutdown, health endpoints, secure response headers, and structured logs
 - Multi-stage, non-root, read-only container image
@@ -44,6 +45,7 @@ File detail URLs remain unlisted rather than private. Guest and standard-account
 - [x] Auto file deletion after days for guest and unpaid users
 - [x] User management
 - [x] Administrator configuration dashboard
+- [ ] Custom branding support
 - [x] Third-party OAuth login support
 - [x] Server-side encryption & decryption
 - [ ] Client-side encryption & decryption
@@ -60,6 +62,85 @@ HTMX is intentionally part of the frontend architecture. The native forms are ac
 - [ ] Google Cloud Storage
 - [ ] Oracle Cloud Object Storage
 - [ ] Microsoft Azure Blob Storage
+
+### Email providers
+
+Outgoing email is optional and disabled by default. Administrators select **SMTP**,
+**Alibaba Cloud Direct Mail**, or **AWS SES** under **Configuration → Email delivery**.
+Credentials use the existing encrypted PostgreSQL runtime document. Blank secret
+fields preserve their values; the adjacent clear checkboxes remove them. Save and
+restart **every replica**, then use **Send test email** to send a fixed message to
+your signed-in administrator account address using that replica's active settings.
+The action requires administrator access, same-origin checks, and JWT CSRF; when
+shared rate limiting is enabled, it permits three tests per administrator per
+configured rate-limit window. Provider acceptance does not prove inbox delivery.
+
+The JSON options below belong inside the top-level `email` object in
+`config.json`; nested paths such as `smtp.host` belong inside its `smtp` object.
+All environment names have the prefix `OBJECTSHARE_EMAIL_`. JSON and environment
+values seed PostgreSQL only on first initialization. Existing installations use
+the dashboard; changing environment variables does not overwrite saved settings.
+
+| JSON path within `email` | Environment suffix | Default | Purpose |
+| --- | --- | --- | --- |
+| `provider` | `PROVIDER` | `none` | none, smtp, alibaba, or ses |
+| `from_address` | `FROM_ADDRESS` | empty | Single sender mailbox; required when enabled |
+| `from_name` | `FROM_NAME` | empty | Optional sender name; at most 15 characters for Alibaba, 100 otherwise |
+| `reply_to` | `REPLY_TO` | empty | Optional single reply-to mailbox |
+| `timeout` | `TIMEOUT` | `15s` | Total send timeout, 1s to 1m; includes credentials, connection, and delivery |
+| `smtp.host` | `SMTP_HOST` | empty | SMTP hostname or IP without a port |
+| `smtp.port` | `SMTP_PORT` | `587` | SMTP port; explicitly use 465 for implicit TLS |
+| `smtp.tls_mode` | `SMTP_TLS_MODE` | `starttls` | starttls (required upgrade) or tls (implicit TLS); verified certificates |
+| `smtp.username` | `SMTP_USERNAME` | empty | AUTH PLAIN username; leave both credentials empty for a relay |
+| `smtp.password` | `SMTP_PASSWORD` | empty | Write-only SMTP password |
+| `alibaba.region` | `ALIBABA_REGION` | `cn-hangzhou` | cn-hangzhou, ap-southeast-1, ap-southeast-2, us-east-1, or eu-central-1 |
+| `alibaba.access_key_id` | `ALIBABA_ACCESS_KEY_ID` | empty | Write-only RAM access key ID |
+| `alibaba.access_key_secret` | `ALIBABA_ACCESS_KEY_SECRET` | empty | Write-only RAM access key secret |
+| `ses.region` | `SES_REGION` | `us-east-1` | AWS SES region; standard AWS, GovCloud, and China endpoint domains |
+| `ses.access_key_id` | `SES_ACCESS_KEY_ID` | empty | Write-only AWS access key ID; optional with the AWS credential chain |
+| `ses.secret_access_key` | `SES_SECRET_ACCESS_KEY` | empty | Write-only AWS secret access key; must accompany the access key ID |
+| `ses.session_token` | `SES_SESSION_TOKEN` | empty | Optional write-only token for temporary explicit AWS credentials |
+| `ses.configuration_set` | `SES_CONFIGURATION_SET` | empty | Optional existing SES configuration set |
+
+- **SMTP:** use a TLS-capable relay with a trusted certificate matching its host.
+  `starttls` requires STARTTLS before authentication or delivery; `tls` starts
+  TLS immediately. AUTH PLAIN is supported over TLS. Set both username/password
+  or leave both empty for a relay authorized by network policy. There is no
+  plaintext fallback or certificate-verification bypass. Port defaults to 587;
+  if omitted or zero in JSON, `tls` selects 465. Compose explicitly defaults to
+  587, so set port 465 when selecting implicit TLS there.
+- **Alibaba Cloud Direct Mail:** verify the sender in the selected region and
+  give a RAM identity `dm:SingleSendMail` permission. The provider uses
+  [SingleSendMail](https://www.alibabacloud.com/help/en/direct-mail/singlesendmail)
+  with address type 1, the configured sender, optional reply-to, and tracking
+  disabled. Regional HTTPS hosts follow Alibaba's
+  [endpoint table](https://www.alibabacloud.com/help/en/direct-mail/api-endpoints);
+  requests use its documented
+  [RPC signature](https://www.alibabacloud.com/help/en/direct-mail/signature).
+- **AWS SES:** verify the sender identity in the chosen region and grant
+  `ses:SendEmail`. Sandbox accounts also need verified recipient identities
+  (or SES mailbox simulator recipients); see
+  [SES sandbox requirements](https://docs.aws.amazon.com/ses/latest/dg/request-production-access.html).
+  The provider calls
+  [SES v2 SendEmail](https://docs.aws.amazon.com/ses/latest/APIReference-V2/API_SendEmail.html)
+  with SigV4 signing from the existing AWS SDK. Supply an independent email
+  access-key pair, plus a session token for temporary credentials, or leave all
+  three blank to use the
+  [AWS credential chain](https://docs.aws.amazon.com/sdk-for-go/v2/developer-guide/configure-gosdk.html),
+  including workload IAM roles. Role/SDK environment and shared credentials are
+  deployment inputs, separate from the saved email settings; make them available
+  inside the application container if using that chain. Storage credentials are
+  never reused implicitly. Configuration sets must already exist in that region.
+
+The Go `email.Sender` interface exposes `Send(context.Context, email.Message) error`;
+`email.New(ctx, cfg.Email)` selects the configured transport. Messages support one
+ASCII recipient, a UTF-8 subject (up to 100 characters), and text and/or HTML
+bodies (up to 80 KiB each). SMTP creates MIME multipart alternatives when both
+bodies are supplied. A disabled sender returns `email.ErrDisabled`. Calls have a
+bounded total timeout and are not automatically retried or failed over because a
+timeout may happen after acceptance. Attachments, bulk mailing, queues, bounce
+processing, and automatic account/notification emails are outside this provider
+integration; current account authentication behavior is unchanged.
 
 ## Quick start with Docker Compose
 

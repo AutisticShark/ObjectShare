@@ -17,14 +17,16 @@ import (
 )
 
 type settingsSecretState struct {
-	Captcha, Google, GitHub, Discord, Encryption bool
-	StripeSecret, StripeWebhook                  bool
-	PayPalSecret                                 bool
-	R2Access, R2Secret                           bool
-	S3Access, S3Secret, S3Session                bool
-	B2Access, B2Secret                           bool
-	OSSAccess, OSSSecret                         bool
-	COSAccess, COSSecret                         bool
+	SMTPPassword, AlibabaMailAccess, AlibabaMailSecret bool
+	SESAccess, SESSecret, SESSession                   bool
+	Captcha, Google, GitHub, Discord, Encryption       bool
+	StripeSecret, StripeWebhook                        bool
+	PayPalSecret                                       bool
+	R2Access, R2Secret                                 bool
+	S3Access, S3Secret, S3Session                      bool
+	B2Access, B2Secret                                 bool
+	OSSAccess, OSSSecret                               bool
+	COSAccess, COSSecret                               bool
 }
 
 type adminSettingsPageData struct {
@@ -34,6 +36,7 @@ type adminSettingsPageData struct {
 	Config                                                        config.RuntimeConfig
 	Secrets                                                       settingsSecretState
 	RestartRequired                                               bool
+	EmailEnabled                                                  bool
 }
 
 func (handler *Handler) AdminSettings(writer http.ResponseWriter, request *http.Request) {
@@ -116,6 +119,8 @@ func (handler *Handler) renderSettings(writer http.ResponseWriter, identity *ide
 	pendingJSON, _ := json.Marshal(runtime)
 	activeJSON, _ := json.Marshal(config.RuntimeFromService(handler.config))
 	secrets := settingsSecretState{
+		SMTPPassword: runtime.Email.SMTP.Password != "", AlibabaMailAccess: runtime.Email.Alibaba.AccessKeyID != "", AlibabaMailSecret: runtime.Email.Alibaba.AccessKeySecret != "",
+		SESAccess: runtime.Email.SES.AccessKeyID != "", SESSecret: runtime.Email.SES.SecretAccessKey != "", SESSession: runtime.Email.SES.SessionToken != "",
 		Captcha: runtime.Captcha.SecretKey != "", Google: runtime.Auth.OAuth.Google.ClientSecret != "", GitHub: runtime.Auth.OAuth.GitHub.ClientSecret != "", Discord: runtime.Auth.OAuth.Discord.ClientSecret != "", Encryption: runtime.Encryption.Key != "",
 		StripeSecret: runtime.Billing.Stripe.SecretKey != "" || runtime.Billing.SecretKey != "", StripeWebhook: runtime.Billing.Stripe.WebhookSecret != "" || runtime.Billing.WebhookSecret != "", PayPalSecret: runtime.Billing.PayPal.ClientSecret != "",
 		R2Access: runtime.R2.AccessKeyID != "", R2Secret: runtime.R2.SecretAccessKey != "",
@@ -132,6 +137,7 @@ func (handler *Handler) renderSettings(writer http.ResponseWriter, identity *ide
 		TrustedProxyCIDRs: strings.Join(runtime.RateLimit.TrustedProxyCIDRs, ", "),
 		RestartRequired:   string(pendingJSON) != string(activeJSON),
 		Secrets:           secrets,
+		EmailEnabled:      handler.config.Email != nil && handler.config.Email.Provider != "none" && handler.config.Email.Provider != "",
 	}
 	handler.render(writer, "admin_settings.html", data)
 }
@@ -142,6 +148,9 @@ func settingsRevision(value string) string {
 }
 
 func redactRuntimeSecrets(runtime *config.RuntimeConfig) {
+	runtime.Email.SMTP.Password = ""
+	runtime.Email.Alibaba.AccessKeyID, runtime.Email.Alibaba.AccessKeySecret = "", ""
+	runtime.Email.SES.AccessKeyID, runtime.Email.SES.SecretAccessKey, runtime.Email.SES.SessionToken = "", "", ""
 	runtime.Auth.OAuth.Google.ClientSecret = ""
 	runtime.Auth.OAuth.GitHub.ClientSecret = ""
 	runtime.Auth.OAuth.Discord.ClientSecret = ""
@@ -168,6 +177,7 @@ func (handler *Handler) parseSettingsForm(writer http.ResponseWriter, request *h
 
 func updateRuntimeFromForm(runtime *config.RuntimeConfig, request *http.Request) error {
 	var problems []error
+	problems = append(problems, updateEmailFromForm(&runtime.Email, request))
 	problems = append(problems, formInt64(request, "max_file_size", &runtime.MaxFileSize))
 	runtime.SecureCookies = checked(request, "secure_cookies")
 	runtime.Upload.GuestEnabled = checked(request, "guest_enabled")
@@ -314,6 +324,9 @@ func formDuration(request *http.Request, name string, target *config.Duration) e
 }
 
 func settingsMessage(value string) string {
+	if value == "email-sent" {
+		return "The active email provider accepted a test email to your account address. Check your inbox and spam folder."
+	}
 	if value == "saved" {
 		return "Configuration saved. Restart every ObjectShare application replica to activate it."
 	}

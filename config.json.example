@@ -13,6 +13,32 @@
     "guest_days": 0,
     "unpaid_days": 0
   },
+  "email": {
+    "provider": "none",
+    "from_address": "",
+    "from_name": "",
+    "reply_to": "",
+    "timeout": "15s",
+    "smtp": {
+      "host": "",
+      "port": 587,
+      "tls_mode": "starttls",
+      "username": "",
+      "password": ""
+    },
+    "alibaba": {
+      "region": "cn-hangzhou",
+      "access_key_id": "",
+      "access_key_secret": ""
+    },
+    "ses": {
+      "region": "us-east-1",
+      "access_key_id": "",
+      "secret_access_key": "",
+      "session_token": "",
+      "configuration_set": ""
+    }
+  },
   "billing": {
     "public_url": "http://localhost:8080",
     "credit_currency": "USD",

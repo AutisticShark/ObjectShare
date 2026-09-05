@@ -191,6 +191,10 @@ func readJSON(path string, cfg *ServiceConfig) error {
 
 func applyEnvironment(cfg *ServiceConfig) error {
 	var problems []error
+	if cfg.Email == nil {
+		cfg.Email = &EmailConfig{}
+	}
+	problems = append(problems, applyEmailEnvironment(cfg.Email))
 	setString("OBJECTSHARE_ADDRESS", &cfg.Address)
 	problems = append(problems, setInt("OBJECTSHARE_PORT", &cfg.Port))
 	problems = append(problems, setDuration("OBJECTSHARE_READ_TIMEOUT", &cfg.ReadTimeout))
@@ -347,6 +351,12 @@ func applyS3Environment(prefix string, settings *S3CompatibleConfig, problems *[
 }
 
 func (cfg *ServiceConfig) Validate() error {
+	if cfg.Email == nil {
+		cfg.Email = &EmailConfig{}
+	}
+	if err := cfg.Email.Validate(); err != nil {
+		return err
+	}
 	if cfg.Port > 0 {
 		cfg.Address = ":" + strconv.Itoa(cfg.Port)
 	} else if cfg.Address == "" {

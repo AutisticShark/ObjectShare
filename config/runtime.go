@@ -24,6 +24,7 @@ type RuntimeConfig struct {
 	Upload         UploadConfig      `json:"upload"`
 	Retention      RetentionConfig   `json:"retention"`
 	Billing        BillingConfig     `json:"billing"`
+	Email          EmailConfig       `json:"email"`
 	Auth           RuntimeAuthConfig `json:"auth"`
 	Captcha        CaptchaConfig     `json:"captcha"`
 	RateLimit      RateLimitConfig   `json:"rate_limit"`
@@ -58,6 +59,9 @@ func RuntimeFromService(cfg *ServiceConfig) RuntimeConfig {
 	}
 	if cfg.Billing != nil {
 		runtime.Billing = *cfg.Billing
+	}
+	if cfg.Email != nil {
+		runtime.Email = *cfg.Email
 	}
 	if cfg.Auth != nil {
 		runtime.Auth.SignupEnabled = cfg.Auth.SignupEnabled
@@ -129,6 +133,7 @@ func applyRuntimeUnchecked(cfg *ServiceConfig, runtime RuntimeConfig) {
 	cfg.Upload = &runtime.Upload
 	cfg.Retention = &runtime.Retention
 	cfg.Billing = &runtime.Billing
+	cfg.Email = &runtime.Email
 	if cfg.Auth == nil {
 		cfg.Auth = &AuthConfig{}
 	}

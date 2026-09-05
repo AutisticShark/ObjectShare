@@ -30,6 +30,7 @@ import (
 	appauth "github.com/AutisticShark/ObjectShare/auth"
 	"github.com/AutisticShark/ObjectShare/config"
 	"github.com/AutisticShark/ObjectShare/db"
+	"github.com/AutisticShark/ObjectShare/email"
 	appcrypto "github.com/AutisticShark/ObjectShare/encryption"
 	"github.com/AutisticShark/ObjectShare/service"
 	"github.com/go-chi/chi/v5"
@@ -39,6 +40,7 @@ import (
 const mebibyte = int64(1024 * 1024)
 
 type Handler struct {
+	emailSender     email.Sender
 	config          *config.ServiceConfig
 	repository      db.Repository
 	storage         service.ObjectStore
@@ -121,6 +123,10 @@ func New(cfg *config.ServiceConfig, repository db.Repository, storage service.Ob
 		captcha: newCaptchaVerifier(cfg.Captcha), rateLimits: rateLimits,
 		settings: settings, billing: billing, billingGateways: billingGateways,
 		localRateLimits: newLocalRateLimiter(), trustedProxies: trustedProxies,
+	}
+	handler.emailSender, err = email.New(context.Background(), cfg.Email)
+	if err != nil {
+		return nil, fmt.Errorf("configure email: %w", err)
 	}
 	if cfg.Auth != nil {
 		downloadSecret := sha256.Sum256([]byte("objectshare-download-form-v1\x00" + cfg.Auth.JWTSecret))
