@@ -119,6 +119,16 @@ func Open(ctx context.Context, cfg *config.DatabaseConfig) (*GormRepository, err
 	if err != nil {
 		return nil, err
 	}
+	return openPostgres(ctx, cfg, pgxConfig, location)
+}
+
+func openPostgres(ctx context.Context, cfg *config.DatabaseConfig, pgxConfig *pgx.ConnConfig, location *time.Location) (*GormRepository, error) {
+	// AutoMigrate can inspect SELECT * repeatedly while changing a table's
+	// columns. Neither pgx nor GORM may cache statements/result descriptions
+	// across that DDL. DescribeExec preserves server-inferred parameter types
+	// without caching; GORM's runtime statement cache is enabled after commit.
+	pgxConfig = pgxConfig.Copy()
+	pgxConfig.DefaultQueryExecMode = pgx.QueryExecModeDescribeExec
 	sqlDB := stdlib.OpenDB(*pgxConfig, stdlib.OptionAfterConnect(func(_ context.Context, connection *pgx.Conn) error {
 		connection.TypeMap().RegisterType(&pgtype.Type{
 			Name: "timestamp", OID: pgtype.TimestampOID,
@@ -132,7 +142,6 @@ func Open(ctx context.Context, cfg *config.DatabaseConfig) (*GormRepository, err
 
 	connection, err := gorm.Open(postgres.New(postgres.Config{Conn: sqlDB}), &gorm.Config{
 		SkipDefaultTransaction: true,
-		PrepareStmt:            true,
 		DisableAutomaticPing:   true,
 	})
 	if err != nil {
@@ -241,7 +250,7 @@ func Open(ctx context.Context, cfg *config.DatabaseConfig) (*GormRepository, err
 		_ = sqlDB.Close()
 		return nil, fmt.Errorf("commit migration: %w", err)
 	}
-	return &GormRepository{connection: connection}, nil
+	return &GormRepository{connection: connection.Session(&gorm.Session{PrepareStmt: true})}, nil
 }
 
 type legacyPaidPlan struct {

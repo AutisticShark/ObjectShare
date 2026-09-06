@@ -21,6 +21,25 @@ import (
 // own random schema, and never migrates the database's public schema.
 func creditTestRepository(t *testing.T) *GormRepository {
 	t.Helper()
+	settings := creditTestSettings(t)
+	pool := stdlib.OpenDB(*settings)
+	pool.SetMaxOpenConns(12)
+	t.Cleanup(func() { _ = pool.Close() })
+	connection, err := gorm.Open(postgres.New(postgres.Config{Conn: pool}), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
+	if err != nil {
+		t.Fatal("cannot connect to test database")
+	}
+	models := []any{&User{}, &PaidPlan{}, &Subscription{}, &BillingCheckout{}, &BillingEvent{}, &CreditTopUp{}, &CreditTransaction{}, &Invoice{}}
+	for range 2 {
+		if err := connection.AutoMigrate(models...); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return &GormRepository{connection: connection}
+}
+
+func creditTestSettings(t *testing.T) *pgx.ConnConfig {
+	t.Helper()
 	dsn := os.Getenv("OBJECTSHARE_TEST_POSTGRES_DSN")
 	if dsn == "" {
 		t.Skip("set OBJECTSHARE_TEST_POSTGRES_DSN to run PostgreSQL transaction tests")
@@ -45,20 +64,7 @@ func creditTestRepository(t *testing.T) *GormRepository {
 		}
 	})
 	settings.RuntimeParams["search_path"] = schemaName
-	pool := stdlib.OpenDB(*settings)
-	pool.SetMaxOpenConns(12)
-	t.Cleanup(func() { _ = pool.Close() })
-	connection, err := gorm.Open(postgres.New(postgres.Config{Conn: pool}), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
-	if err != nil {
-		t.Fatal("cannot connect to test database")
-	}
-	models := []any{&User{}, &PaidPlan{}, &Subscription{}, &BillingCheckout{}, &BillingEvent{}, &CreditTopUp{}, &CreditTransaction{}, &Invoice{}}
-	for range 2 {
-		if err := connection.AutoMigrate(models...); err != nil {
-			t.Fatal(err)
-		}
-	}
-	return &GormRepository{connection: connection}
+	return settings
 }
 
 func creditTestUser(t *testing.T, repo *GormRepository, balance int64) User {

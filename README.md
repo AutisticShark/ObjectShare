@@ -173,6 +173,13 @@ For HTTPS deployments, terminate TLS at a reverse proxy, enable secure cookies i
 
 Requirements: Go 1.27 and PostgreSQL 18 (PostgreSQL 17 is also supported).
 
+Startup schema migrations run in a transaction under a PostgreSQL advisory lock.
+Statement caching is disabled during migration and enabled for application queries
+after commit, so repeated schema inspection can safely see added or changed columns.
+If an older build stops with `cached plan must not change result type` (SQLSTATE
+`0A000`) during migration, deploy a build containing this fix and restart ObjectShare
+against the existing database; no manual table or data deletion is needed.
+
 ```sh
 cp config.json.example config.json
 # Edit the bootstrap database and secret settings.
@@ -643,7 +650,7 @@ go run golang.org/x/vuln/cmd/govulncheck@v1.7.0 ./...
 
 CI also verifies formatting and builds the container. Dependency and action updates are proposed weekly by Dependabot.
 
-Credit transaction integration tests require PostgreSQL and are skipped unless `OBJECTSHARE_TEST_POSTGRES_DSN` is set. Point it at a **disposable test database**, never the production database, using a role that can create schemas. Run `go test -count=1 -run TestPostgresCredit -v ./db` (with `-mod=mod` if your ignored vendor directory is stale). These tests create a unique `credit_test_*` schema, exercise migrations, concurrent payment replay, concurrent spending, form resubmission, and transaction rollback, then remove only that schema. The ordinary test suite also covers gateway requests, payment validation, authorization, CSRF, configuration, and actual HTML template rendering without contacting payment providers.
+Credit transaction and startup migration integration tests require PostgreSQL and are skipped unless `OBJECTSHARE_TEST_POSTGRES_DSN` is set. Point it at a **disposable test database**, never the production database, using a role that can create schemas. Run `go test -count=1 -run 'TestPostgres(Credit|Migration)' -v ./db` (with `-mod=mod` if your ignored vendor directory is stale). These tests create a unique `credit_test_*` schema, exercise fresh startup, upgrades of populated top-up tables, repeated startup, concurrent payment replay, concurrent spending, form resubmission, and transaction rollback, then remove only that schema. The ordinary test suite also covers gateway requests, payment validation, authorization, CSRF, configuration, and actual HTML template rendering without contacting payment providers.
 
 ## License
 
