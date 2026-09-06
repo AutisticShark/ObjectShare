@@ -16,8 +16,8 @@ type billingGateway interface {
 }
 
 type billingTopUpInput struct {
-	TopUpID, UserID, Email, Currency, SuccessURL, CancelURL string
-	Credits, AmountMinor                                    int64
+	TopUpID, UserID, Email, Currency, SuccessURL, CancelURL, Description string
+	Credits, AmountMinor                                                 int64
 }
 
 type billingTopUpResult struct {

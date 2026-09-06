@@ -220,9 +220,9 @@ func TestBillingTopUpUsesAuthenticatedAccountAndConfiguredValue(t *testing.T) {
 	}
 }
 
-func TestCreditPlanPurchaseReportsInsufficientBalance(t *testing.T) {
+func TestLegacyCreditFormGeneratesInvoice(t *testing.T) {
 	user := &db.User{ID: "11111111-1111-4111-8111-111111111111"}
-	repository := &entitlementRepository{memoryRepository: &memoryRepository{files: make(map[string]*db.FileList)}, purchaseErr: db.ErrInsufficientCredit}
+	repository := &invoiceTestRepository{entitlementRepository: &entitlementRepository{memoryRepository: &memoryRepository{files: make(map[string]*db.FileList)}}, invoice: db.Invoice{ID: "44444444-4444-4444-8444-444444444444"}}
 	handler := newTestHandler(t, repository, &memoryStorage{objects: make(map[string][]byte)})
 	router := chi.NewRouter()
 	router.Post("/{id}", handler.BillingPurchaseWithCredit)
@@ -231,7 +231,7 @@ func TestCreditPlanPurchaseReportsInsufficientBalance(t *testing.T) {
 	request = request.WithContext(context.WithValue(request.Context(), identityContextKey{}, &identity{User: user, Transport: transportBearer}))
 	response := httptest.NewRecorder()
 	router.ServeHTTP(response, request)
-	if response.Code != http.StatusPaymentRequired {
+	if response.Code != http.StatusSeeOther || !repository.created || repository.paid {
 		t.Fatalf("status=%d body=%q", response.Code, response.Body.String())
 	}
 }
@@ -376,7 +376,7 @@ func TestPlansDisplayStoredPriceWithoutConfiguredGateway(t *testing.T) {
 	response := httptest.NewRecorder()
 	handler.Plans(response, request)
 	body := response.Body.String()
-	if response.Code != http.StatusOK || !strings.Contains(body, "10 credits") || !strings.Contains(body, "30 days") || !strings.Contains(body, `action="/billing/credit/plan"`) {
+	if response.Code != http.StatusOK || !strings.Contains(body, "10 credits") || !strings.Contains(body, "30 days") || !strings.Contains(body, `action="/billing/invoices/plan"`) {
 		t.Fatalf("status=%d body=%s", response.Code, body)
 	}
 	for _, forbidden := range []string{"$999", "/billing/checkout/", "Subscribe with", "No plans are currently available"} {
@@ -387,7 +387,7 @@ func TestPlansDisplayStoredPriceWithoutConfiguredGateway(t *testing.T) {
 	repo.plan.Price = 0
 	response = httptest.NewRecorder()
 	handler.Plans(response, request)
-	if strings.Contains(response.Body.String(), `action="/billing/credit/plan"`) {
+	if strings.Contains(response.Body.String(), `action="/billing/invoices/plan"`) {
 		t.Fatal("offered a legacy plan without a numeric price")
 	}
 }

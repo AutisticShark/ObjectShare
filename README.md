@@ -23,6 +23,7 @@ ObjectShare is a small self-hosted file sharing service written in Go. Files use
 - Optional server-verified Turnstile protection and shared PostgreSQL request rate limits
 - Encrypted PostgreSQL-backed configuration with a dedicated administrator dashboard
 - Modular outgoing email through SMTP, Alibaba Cloud Direct Mail, or AWS SES, with an administrator test-email action
+- Plan and credit-top-up invoices, account-credit or gateway payment, private invoice pages, PDF exports, and queued payment confirmation emails with PDF attachments
 - One-time administrator bootstrap through the web setup or CLI
 - Graceful shutdown, health endpoints, secure response headers, and structured logs
 - Multi-stage, non-root, read-only container image
@@ -139,9 +140,20 @@ ASCII recipient, a UTF-8 subject (up to 100 characters), and text and/or HTML
 bodies (up to 80 KiB each). SMTP creates MIME multipart alternatives when both
 bodies are supplied. A disabled sender returns `email.ErrDisabled`. Calls have a
 bounded total timeout and are not automatically retried or failed over because a
-timeout may happen after acceptance. Attachments, bulk mailing, queues, bounce
-processing, and automatic account/notification emails are outside this provider
-integration; current account authentication behavior is unchanged.
+timeout may happen after acceptance. Messages can include up to five PDF attachments
+(totaling at most 4 MiB). SMTP uses multipart/mixed with base64 attachments; SES
+uses its MIME/raw message API for attachments. Alibaba attachment delivery uses
+its official upload-capable Direct Mail SDK with the existing configured credentials;
+the SDK authorizes a temporary provider-hosted file upload before sending. Allow
+outbound HTTPS to Alibaba Open Platform and its returned OSS upload endpoint in
+addition to Direct Mail. Ordinary Alibaba messages retain the existing signed API
+transport. The SDK bounds each attachment delivery stage; cancellation is checked
+before starting and the remaining deadline is divided across stages.
+
+Paid invoices use a separate persistent delivery queue with a five-minute retry
+and lease interval. Normal message sends do not retry automatically. Bulk mailing,
+bounce processing, and other automatic account emails remain outside this
+integration; account authentication behavior is unchanged.
 
 ## Quick start with Docker Compose
 
@@ -299,15 +311,75 @@ Create plans directly at `/admin/plans`. Each plan defines its name, description
 
 Existing numeric plan prices and durations retain their values using the original database columns. Historical display labels and provider mappings remain stored solely for compatibility with subscriptions created before this change. An older plan without a positive numeric price and duration stays in the administrator catalog but is unavailable for new purchases until those fields are set; ObjectShare does not guess an amount or duration from a text label.
 
-Account credit is a PostgreSQL-backed prepaid wallet. One credit equals one whole unit of `credit_currency`; ObjectShare intentionally supports the common two-decimal currencies `AUD`, `BRL`, `CAD`, `CHF`, `CNY`, `CZK`, `DKK`, `EUR`, `GBP`, `HKD`, `ILS`, `MXN`, `MYR`, `NOK`, `NZD`, `PHP`, `PLN`, `SEK`, `SGD`, `THB`, and `USD`. Configure the permitted whole-credit top-up range in `/admin/settings`. Changing the currency affects future top-ups only: existing credits and plan prices are not converted. A user chooses an amount and gateway from `/account`; the server records the expected account, currency, and amount before redirecting to Stripe Checkout or PayPal Checkout. The balance changes only when a signed Stripe payment event or an authenticated PayPal capture response matches all of those stored values. Gateway payment identifiers and persistent, account-scoped purchase/adjustment request IDs prevent replays from changing the balance twice across replicas. The account ledger is append-only during the account lifetime and is removed if an administrator deletes that account. Administrators can make a signed positive or negative correction from `/admin/users`, and every correction requires a reason.
+Account credit is a PostgreSQL-backed prepaid wallet. One credit equals one whole unit of `credit_currency`; ObjectShare intentionally supports the common two-decimal currencies `AUD`, `BRL`, `CAD`, `CHF`, `CNY`, `CZK`, `DKK`, `EUR`, `GBP`, `HKD`, `ILS`, `MXN`, `MYR`, `NOK`, `NZD`, `PHP`, `PLN`, `SEK`, `SGD`, `THB`, and `USD`. Configure the permitted whole-credit top-up range in `/admin/settings`. Changing the currency affects future invoices only: existing credits and plan prices are not converted. A user chooses an amount and gateway from `/account`; the server records the expected account, currency, and amount before redirecting to Stripe Checkout or PayPal Checkout. The balance changes only when a signed Stripe payment event or an authenticated PayPal capture response matches all of those stored values. Gateway payment identifiers and persistent, account-scoped purchase/adjustment request IDs prevent replays from changing the balance twice across replicas. The account ledger is append-only during the account lifetime and is removed if an administrator deletes that account. Administrators can make a signed positive or negative correction from `/admin/users`, and every correction requires a reason.
 
-A plan purchase atomically deducts its price from the wallet and creates or extends access for its configured duration. Buying the same active local plan extends access from its current expiry; a different active plan cannot overlap it. The browser submits the plan ID and an account-scoped purchase request ID, never an authoritative amount. Insufficient balances and repeated requests cannot cause an extra debit. Access does not automatically renew; after it expires, the account returns to its standard entitlements and the user can buy a plan again. Administrator balance adjustments allow local plan purchases even when both top-up gateways are disabled.
+A plan purchase first creates an unpaid invoice. Paying that invoice atomically records payment and creates or extends access for its snapshotted duration. Account-credit payment also deducts the invoice price from the wallet; direct gateway payment leaves the wallet balance unchanged. Buying the same active local plan extends access from its current expiry; a different active plan cannot overlap it. The browser submits the plan ID and an account-scoped purchase request ID, never an authoritative amount. Insufficient balances and repeated requests cannot cause an extra debit. Access does not automatically renew; after it expires, the account returns to its standard entitlements and the user can buy a plan again. Administrator balance adjustments allow local plan purchases even when both top-up gateways are disabled.
 
-Register `https://your-origin.example/api/v1/billing/stripe/webhook` in Stripe for `checkout.session.completed` and `checkout.session.async_payment_succeeded`. ObjectShare verifies the `Stripe-Signature` against the raw body with a five-minute tolerance. Checkout events add credit only when `mode=payment`, `payment_status=paid`, and their metadata, currency, and total match a pending server-side top-up. Browser success pages never grant access or credit. Restart every replica after enabling a gateway or rotating its secrets.
+Register `https://your-origin.example/api/v1/billing/stripe/webhook` in Stripe for `checkout.session.completed` and `checkout.session.async_payment_succeeded`. ObjectShare verifies the `Stripe-Signature` against the raw body with a five-minute tolerance. Checkout events settle a plan or top-up invoice only when `mode=payment`, `payment_status=paid`, and their metadata, currency, and total match a pending server-side top-up. Browser success pages never grant access or credit. Restart every replica after enabling a gateway or rotating its secrets.
 
-For PayPal, create REST API credentials, first test with `environment` set to `sandbox`, then switch the credentials and environment to `live` for production. Register `https://your-origin.example/api/v1/billing/paypal/webhook` for `PAYMENT.CAPTURE.COMPLETED` and copy the webhook ID into ObjectShare. ObjectShare authenticates webhook signatures through PayPal's verification endpoint. PayPal returns an order token to a narrowly scoped endpoint; ObjectShare matches it to a pending top-up, captures the approved order over PayPal's authenticated API, and verifies the capture ID, custom ID, amount, and currency before adding credit. A later authenticated webhook is idempotent.
+For PayPal, create REST API credentials, first test with `environment` set to `sandbox`, then switch the credentials and environment to `live` for production. Register `https://your-origin.example/api/v1/billing/paypal/webhook` for `PAYMENT.CAPTURE.COMPLETED` and copy the webhook ID into ObjectShare. ObjectShare authenticates webhook signatures through PayPal's verification endpoint. PayPal returns an order token to a narrowly scoped endpoint; ObjectShare matches it to a pending top-up, captures the approved order over PayPal's authenticated API, and verifies the capture ID, custom ID, amount, and currency before settling the invoice. A top-up adds credit; a direct plan payment activates the plan without minting wallet credit. A later authenticated webhook is idempotent.
 
-New external subscription checkouts are disabled. Existing subscriptions retain webhook updates and billing-management access so already purchased access and cancellation continue to work. For those legacy subscriptions only, retain the previously configured Stripe `customer.subscription.created`, `customer.subscription.updated`, and `customer.subscription.deleted` events, or PayPal `BILLING.SUBSCRIPTION.ACTIVATED`, `BILLING.SUBSCRIPTION.UPDATED`, `BILLING.SUBSCRIPTION.SUSPENDED`, `BILLING.SUBSCRIPTION.CANCELLED`, `BILLING.SUBSCRIPTION.EXPIRED`, and `BILLING.SUBSCRIPTION.PAYMENT.FAILED` events. An active legacy subscription must end before the account can purchase a local plan.
+New external subscription checkouts are disabled. Existing subscriptions retain webhook updates and billing-management access so already purchased access and cancellation continue to work. **For legacy renewals, also register Stripe `invoice.paid` (webhook API version `2024-06-20`) or PayPal `PAYMENT.SALE.COMPLETED` before upgrading.** Verified recurring receipts create paid local invoices, enqueue PDF confirmation emails, and extend access; subscription lifecycle events alone no longer extend a paid period. Stripe renewal invoices must have one recurring subscription line; prorated/multi-line adjustments require operator reconciliation. PayPal uses authenticated subscription details to associate the latest sale with its next billing time; older delayed sale receipts are recorded without extending access to an unrelated later period. For those legacy subscriptions only, retain the previously configured Stripe `customer.subscription.created`, `customer.subscription.updated`, and `customer.subscription.deleted` events, or PayPal `BILLING.SUBSCRIPTION.ACTIVATED`, `BILLING.SUBSCRIPTION.UPDATED`, `BILLING.SUBSCRIPTION.SUSPENDED`, `BILLING.SUBSCRIPTION.CANCELLED`, `BILLING.SUBSCRIPTION.EXPIRED`, and `BILLING.SUBSCRIPTION.PAYMENT.FAILED` events. An active legacy subscription must end before the account can purchase a local plan.
+
+#### Invoices and payment confirmations
+
+At `/plans`, **Generate invoice** creates a 24-hour quotation without deducting
+credit or granting access. The invoice snapshots the plan name, description,
+price, currency, access duration, quota, retention, direct-link benefits, and
+recipient email. Form retries return the same invoice. `/invoices` lists the
+signed-in user's invoices in pages of 25; `/invoices/{id}` shows the details and
+payment actions, and `/invoices/{id}/pdf` downloads a server-generated PDF. All
+three routes require account authentication; invoice reads and payments are
+owner-scoped, and responses use `private, no-store`. Cookie mutations require
+JWT CSRF protection. The existing `/billing/credit/{id}` form endpoint now
+creates an invoice, so older open plan pages cannot bypass the review step.
+
+An unpaid plan invoice can be paid in full from account credit or through any
+enabled payment gateway. Its gateway amount uses the existing conversion of
+one credit to one currency unit. A credit top-up also creates an invoice before
+checkout. Once gateway checkout starts, the invoice stays bound to that gateway
+and other overlapping plan payments are blocked. Reopening the invoice reuses
+the saved checkout URL. If the first gateway response is lost, creating the same
+checkout may be retried only within five minutes, within both providers'
+idempotency windows. The payment window does not invalidate a genuine delayed
+receipt. Canceled, failed, or ambiguous gateway attempts must be reconciled by an
+operator before releasing a reservation; do not clear a reservation while it can
+still be charged. ObjectShare does not automatically void or refund these attempts.
+
+Payments, wallet ledger entries, invoice status, and plan activation commit in
+one PostgreSQL transaction. Repeated or concurrent receipts cannot charge the
+wallet or activate the plan twice. Later catalog edits do not alter an already
+issued invoice's price or the benefits granted by its settlement. Local access
+continues to be prepaid with no automatic wallet renewal. Administrator credit
+corrections remain audited ledger adjustments, rather than purchases.
+
+Every newly paid invoice queues a confirmation email to its snapshotted recipient,
+with the paid PDF attached. The background worker checks the database every ten
+seconds, claims at most 20 messages per pass, and retries failures after five
+minutes. Row leases with `SKIP LOCKED` support multiple replicas and crash recovery.
+Email failure never reverses payment. Configure an outgoing provider under
+`/admin/settings` and restart every replica to enable delivery; while email is
+disabled, confirmations remain queued. Provider acceptance is displayed on the
+invoice page. A crash after provider acceptance but before recording it can cause
+a duplicate confirmation email; the purchase itself remains idempotent.
+
+No invoice configuration keys are added: gateway/public-URL/currency settings stay
+inside `billing`, and delivery settings stay inside `email` in the encrypted runtime
+configuration (or first-import `config.json`/environment). Database tables and
+columns migrate automatically. Historical completed purchases are not fabricated
+into invoices because their original terms were not stored. Previously issued
+pending top-ups gain an invoice when they settle after the upgrade. Invoices and
+their queue state are removed with the account, matching the existing ledger policy.
+
+PDFs embed the Go font and an openly licensed Noto Sans TC fallback for Chinese
+and Japanese glyphs, and require no browser, external renderer, or runtime font
+installation. Font sources and licensing are recorded in `invoice/fonts/`.
+Characters outside the embedded fonts (including emoji) are represented explicitly
+as `[U+XXXX]` code points in the PDF. The web invoice retains the original Unicode
+text. PDFs are
+purchase records with a unique invoice identifier and payment reference; tax,
+VAT registration, postal billing addresses, and jurisdiction-specific fiscal
+numbering are not configured by this feature.
 
 ObjectShare does not automatically process provider-side refunds, disputes, or chargebacks. Resolve them at the provider and record the corresponding negative administrator adjustment so the local ledger remains auditable; balances may be negative, and a negative or insufficient balance cannot buy a prepaid plan.
 

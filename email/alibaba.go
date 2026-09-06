@@ -20,6 +20,9 @@ type alibabaTransport struct {
 }
 
 func (s *alibabaTransport) send(ctx context.Context, m Message) error {
+	if len(m.Attachments) > 0 {
+		return s.sendAttachments(ctx, m)
+	}
 	c := s.config
 	params := url.Values{
 		"Action": {"SingleSendMail"}, "Version": {"2015-11-23"}, "Format": {"JSON"},

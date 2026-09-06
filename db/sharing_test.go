@@ -45,8 +45,9 @@ func TestPostgresFileSharingMigrationAndPersistence(t *testing.T) {
 	repo := creditTestRepository(t)
 	// Create the former schema first to verify the upgrade preserves an existing
 	// UUID link, filename, and ownership capability without overwriting values.
+	// Use the former GORM constraint name so its migrator can address it.
 	if err := repo.connection.Exec(`CREATE TABLE file_lists (
- id bigserial PRIMARY KEY, file_id uuid NOT NULL UNIQUE,
+ id bigserial PRIMARY KEY, file_id uuid NOT NULL CONSTRAINT uni_file_lists_file_id UNIQUE,
  anonymous_session_token varchar(64) NOT NULL, file_name varchar(255) NOT NULL,
  file_size bigint NOT NULL, file_sha256 varchar(64) NOT NULL,
  file_sha3 varchar(64) NOT NULL, storage_service varchar(32) NOT NULL,

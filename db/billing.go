@@ -63,7 +63,16 @@ func (repo *GormRepository) CreateCreditTopUp(ctx context.Context, topUp *Credit
 	}
 	topUp.Currency = strings.ToUpper(topUp.Currency)
 	topUp.Status = CreditTopUpPending
-	return repo.connection.WithContext(ctx).Create(topUp).Error
+	return repo.connection.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if _, err := lockInvoiceUser(tx, topUp.UserID); err != nil {
+			return err
+		}
+		if err := tx.Create(topUp).Error; err != nil {
+			return err
+		}
+		_, err := ensureTopUpInvoice(tx, topUp)
+		return err
+	})
 }
 
 func (repo *GormRepository) BindCreditTopUp(ctx context.Context, id, gateway, reference string) error {
@@ -77,7 +86,7 @@ func (repo *GormRepository) BindCreditTopUp(ctx context.Context, id, gateway, re
 		} else if err != nil {
 			return err
 		}
-		if topUp.Status != CreditTopUpPending {
+		if topUp.Status != CreditTopUpPending && topUp.Status != CreditTopUpCompleted {
 			return ErrConflict
 		}
 		if topUp.GatewayReference != nil {
@@ -135,7 +144,7 @@ func (repo *GormRepository) ApplyCreditTopUp(ctx context.Context, payment Credit
 		deduplicationKey := payment.Gateway + ":" + payment.GatewayPaymentID
 		var existing CreditTransaction
 		if err := tx.Where("deduplication_key = ?", deduplicationKey).First(&existing).Error; err == nil {
-			if existing.UserID == topUp.UserID && existing.ReferenceID == topUp.ID && existing.Delta == topUp.Credits {
+			if existing.UserID == topUp.UserID && existing.ReferenceID == topUp.ID && (existing.Delta == topUp.Credits || (existing.Delta == 0 && existing.Kind == CreditTransactionPlan)) {
 				return nil
 			}
 			return ErrConflict
@@ -150,6 +159,32 @@ func (repo *GormRepository) ApplyCreditTopUp(ctx context.Context, payment Credit
 		}
 		if topUp.UserID != user.ID {
 			return ErrConflict
+		}
+		invoice, err := ensureTopUpInvoice(tx, &topUp)
+		if err != nil {
+			return err
+		}
+		if invoice.UserID != user.ID || invoice.Status != "pending" || invoice.Gateway != payment.Gateway || invoice.AmountMinor != payment.AmountMinor || invoice.Currency != strings.ToUpper(payment.Currency) {
+			return ErrConflict
+		}
+		if invoice.Kind == "plan" {
+			if err := activateInvoicePlan(tx, invoice, now); err != nil {
+				return err
+			}
+			// A zero-delta ledger entry globally deduplicates gateway plan receipts.
+			entry := CreditTransaction{ID: uuid.NewString(), UserID: user.ID, Delta: 0, BalanceAfter: user.CreditBalance, Kind: CreditTransactionPlan,
+				Gateway: payment.Gateway, GatewayPaymentID: payment.GatewayPaymentID, ReferenceID: topUp.ID, DeduplicationKey: deduplicationKey, Description: "Invoice payment: " + invoice.Name, CreatedAt: now}
+			if err := tx.Create(&entry).Error; err != nil {
+				return err
+			}
+			if err := tx.Model(&CreditTopUp{}).Where("id = ?", topUp.ID).Updates(map[string]any{"status": CreditTopUpCompleted, "gateway_transaction_id": payment.GatewayPaymentID, "completed_at": now}).Error; err != nil {
+				return err
+			}
+			if err := paidInvoice(tx, invoice, payment.Gateway, payment.GatewayPaymentID, now); err != nil {
+				return err
+			}
+			applied = true
+			return nil
 		}
 		balance, err := addCredit(user.CreditBalance, topUp.Credits)
 		if err != nil {
@@ -169,6 +204,9 @@ func (repo *GormRepository) ApplyCreditTopUp(ctx context.Context, payment Credit
 		}).Error; err != nil {
 			return err
 		}
+		if err := paidInvoice(tx, invoice, payment.Gateway, payment.GatewayPaymentID, now); err != nil {
+			return err
+		}
 		applied = true
 		return nil
 	})
@@ -184,88 +222,20 @@ func (repo *GormRepository) CreditTransactions(ctx context.Context, userID strin
 	return transactions, err
 }
 
+// PurchasePlanWithCredit settles an invoice previously generated with this
+// account-scoped request key. It never guesses a currency from wallet units.
 func (repo *GormRepository) PurchasePlanWithCredit(ctx context.Context, userID, planID, requestID string, now time.Time) (*Subscription, error) {
-	if _, err := uuid.Parse(requestID); err != nil {
-		return nil, ErrInvalidCredit
+	var invoice Invoice
+	if err := repo.connection.WithContext(ctx).Where("user_id = ? AND request_id = ?", userID, requestID).First(&invoice).Error; err != nil {
+		return nil, invoiceError(err)
 	}
-	deduplicationKey := "plan:" + userID + ":" + requestID
-	var result Subscription
-	err := repo.connection.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		var user User
-		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Select("id", "credit_balance").Where("id = ? AND active = ?", userID, true).First(&user).Error; errors.Is(err, gorm.ErrRecordNotFound) {
-			return ErrNotFound
-		} else if err != nil {
-			return err
-		}
-		var previous CreditTransaction
-		if err := tx.Where("deduplication_key = ?", deduplicationKey).First(&previous).Error; err == nil {
-			if previous.UserID != userID || previous.ReferenceID != planID || previous.Kind != CreditTransactionPlan {
-				return ErrConflict
-			}
-			return tx.Preload("Plan").Where("user_id = ?", userID).First(&result).Error
-		} else if !errors.Is(err, gorm.ErrRecordNotFound) {
-			return err
-		}
-		var plan PaidPlan
-		if err := tx.Where("id = ? AND active = ?", planID, true).First(&plan).Error; errors.Is(err, gorm.ErrRecordNotFound) {
-			return ErrNotFound
-		} else if err != nil {
-			return err
-		}
-		if plan.Price <= 0 || plan.Price > 1000000000 || plan.DurationDays <= 0 || plan.DurationDays > 36500 {
-			return ErrInvalidCredit
-		}
-		if user.CreditBalance < plan.Price {
-			return ErrInsufficientCredit
-		}
-		var subscription Subscription
-		subscriptionErr := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("user_id = ?", userID).First(&subscription).Error
-		start := now
-		if subscriptionErr == nil && subscriptionActive(subscription.Status, subscription.CurrentPeriodEnd, now) {
-			if subscription.Gateway != BillingGatewayCredit || subscription.PlanID != plan.ID {
-				return ErrConflict
-			}
-			start = subscription.CurrentPeriodEnd
-		} else if subscriptionErr == nil && subscription.Gateway != BillingGatewayCredit && !subscriptionTerminal(subscription.Status) {
-			return ErrConflict
-		} else if subscriptionErr != nil && !errors.Is(subscriptionErr, gorm.ErrRecordNotFound) {
-			return subscriptionErr
-		}
-		var checkout BillingCheckout
-		if checkoutErr := tx.Where("user_id = ?", userID).First(&checkout).Error; checkoutErr == nil && checkout.ExpiresAt.After(now) {
-			return ErrConflict
-		} else if checkoutErr != nil && !errors.Is(checkoutErr, gorm.ErrRecordNotFound) {
-			return checkoutErr
-		}
-		periodEnd := start.AddDate(0, 0, plan.DurationDays)
-		purchaseID := uuid.NewString()
-		if errors.Is(subscriptionErr, gorm.ErrRecordNotFound) {
-			subscription = Subscription{ID: uuid.NewString(), UserID: userID}
-		}
-		subscription.PlanID, subscription.Gateway, subscription.CustomerID = plan.ID, BillingGatewayCredit, ""
-		subscription.GatewaySubscriptionID, subscription.Status = "credit:"+purchaseID, "active"
-		subscription.CurrentPeriodEnd, subscription.CancelAtPeriodEnd, subscription.LastEventCreated = periodEnd, true, now.Unix()
-		if err := tx.Save(&subscription).Error; err != nil {
-			return err
-		}
-		balance := user.CreditBalance - plan.Price
-		entry := CreditTransaction{ID: uuid.NewString(), UserID: userID, Delta: -plan.Price, BalanceAfter: balance,
-			Kind: CreditTransactionPlan, ReferenceID: plan.ID, DeduplicationKey: deduplicationKey,
-			Description: "Plan purchase: " + plan.Name, CreatedAt: now}
-		if err := tx.Create(&entry).Error; err != nil {
-			return err
-		}
-		if err := tx.Model(&User{}).Where("id = ?", userID).Update("credit_balance", balance).Error; err != nil {
-			return err
-		}
-		if err := tx.Where("user_id = ?", userID).Delete(&BillingCheckout{}).Error; err != nil {
-			return err
-		}
-		result = subscription
-		result.Plan = plan
-		return nil
-	})
-	return &result, err
+	if invoice.Kind != "plan" || invoice.PlanID != planID {
+		return nil, ErrConflict
+	}
+	if err := repo.PayInvoiceCredit(ctx, userID, invoice.ID, now); err != nil {
+		return nil, err
+	}
+	return repo.SubscriptionForUser(ctx, userID)
 }
 
 func (repo *GormRepository) AdjustCredit(ctx context.Context, userID string, delta int64, description, administratorID, requestID string, now time.Time) (int64, error) {
@@ -445,6 +415,15 @@ func entitlementsWithDB(connection *gorm.DB, userID string, now time.Time) (Enti
 	if !subscriptionActive(subscription.Status, subscription.CurrentPeriodEnd, now) {
 		return Entitlements{}, nil
 	}
+	if subscription.InvoiceID != "" {
+		var invoice Invoice
+		if err := connection.Where("id = ? AND status = 'paid'", subscription.InvoiceID).First(&invoice).Error; err != nil {
+			return Entitlements{}, err
+		}
+		subscription.Plan.ID = invoice.PlanID
+		subscription.Plan.Name, subscription.Plan.StorageQuotaBytes = invoice.Name, invoice.StorageQuotaBytes
+		subscription.Plan.RetentionDays, subscription.Plan.DirectLinks = invoice.RetentionDays, invoice.DirectLinks
+	}
 	return Entitlements{PlanID: subscription.Plan.ID, PlanName: subscription.Plan.Name,
 		StorageQuotaBytes: subscription.Plan.StorageQuotaBytes, RetentionDays: subscription.Plan.RetentionDays,
 		DirectLinks: subscription.Plan.DirectLinks, Active: true, CancelAtPeriodEnd: subscription.CancelAtPeriodEnd,
@@ -514,7 +493,29 @@ func (repo *GormRepository) ApplySubscription(ctx context.Context, update Subscr
 		if err == nil && existing.Gateway != update.Gateway && !subscriptionActive(update.Status, update.CurrentPeriodEnd, time.Now().UTC()) {
 			return tx.Create(&BillingEvent{EventID: eventID}).Error
 		}
+		// Lifecycle events cannot create or extend paid access. Paid invoice
+		// receipts advance the period independently, including out-of-order events.
+		sameSubscription := err == nil && existing.Gateway == update.Gateway && existing.GatewaySubscriptionID == update.SubscriptionID
+		if sameSubscription {
+			update.CurrentPeriodEnd = existing.CurrentPeriodEnd
+		} else {
+			update.CurrentPeriodEnd = time.Unix(0, 0).UTC()
+		}
+		if update.Status == "active" || update.Status == "trialing" {
+			if !sameSubscription {
+				update.Status = "incomplete"
+				update.CurrentPeriodEnd = time.Unix(0, 0).UTC()
+			} else {
+				update.CurrentPeriodEnd = existing.CurrentPeriodEnd
+				if existing.InvoiceID == "" && !subscriptionActive(existing.Status, existing.CurrentPeriodEnd, time.Now().UTC()) {
+					update.Status = existing.Status
+				}
+			}
+		}
 		if err == nil {
+			if existing.Gateway != update.Gateway || existing.GatewaySubscriptionID != update.SubscriptionID {
+				existing.InvoiceID = ""
+			}
 			existing.PlanID, existing.Gateway, existing.CustomerID, existing.GatewaySubscriptionID = update.PlanID, update.Gateway, update.CustomerID, update.SubscriptionID
 			existing.Status, existing.CurrentPeriodEnd, existing.CancelAtPeriodEnd, existing.LastEventCreated = update.Status, update.CurrentPeriodEnd, update.CancelAtPeriodEnd, update.EventCreated
 			if saveErr := tx.Save(&existing).Error; saveErr != nil {

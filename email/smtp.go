@@ -5,7 +5,9 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/base64"
 	"fmt"
+	"io"
 	"mime"
 	"mime/multipart"
 	"mime/quotedprintable"
@@ -97,6 +99,52 @@ func encodeMIME(c config.EmailConfig, m Message) ([]byte, error) {
 	fmt.Fprintf(&out, "From: %s\r\nTo: %s\r\nSubject: %s\r\nDate: %s\r\nMessage-ID: <%s@%s>\r\nMIME-Version: 1.0\r\n", from, (&mail.Address{Address: m.To}).String(), mime.QEncoding.Encode("UTF-8", m.Subject), time.Now().UTC().Format(time.RFC1123Z), uuid.NewString(), strings.Split(c.FromAddress, "@")[1])
 	if c.ReplyTo != "" {
 		fmt.Fprintf(&out, "Reply-To: %s\r\n", (&mail.Address{Address: c.ReplyTo}).String())
+	}
+	if len(m.Attachments) > 0 {
+		multi := multipart.NewWriter(&out)
+		fmt.Fprintf(&out, "Content-Type: multipart/mixed; boundary=%q\r\n\r\n", multi.Boundary())
+		body := m
+		body.Attachments = nil
+		encoded, err := encodeMIME(c, body)
+		if err != nil {
+			return nil, err
+		}
+		// Nest the already encoded body, retaining multipart/alternative when present.
+		parsed, err := mail.ReadMessage(bytes.NewReader(encoded))
+		if err != nil {
+			return nil, err
+		}
+		headers := textproto.MIMEHeader{}
+		for _, key := range []string{"Content-Type", "Content-Transfer-Encoding"} {
+			if v := parsed.Header.Get(key); v != "" {
+				headers.Set(key, v)
+			}
+		}
+		part, err := multi.CreatePart(headers)
+		if err != nil {
+			return nil, err
+		}
+		if _, err = io.Copy(part, parsed.Body); err != nil {
+			return nil, err
+		}
+		for _, a := range m.Attachments {
+			part, err := multi.CreatePart(textproto.MIMEHeader{"Content-Type": {a.ContentType}, "Content-Disposition": {mime.FormatMediaType("attachment", map[string]string{"filename": a.Filename})}, "Content-Transfer-Encoding": {"base64"}})
+			if err != nil {
+				return nil, err
+			}
+			data := base64.StdEncoding.EncodeToString(a.Data)
+			for len(data) > 0 {
+				n := min(76, len(data))
+				if _, err = fmt.Fprint(part, data[:n]+"\r\n"); err != nil {
+					return nil, err
+				}
+				data = data[n:]
+			}
+		}
+		if err := multi.Close(); err != nil {
+			return nil, err
+		}
+		return out.Bytes(), nil
 	}
 	if m.Text != "" && m.HTML != "" {
 		multi := multipart.NewWriter(&out)

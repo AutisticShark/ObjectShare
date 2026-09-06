@@ -98,11 +98,14 @@ func (client *stripeClient) postForm(ctx context.Context, endpoint string, value
 }
 
 func (client *stripeClient) TopUp(ctx context.Context, input billingTopUpInput) (billingTopUpResult, error) {
+	if input.Description == "" {
+		input.Description = fmt.Sprintf("%d ObjectShare account credits", input.Credits)
+	}
 	values := url.Values{
 		"mode": {"payment"}, "line_items[0][price_data][currency]": {strings.ToLower(input.Currency)},
 		"line_items[0][price_data][unit_amount]":               {strconv.FormatInt(input.AmountMinor, 10)},
-		"line_items[0][price_data][product_data][name]":        {"ObjectShare account credit"},
-		"line_items[0][price_data][product_data][description]": {fmt.Sprintf("%d account credits", input.Credits)},
+		"line_items[0][price_data][product_data][name]":        {"ObjectShare invoice payment"},
+		"line_items[0][price_data][product_data][description]": {input.Description},
 		"line_items[0][quantity]":                              {"1"}, "success_url": {input.SuccessURL}, "cancel_url": {input.CancelURL},
 		"client_reference_id": {input.UserID}, "customer_email": {input.Email},
 		"metadata[purpose]": {"credit_topup"}, "metadata[topup_id]": {input.TopUpID},
@@ -171,6 +174,10 @@ func (handler *Handler) StripeWebhook(writer http.ResponseWriter, request *http.
 	var event stripeEvent
 	if err := json.Unmarshal(payload, &event); err != nil || event.ID == "" || event.Created <= 0 {
 		http.Error(writer, "Invalid Stripe event.", http.StatusBadRequest)
+		return
+	}
+	if event.Type == "invoice.paid" {
+		handler.stripePaidInvoice(writer, request, event)
 		return
 	}
 	if event.Type == "checkout.session.completed" || event.Type == "checkout.session.async_payment_succeeded" {

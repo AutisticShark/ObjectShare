@@ -227,7 +227,7 @@ func Open(ctx context.Context, cfg *config.DatabaseConfig) (*GormRepository, err
 			return nil, fmt.Errorf("migrate billing events: %w", err)
 		}
 	}
-	if err := migration.AutoMigrate(&User{}, &OAuthIdentity{}, &RevokedToken{}, &LoginThrottle{}, &RateLimitBucket{}, &FileList{}, &ApplicationSetting{}, &PaidPlan{}, &Subscription{}, &BillingEvent{}, &BillingCheckout{}, &CreditTopUp{}, &CreditTransaction{}); err != nil {
+	if err := migration.AutoMigrate(&User{}, &OAuthIdentity{}, &RevokedToken{}, &LoginThrottle{}, &RateLimitBucket{}, &FileList{}, &ApplicationSetting{}, &PaidPlan{}, &Subscription{}, &BillingEvent{}, &BillingCheckout{}, &CreditTopUp{}, &CreditTransaction{}, &Invoice{}); err != nil {
 		_ = migration.Rollback().Error
 		_ = sqlDB.Close()
 		return nil, fmt.Errorf("migrate PostgreSQL: %w", err)

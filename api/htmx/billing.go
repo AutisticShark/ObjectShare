@@ -90,13 +90,13 @@ func (handler *Handler) BillingTopUp(writer http.ResponseWriter, request *http.R
 	}
 	// Keep the reservation on ambiguous gateway failures: a payment may have
 	// succeeded remotely and its verified receipt must still be settleable.
-	successURL := settings.PublicURL + "/account?message=topup-pending"
+	successURL := settings.PublicURL + "/invoices/" + topUp.ID
 	if gatewayKey == db.BillingGatewayPayPal {
 		successURL = settings.PublicURL + "/billing/paypal/topup/return?topup=" + url.QueryEscape(topUp.ID)
 	}
 	result, err := gateway.TopUp(request.Context(), billingTopUpInput{TopUpID: topUp.ID, UserID: identity.User.ID, Email: identity.User.Email,
 		Currency: topUp.Currency, Credits: topUp.Credits, AmountMinor: topUp.AmountMinor,
-		SuccessURL: successURL, CancelURL: settings.PublicURL + "/account"})
+		SuccessURL: successURL, CancelURL: settings.PublicURL + "/invoices/" + topUp.ID})
 	if err != nil {
 		handler.internalError(writer, request, "create "+billingGatewayLabel(gatewayKey)+" credit top-up", err)
 		return
@@ -104,6 +104,12 @@ func (handler *Handler) BillingTopUp(writer http.ResponseWriter, request *http.R
 	if result.GatewayReference != "" {
 		if err := handler.billing.BindCreditTopUp(request.Context(), topUp.ID, gatewayKey, result.GatewayReference); err != nil {
 			handler.internalError(writer, request, "bind credit top-up", err)
+			return
+		}
+	}
+	if invoices, ok := handler.billing.(db.InvoiceRepository); ok {
+		if err = invoices.BindInvoiceCheckout(request.Context(), identity.User.ID, topUp.ID, gatewayKey, result.GatewayReference, result.Location); err != nil {
+			handler.internalError(writer, request, "save invoice checkout", err)
 			return
 		}
 	}
@@ -131,7 +137,7 @@ func (handler *Handler) PayPalTopUpReturn(writer http.ResponseWriter, request *h
 		return
 	}
 	if topUp.Status == db.CreditTopUpCompleted {
-		http.Redirect(writer, request, "/account?message=topup-complete", http.StatusSeeOther)
+		http.Redirect(writer, request, "/invoices/"+topUp.ID, http.StatusSeeOther)
 		return
 	}
 	if topUp.Status != db.CreditTopUpPending {
@@ -158,55 +164,17 @@ func (handler *Handler) PayPalTopUpReturn(writer http.ResponseWriter, request *h
 		handler.internalError(writer, request, "apply PayPal credit top-up", err)
 		return
 	}
-	http.Redirect(writer, request, "/account?message=topup-complete", http.StatusSeeOther)
+	http.Redirect(writer, request, "/invoices/"+topUp.ID, http.StatusSeeOther)
 }
 
+// Legacy forms now generate an invoice without taking payment.
 func (handler *Handler) BillingPurchaseWithCredit(writer http.ResponseWriter, request *http.Request) {
-	identity := currentIdentity(request)
-	if handler.billing == nil {
-		http.Error(writer, "Billing is unavailable.", http.StatusServiceUnavailable)
-		return
-	}
-	if !handler.parseAuthForm(writer, request) || !handler.verifyAuthenticatedMutationCSRF(writer, request) {
-		return
-	}
-	planID := chi.URLParam(request, "id")
-	if _, err := uuid.Parse(planID); err != nil {
-		http.NotFound(writer, request)
-		return
-	}
-	requestID := request.FormValue("credit_request_id")
-	if _, err := uuid.Parse(requestID); err != nil {
-		http.Error(writer, "Reload the plans page before purchasing.", http.StatusBadRequest)
-		return
-	}
-	_, err := handler.billing.PurchasePlanWithCredit(request.Context(), identity.User.ID, planID, requestID, time.Now().UTC())
-	if errors.Is(err, db.ErrInsufficientCredit) {
-		http.Error(writer, "Your account does not have enough credit for this plan.", http.StatusPaymentRequired)
-		return
-	}
-	if errors.Is(err, db.ErrConflict) {
-		http.Error(writer, "Manage or wait for the current active plan before buying a different plan with credit.", http.StatusConflict)
-		return
-	}
-	if errors.Is(err, db.ErrNotFound) {
-		http.NotFound(writer, request)
-		return
-	}
-	if errors.Is(err, db.ErrInvalidCredit) {
-		http.Error(writer, "This plan is not available for account-credit purchase.", http.StatusUnprocessableEntity)
-		return
-	}
-	if err != nil {
-		handler.internalError(writer, request, "purchase plan with credit", err)
-		return
-	}
-	handler.redirect(writer, request, "/account?message=credit-plan")
+	handler.CreateInvoice(writer, request)
 }
 
 // BillingCheckout retires previously rendered external-subscription forms.
 func (handler *Handler) BillingCheckout(writer http.ResponseWriter, request *http.Request) {
-	http.Error(writer, "External plan checkout is no longer available. Choose a plan at /plans and purchase it with your account balance.", http.StatusGone)
+	http.Error(writer, "External plan checkout is no longer available. Choose a plan at /plans to generate and pay an invoice.", http.StatusGone)
 }
 
 func (handler *Handler) BillingPortal(writer http.ResponseWriter, request *http.Request) {

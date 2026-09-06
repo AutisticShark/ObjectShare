@@ -66,6 +66,9 @@ type paypalSubscription struct {
 	} `json:"subscriber"`
 	BillingInfo struct {
 		NextBillingTime string `json:"next_billing_time"`
+		LastPayment     struct {
+			Time string `json:"time"`
+		} `json:"last_payment"`
 	} `json:"billing_info"`
 }
 
@@ -116,7 +119,10 @@ func (client *paypalClient) TopUp(ctx context.Context, input billingTopUpInput) 
 	}, 1)}
 	body.PurchaseUnits[0].ReferenceID = input.TopUpID
 	body.PurchaseUnits[0].CustomID = input.TopUpID
-	body.PurchaseUnits[0].Description = fmt.Sprintf("%d ObjectShare account credits", input.Credits)
+	body.PurchaseUnits[0].Description = input.Description
+	if input.Description == "" {
+		body.PurchaseUnits[0].Description = fmt.Sprintf("%d ObjectShare account credits", input.Credits)
+	}
 	body.PurchaseUnits[0].Amount = paypalAmount{Currency: input.Currency, Value: formatMinorAmount(input.AmountMinor)}
 	body.PaymentSource.PayPal.ExperienceContext.ShippingPreference = "NO_SHIPPING"
 	body.PaymentSource.PayPal.ExperienceContext.UserAction = "PAY_NOW"
@@ -358,6 +364,10 @@ func (handler *Handler) PayPalWebhook(writer http.ResponseWriter, request *http.
 	}
 	if !verified {
 		http.Error(writer, "Invalid PayPal signature.", http.StatusBadRequest)
+		return
+	}
+	if event.EventType == "PAYMENT.SALE.COMPLETED" {
+		handler.paypalPaidInvoice(writer, request, gateway, payload)
 		return
 	}
 	if event.EventType == "BILLING.SUBSCRIPTION.CREATED" {

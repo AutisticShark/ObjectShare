@@ -52,7 +52,7 @@ func creditTestRepository(t *testing.T) *GormRepository {
 	if err != nil {
 		t.Fatal("cannot connect to test database")
 	}
-	models := []any{&User{}, &PaidPlan{}, &Subscription{}, &BillingCheckout{}, &BillingEvent{}, &CreditTopUp{}, &CreditTransaction{}}
+	models := []any{&User{}, &PaidPlan{}, &Subscription{}, &BillingCheckout{}, &BillingEvent{}, &CreditTopUp{}, &CreditTransaction{}, &Invoice{}}
 	for range 2 {
 		if err := connection.AutoMigrate(models...); err != nil {
 			t.Fatal(err)
@@ -157,7 +157,7 @@ func TestPostgresCreditPurchasesCannotOverspend(t *testing.T) {
 	errs := make([]error, 2)
 	var group sync.WaitGroup
 	for i := range keys {
-		group.Go(func() { _, errs[i] = repo.PurchasePlanWithCredit(t.Context(), user.ID, plan.ID, keys[i], now) })
+		group.Go(func() { _, errs[i] = purchaseTestPlan(repo, t.Context(), user.ID, plan.ID, keys[i], now) })
 	}
 	group.Wait()
 	winner := 0
@@ -168,12 +168,12 @@ func TestPostgresCreditPurchasesCannotOverspend(t *testing.T) {
 		t.Fatalf("concurrent purchases: %v", errs)
 	}
 	assertCreditState(t, repo, user.ID, 5, 1)
-	sub, err := repo.PurchasePlanWithCredit(t.Context(), user.ID, plan.ID, keys[winner], now)
+	sub, err := purchaseTestPlan(repo, t.Context(), user.ID, plan.ID, keys[winner], now)
 	if err != nil || sub.Gateway != BillingGatewayCredit || sub.CurrentPeriodEnd.Sub(now.AddDate(0, 0, 30)).Abs() > time.Millisecond {
 		t.Fatalf("purchase replay: sub=%#v err=%v", sub, err)
 	}
 	assertCreditState(t, repo, user.ID, 5, 1)
-	if _, err := repo.PurchasePlanWithCredit(t.Context(), user.ID, uuid.NewString(), keys[winner], now); !errors.Is(err, ErrConflict) {
+	if _, err := purchaseTestPlan(repo, t.Context(), user.ID, uuid.NewString(), keys[winner], now); !errors.Is(err, ErrConflict) {
 		t.Fatalf("reused purchase key: %v", err)
 	}
 	if _, err := repo.ApplySubscription(t.Context(), SubscriptionUpdate{Gateway: BillingGatewayStripe, EventID: "late-checkout", UserID: user.ID,
@@ -245,7 +245,7 @@ func TestPostgresLocalPlansKeepOnePriceAndLegacyValues(t *testing.T) {
 	user := creditTestUser(t, repo, 30)
 	now := time.Now().UTC()
 	for range 2 {
-		if _, err := repo.PurchasePlanWithCredit(ctx, user.ID, legacy.ID, uuid.NewString(), now); err != nil {
+		if _, err := purchaseTestPlan(repo, ctx, user.ID, legacy.ID, uuid.NewString(), now); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -262,8 +262,16 @@ func TestPostgresLocalPlansKeepOnePriceAndLegacyValues(t *testing.T) {
 	if err != nil || len(plans) != 2 {
 		t.Fatalf("public plans=%#v err=%v", plans, err)
 	}
-	if _, err := repo.PurchasePlanWithCredit(ctx, user.ID, legacy.ID, uuid.NewString(), now); !errors.Is(err, ErrInvalidCredit) {
+	if _, err := purchaseTestPlan(repo, ctx, user.ID, legacy.ID, uuid.NewString(), now); !errors.Is(err, ErrInvalidCredit) {
 		t.Fatalf("unpriced plan purchase=%v", err)
 	}
 	assertCreditState(t, repo, user.ID, 8, 2)
+}
+
+// The compatibility purchase API settles an explicitly created invoice.
+func purchaseTestPlan(repo *GormRepository, ctx context.Context, userID, planID, requestID string, now time.Time) (*Subscription, error) {
+	if _, err := repo.CreatePlanInvoice(ctx, userID, planID, requestID, "USD", now); err != nil {
+		return nil, err
+	}
+	return repo.PurchasePlanWithCredit(ctx, userID, planID, requestID, now)
 }

@@ -138,6 +138,7 @@ type PaidPlan struct {
 func (PaidPlan) TableName() string { return "paid_plans" }
 
 type Subscription struct {
+	InvoiceID             string    `gorm:"type:varchar(36);not null;default:''"`
 	ID                    string    `gorm:"column:id;type:uuid;primaryKey"`
 	UserID                string    `gorm:"column:user_id;type:uuid;not null;uniqueIndex"`
 	PlanID                string    `gorm:"column:plan_id;type:uuid;not null;index"`
@@ -193,6 +194,7 @@ const (
 // a gateway. A verified gateway result must match this row before credit is
 // minted; browser return parameters never determine the value.
 type CreditTopUp struct {
+	CheckoutURL          string     `gorm:"type:text;not null;default:''"`
 	ID                   string     `gorm:"column:id;type:uuid;primaryKey"`
 	UserID               string     `gorm:"column:user_id;type:uuid;not null;index"`
 	Gateway              string     `gorm:"column:gateway;type:varchar(32);not null;index;uniqueIndex:idx_credit_topups_gateway_reference"`

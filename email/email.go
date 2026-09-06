@@ -20,7 +20,14 @@ var ErrDisabled = errors.New("email delivery is disabled")
 
 // Message targets one mailbox. At least one body is required. Limits are shared
 // across providers: 100 subject characters and 80 KiB per UTF-8 body.
-type Message struct{ To, Subject, Text, HTML string }
+type Attachment struct {
+	Filename, ContentType string
+	Data                  []byte
+}
+type Message struct {
+	To, Subject, Text, HTML string
+	Attachments             []Attachment
+}
 
 // Sender implementations are safe for concurrent use. Success means the
 // transport accepted the message, not that it reached the recipient's inbox.
@@ -77,6 +84,16 @@ func (s *sender) Send(ctx context.Context, message Message) error {
 	for _, body := range []string{message.Text, message.HTML} {
 		if !utf8.ValidString(body) || strings.ContainsRune(body, 0) || len(body) > 80*1024 {
 			return errors.New("email bodies must be valid UTF-8 and at most 80 KiB each, without NUL bytes")
+		}
+	}
+	if len(message.Attachments) > 5 {
+		return errors.New("email supports at most five attachments")
+	}
+	total := 0
+	for _, a := range message.Attachments {
+		total += len(a.Data)
+		if a.Filename == "" || len(a.Filename) > 100 || strings.ContainsAny(a.Filename, "/\\\r\n\x00\"") || a.ContentType != "application/pdf" || len(a.Data) == 0 || total > 4*1024*1024 {
+			return errors.New("email attachments must be named PDF files totaling at most 4 MiB")
 		}
 	}
 	ctx, cancel := context.WithTimeout(ctx, s.config.Timeout.Duration())

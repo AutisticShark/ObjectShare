@@ -633,6 +633,9 @@ func validateBilling(settings *BillingConfig, secureCookies bool) error {
 	return nil
 }
 
+// SupportedCreditCurrency identifies the two-decimal currencies used by invoice amounts.
+func SupportedCreditCurrency(currency string) bool { return supportedCreditCurrency(currency) }
+
 func supportedCreditCurrency(currency string) bool {
 	switch currency {
 	case "AUD", "BRL", "CAD", "CHF", "CNY", "CZK", "DKK", "EUR", "GBP", "HKD", "ILS", "MXN", "MYR", "NOK", "NZD", "PHP", "PLN", "SEK", "SGD", "THB", "USD":

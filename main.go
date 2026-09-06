@@ -82,6 +82,8 @@ func run() error {
 		return fmt.Errorf("initialize HTTP handlers: %w", err)
 	}
 	runContext, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	invoiceEmailDone := make(chan struct{})
+	go func() { defer close(invoiceEmailDone); handler.RunInvoiceEmails(runContext) }()
 	retentionDone := make(chan struct{})
 	go func() {
 		defer close(retentionDone)
@@ -90,6 +92,7 @@ func run() error {
 	defer func() {
 		stop()
 		<-retentionDone
+		<-invoiceEmailDone
 	}()
 
 	server := &http.Server{

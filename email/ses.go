@@ -54,6 +54,13 @@ func (s *sesTransport) send(ctx context.Context, m Message) error {
 		"Destination":      map[string]any{"ToAddresses": []string{m.To}},
 		"Content":          map[string]any{"Simple": map[string]any{"Subject": content(m.Subject), "Body": body}},
 	}
+	if len(m.Attachments) > 0 {
+		raw, err := encodeMIME(s.config, m)
+		if err != nil {
+			return deliveryError("SES", "message encoding")
+		}
+		payload["Content"] = map[string]any{"Raw": map[string]any{"Data": raw}}
+	}
 	if s.config.ReplyTo != "" {
 		payload["ReplyToAddresses"] = []string{s.config.ReplyTo}
 	}

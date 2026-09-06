@@ -15,7 +15,8 @@ import (
 func parseTemplates(files fs.FS, branding config.BrandingConfig) (*template.Template, error) {
 	branding = branding.Display()
 	return template.New("").Funcs(template.FuncMap{
-		"branding": func() config.BrandingConfig { return branding },
+		"invoiceAmount": func(amount int64) float64 { return float64(amount) / 100 },
+		"branding":      func() config.BrandingConfig { return branding },
 	}).ParseFS(files, "template/*.html")
 }
 

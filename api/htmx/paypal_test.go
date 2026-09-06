@@ -117,7 +117,7 @@ func TestPayPalTopUpReturnCapturesMatchingPendingOrder(t *testing.T) {
 	handler.billingGateways = map[string]billingGateway{db.BillingGatewayPayPal: gateway}
 	response := httptest.NewRecorder()
 	handler.PayPalTopUpReturn(response, httptest.NewRequest(http.MethodGet, "/billing/paypal/topup/return?topup="+topUpID+"&token="+orderID, nil))
-	if response.Code != http.StatusSeeOther || response.Header().Get("Location") != "/account?message=topup-complete" || gateway.captureCalls != 1 || repository.creditPayment == nil {
+	if response.Code != http.StatusSeeOther || response.Header().Get("Location") != "/invoices/"+topUpID || gateway.captureCalls != 1 || repository.creditPayment == nil {
 		t.Fatalf("status=%d location=%q captureCalls=%d payment=%#v", response.Code, response.Header().Get("Location"), gateway.captureCalls, repository.creditPayment)
 	}
 	if repository.creditPayment.GatewayPaymentID != "CAPTURE-1" || repository.creditPayment.AmountMinor != 2500 || repository.creditPayment.Currency != "USD" {
