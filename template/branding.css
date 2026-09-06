@@ -1,3 +1,10 @@
+.alert {
+  /* These banners contain prose. Tabler's flex layout separates inline links,
+     emphasis, and text nodes into columns instead of wrapping one sentence. */
+  display: block;
+  overflow-wrap: anywhere;
+}
+
 .site-brand {
   display: inline-flex;
   align-items: center;

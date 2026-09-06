@@ -5,13 +5,13 @@
 {{define "brand-banner"}}{{with (branding).HeaderImageURL}}<div class="container-xl mt-3"><img class="site-banner rounded" src="{{.}}" alt="{{(branding).SiteName}} header" referrerpolicy="no-referrer"></div>{{end}}{{end}}
 
 {{define "tabler-head"}}
-  <link rel="stylesheet" href="/assets/branding.css">
   {{with (branding).FaviconURL}}<link rel="icon" href="{{.}}">{{end}}
   {{with (branding).Tagline}}<meta name="description" content="{{.}}">{{end}}
   <link rel="stylesheet"
         href="https://cdn.jsdelivr.net/npm/@tabler/core@1.4.0/dist/css/tabler.min.css"
         integrity="sha384-kz+I4+mczbNiZfLAJMxOlJaZmnbRYhARHNkR2k6tal4gz7OL33/0puDD3SvkiNX9"
         crossorigin="anonymous">
+  <link rel="stylesheet" href="/assets/branding.css">
   <script defer src="https://cdn.jsdelivr.net/npm/htmx.org@2.0.10/dist/htmx.min.js"
           integrity="sha384-H5SrcfygHmAuTDZphMHqBJLc3FhssKjG7w/CeCpFReSfwBWDTKpkzPP8c+cLsK+V"
           crossorigin="anonymous"></script>
