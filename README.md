@@ -4,7 +4,7 @@ ObjectShare is a small self-hosted file sharing service written in Go. Files use
 
 ## Preview
 
-![ObjectShare v0.1.0](./.github/ObjectShare_0.2.0.png)
+![ObjectShare 0.7.0](./.github/ObjectShare_0.7.0.png)
 
 ## Features
 
@@ -14,6 +14,7 @@ ObjectShare is a small self-hosted file sharing service written in Go. Files use
 - Filesystem, Cloudflare R2, AWS S3, Backblaze B2, Alibaba Cloud OSS, or Tencent Cloud COS object storage
 - Direct-to-object-storage uploads that avoid reverse-proxy request-body limits
 - PostgreSQL metadata with bounded connection pools
+- Per-user browser encryption and decryption with passphrase-protected account keys, encrypted backups, and per-file sharing keys
 - Optional AES-256-GCM server-side encryption at rest
 - Owner-only rename and permanent deletion
 - Guest uploads, database-backed per-user storage quotas, and automatic guest/unpaid file retention
@@ -44,7 +45,6 @@ File links are unlisted by default; owners can restrict details and downloads to
 - [x] Paid storage, retention, and direct-link plans
 - [x] Account credit, top-ups, and prepaid plan purchases
 - [x] Invoice generation
-- [ ] Better upload UI
 - [x] File sharing & permission
 - [x] File deletion
 - [x] Auto file deletion after days for guest and unpaid users
@@ -54,9 +54,102 @@ File links are unlisted by default; owners can restrict details and downloads to
 - [x] Custom branding support
 - [x] Third-party OAuth login support
 - [x] Server-side encryption & decryption
-- [ ] Client-side encryption & decryption
+- [x] Client-side encryption & decryption
 
 HTMX is intentionally part of the frontend architecture. The native forms are accessibility and no-JavaScript fallbacks; login, account, and user-management interactions use HTMX progressive enhancement, and file-sharing permissions follow the same pattern.
+
+### Client-side encryption and per-user keys
+
+In **My account → Client-side encryption**, choose a separate encryption passphrase
+of at least 16 characters, confirm it, and select **Generate account key**. The browser
+generates a random 256-bit account key and downloads an encrypted key backup. Save
+that backup and the passphrase safely, preferably in separate places. The account
+key is independent of login credentials, including OAuth: login password changes,
+email edits, and administrator password resets leave it unchanged.
+
+Signed-in browser uploads require this setup and encrypt each file before it is sent.
+Enter the encryption passphrase on the uploader to unlock the key for that page.
+After a key has been created, all account upload endpoints reject requests without
+valid client-encryption metadata, including bearer API and native form submissions.
+For compatibility, existing files and guest uploads retain their current behavior;
+API accounts that have not set up a key retain their existing upload format. There
+is no automatic re-encryption of historical files. JavaScript and HTTPS (or localhost
+for development) are required. Encryption failure never falls back to a plaintext
+upload in the signed-in uploader.
+
+On the file page, use **Decrypt & download**. Owners enter their encryption passphrase;
+the browser retrieves the wrapped account key, decrypts it locally, and derives the
+file key. Alternatively, choose **Encrypted key backup** and enter its passphrase to
+recover the key locally. Neither the passphrase nor the unwrapped account/file keys
+are sent to the server or saved to browser storage. They are used in page memory;
+enter the passphrase again on another page/device. The server stores only the wrapped
+account key, public encryption metadata, and file ciphertext. Keep database and object
+backups together: file metadata is necessary for decryption as well as the key.
+There is deliberately no key replacement/reset operation; losing both the passphrase
+and any usable unwrapped key makes the encrypted contents unrecoverable. The encrypted
+backup alone cannot bypass a lost passphrase.
+
+To share, set the existing access permissions and use **Create sharing link with file
+key** on the file page. Copy the generated link to the recipient. The URL's `#key=`
+fragment contains only that file's derived key; browsers do not send the fragment in
+HTTP requests, and the file page removes it from the address bar after loading it.
+The ordinary file link does not include a decryption key. Never share your account
+key, backup, or passphrase with recipients. Signed-in/selected recipients must log in
+and reopen the complete sharing link. Private files remain owner-only. Permission
+revocation blocks subsequent downloads but cannot revoke keys, ciphertext, or plaintext
+already received. A forwarded key link also permits decryption wherever its recipient
+can obtain the ciphertext and metadata.
+
+File contents are encrypted; filenames, owners, sharing policies, approximate sizes,
+timestamps, and encryption metadata remain visible to the application. Displayed quota
+usage, size limits, and proxied-upload checksums describe ciphertext (before any optional
+server encryption layer). Ciphertext adds a 16-byte authentication tag per chunk, so a
+plaintext file exactly at the configured limit needs to be slightly smaller to fit.
+Native/API downloads return ciphertext with a `.objectshare` suffix. Client-encrypted
+files use the file page for browser decryption; existing plan-controlled direct download
+URLs can deliver ciphertext but do not provide a plaintext browser download.
+
+Encryption processes 1 MiB plaintext chunks. The browser assembles ciphertext and the
+verified download as Blobs, so available browser memory/storage still limits very large
+files; plaintext downloads are only offered after every chunk authenticates. Direct
+object-storage upload continues to avoid Cloudflare/proxy request-body limits. Optional
+server encryption can wrap client ciphertext on proxied uploads and retains its existing
+128 MiB limit and single-operation capacity. HTTPS and trusted application/browser code
+are part of the security boundary: a compromised server serving altered JavaScript or
+an extension with page access can capture keys while the page is unlocked. This is not
+protection against such active compromise.
+
+**Version 1 wire format:** `GET /account/encryption` returns the authenticated user's
+`user_id` and `vault` (null before setup). CSRF-protected `POST /account/encryption`
+creates the vault once; a duplicate returns 409. The vault fields are `version: 1`,
+`user_id`, `key_id`, `salt`, `iv`, and `wrapped_key`. Binary fields use canonical,
+unpadded base64url. `key_id` is SHA-256 of the random 32-byte account key. A wrapping
+key uses PBKDF2-HMAC-SHA-256 with 600,000 iterations and a random 16-byte salt. The
+account key is wrapped using AES-256-GCM with a random 12-byte IV and a 128-bit tag;
+AAD is UTF-8 `objectshare-vault-v1:<user_id>:<key_id>`.
+
+Each upload supplies `client_encryption` as a JSON **string** containing
+`{"version":1,"key_id":"...","salt":"...","size":123}`. `salt` is a new random 32-byte
+value for each file and `size` is the plaintext byte count. Multipart requests repeat
+that field once per file, in file order; direct single/batch JSON includes it in each
+file descriptor and uses ciphertext size and `application/octet-stream` content type.
+HKDF-SHA-256 derives a 32-byte AES file key from the account key, file salt, and UTF-8
+info `objectshare-file-v1`. Encrypt chunks independently with AES-256-GCM: the 12-byte
+IV is four zero bytes followed by the unsigned 64-bit big-endian chunk index (starting
+at zero); AAD is the **exact** metadata string followed by `:` and the decimal index.
+Store the concatenation of chunk ciphertexts, each followed by its 16-byte tag. Empty
+files still contain one authenticated empty chunk. Authenticated metadata and indices
+bind the file size, order, and final chunk. Preserve the exact metadata string in
+backups and clients; do not reserialize it before decryption. The server validates
+metadata structure, account key ownership, and ciphertext length, but cannot prove
+that a malicious client actually encrypted the submitted bytes.
+
+The implementation uses the browser's [Web Cryptography API](https://www.w3.org/TR/WebCryptoAPI/).
+Its PBKDF2 work factor follows [OWASP's PBKDF2 guidance](https://cheatsheetseries.owasp.org/cheatsheets/Password_Storage_Cheat_Sheet.html#pbkdf2).
+Run `node --test tests/client-encryption.test.cjs` for cryptographic round-trip and
+adversarial checks; `go test -mod=mod ./...` also runs them when Node is installed.
+PostgreSQL migration/concurrency tests use an isolated schema when
+`OBJECTSHARE_TEST_POSTGRES_DSN` is set to a disposable PostgreSQL instance.
 
 ### Supported Object Storage Services
 
@@ -644,7 +737,7 @@ Restricted downloads stream through the application to recheck authorization on 
 
 All five object-storage providers use private buckets and the S3 API. When server-side encryption is disabled, JavaScript-enabled browsers upload directly to a short-lived URL bound to one object key, exact size, and content type. ObjectShare creates a pending database record first, then verifies the stored object's size and content type before publishing its share page. Expired or aborted pending uploads are removed. Only authorization and completion requests pass through ObjectShare, so a reverse proxy or CDN in front of the app does not carry the file body.
 
-Files shared with anyone use short-lived presigned download URLs unless ObjectShare server-side encryption is enabled. Signed-in, selected-account, and private downloads stream through ObjectShare after authorization on each request; provision application bandwidth and proxy download timeouts accordingly. The direct path cannot provide application-verified SHA checksums because ObjectShare never receives the file bytes; the details page labels those checksums as unavailable. Encryption and direct upload are intentionally mutually exclusive because encryption keys remain on the server.
+Files shared with anyone use short-lived presigned download URLs unless ObjectShare server-side encryption is enabled. Signed-in, selected-account, and private downloads stream through ObjectShare after authorization on each request; provision application bandwidth and proxy download timeouts accordingly. The direct path cannot provide application-verified SHA checksums because ObjectShare never receives the file bytes; the details page labels those checksums as unavailable. Server-side encryption and direct upload are mutually exclusive because that encryption runs on the server. Client-side encryption supports direct uploads: browsers send ciphertext with the same size/type-bound authorization and finalize checks. Client-encrypted downloads stream through ObjectShare for same-origin browser decryption and access checks, including files shared with anyone.
 
 Grant the configured identity only read, write, and delete access to the selected bucket. Do not grant account-wide bucket administration. Direct uploads require a bucket CORS rule allowing the exact public ObjectShare origin, the `PUT` method, and the `Content-Type` header. The S3-style equivalent is:
 

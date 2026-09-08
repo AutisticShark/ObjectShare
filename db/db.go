@@ -239,7 +239,7 @@ func openPostgres(ctx context.Context, cfg *config.DatabaseConfig, pgxConfig *pg
 			return nil, fmt.Errorf("migrate billing events: %w", err)
 		}
 	}
-	if err := migration.AutoMigrate(&User{}, &OAuthIdentity{}, &RevokedToken{}, &LoginThrottle{}, &RateLimitBucket{}, &FileList{}, &ApplicationSetting{}, &PaidPlan{}, &Subscription{}, &BillingEvent{}, &BillingCheckout{}, &CreditTopUp{}, &CreditTransaction{}, &Invoice{}); err != nil {
+	if err := migration.AutoMigrate(&User{}, &ClientKeyVault{}, &OAuthIdentity{}, &RevokedToken{}, &LoginThrottle{}, &RateLimitBucket{}, &FileList{}, &ApplicationSetting{}, &PaidPlan{}, &Subscription{}, &BillingEvent{}, &BillingCheckout{}, &CreditTopUp{}, &CreditTransaction{}, &Invoice{}); err != nil {
 		_ = migration.Rollback().Error
 		_ = sqlDB.Close()
 		return nil, fmt.Errorf("migrate PostgreSQL: %w", err)
@@ -317,6 +317,15 @@ func (repo *GormRepository) ReserveUpload(ctx context.Context, file *FileList) e
 			return ErrNotFound
 		} else if err != nil {
 			return err
+		}
+		if file.ClientEncryption == "" {
+			var count int64
+			if err := transaction.Model(&ClientKeyVault{}).Where("user_id = ?", user.ID).Count(&count).Error; err != nil {
+				return err
+			}
+			if count != 0 {
+				return errors.New("this account requires client-encrypted uploads")
+			}
 		}
 		quota, err := effectiveUploadQuota(transaction, user.ID, user.UploadQuotaBytes, time.Now().UTC())
 		if err != nil {

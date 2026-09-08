@@ -17,11 +17,12 @@ import (
 const directRequestLimit = 64 * 1024
 
 type directUploadRequest struct {
-	ShareMode    string `json:"share_mode,omitempty"`
-	FileName     string `json:"file_name"`
-	FileSize     int64  `json:"file_size"`
-	ContentType  string `json:"content_type"`
-	CaptchaToken string `json:"captcha_token,omitempty"`
+	ClientEncryption string `json:"client_encryption,omitempty"`
+	ShareMode        string `json:"share_mode,omitempty"`
+	FileName         string `json:"file_name"`
+	FileSize         int64  `json:"file_size"`
+	ContentType      string `json:"content_type"`
+	CaptchaToken     string `json:"captcha_token,omitempty"`
 }
 
 type directUploadToken struct {
@@ -113,6 +114,12 @@ func (handler *Handler) authorizeDirectUpload(request *http.Request, input direc
 	if !ok {
 		return directUploadAuthorization{}, nil, fmt.Errorf("%w: invalid upload access option", errInvalidUpload)
 	}
+	if err := handler.validateClientEncryption(request, input.ClientEncryption, input.FileSize); err != nil {
+		return directUploadAuthorization{}, nil, err
+	}
+	if input.ClientEncryption != "" {
+		input.ContentType = "application/octet-stream"
+	}
 	fileName, err := safeFileName(input.FileName)
 	if err != nil {
 		return directUploadAuthorization{}, nil, fmt.Errorf("%w: %s", errInvalidUpload, err)
@@ -137,7 +144,7 @@ func (handler *Handler) authorizeDirectUpload(request *http.Request, input direc
 	}
 	fileID, now := uuid.NewString(), time.Now().UTC()
 	expiresAt := now.Add(handler.directPolicy.Expires)
-	record := &db.FileList{ShareMode: mode, AnonymousSessionToken: tokenHash, FileID: fileID, FileName: fileName, FileSize: input.FileSize,
+	record := &db.FileList{ClientEncryption: input.ClientEncryption, ShareMode: mode, AnonymousSessionToken: tokenHash, FileID: fileID, FileName: fileName, FileSize: input.FileSize,
 		ContentType: contentType, IsAnonymousUpload: true, StorageService: handler.config.StorageService,
 		UploadStatus: "pending", ChecksumStatus: "unavailable", UploadExpiresAt: &expiresAt, CreatedAt: now, UpdatedAt: now}
 	if identity := currentIdentity(request); identity != nil {
@@ -168,6 +175,17 @@ func (handler *Handler) BeginDirectUpload(writer http.ResponseWriter, request *h
 	if err := decodeJSON(writer, request, &input); err != nil {
 		http.Error(writer, err.Error(), http.StatusBadRequest)
 		return
+	}
+	if err := handler.validateClientEncryption(request, input.ClientEncryption, input.FileSize); err != nil {
+		if errors.Is(err, errInvalidUpload) {
+			http.Error(writer, err.Error(), http.StatusBadRequest)
+		} else {
+			handler.internalError(writer, request, "validate client encryption", err)
+		}
+		return
+	}
+	if input.ClientEncryption != "" {
+		input.ContentType = "application/octet-stream"
 	}
 	mode, ok := uploadShareMode(input.ShareMode)
 	if !ok {
@@ -209,6 +227,7 @@ func (handler *Handler) BeginDirectUpload(writer http.ResponseWriter, request *h
 	now := time.Now().UTC()
 	expiresAt := now.Add(handler.directPolicy.Expires)
 	record := &db.FileList{
+		ClientEncryption:      input.ClientEncryption,
 		ShareMode:             mode,
 		AnonymousSessionToken: tokenHash, FileID: fileID, FileName: fileName, FileSize: input.FileSize,
 		ContentType: contentType, IsAnonymousUpload: true, StorageService: handler.config.StorageService,

@@ -40,37 +40,38 @@ import (
 const mebibyte = int64(1024 * 1024)
 
 type Handler struct {
-	emailSender     email.Sender
-	config          *config.ServiceConfig
-	repository      db.Repository
-	storage         service.ObjectStore
-	direct          service.DirectUploader
-	directPolicy    service.DirectUploadPolicy
-	templates       *template.Template
-	brandingCSS     []byte
-	themeJS         []byte
-	sharingJS       []byte
-	uploadJS        []byte
-	captchaJS       []byte
-	adminUsersJS    []byte
-	adminUsersCSS   []byte
-	cipher          *appcrypto.Cipher
-	cipherSlot      chan struct{}
-	logger          *slog.Logger
-	users           db.AuthRepository
-	jwt             *appauth.JWTManager
-	csrfSecret      []byte
-	oauthSecret     []byte
-	downloadSecret  []byte
-	oauthProviders  map[string]appauth.OAuthProvider
-	captcha         captchaVerifier
-	rateLimits      db.RateLimitRepository
-	settings        db.SettingsRepository
-	billing         db.BillingRepository
-	billingGateways map[string]billingGateway
-	settingsKey     string
-	localRateLimits *localRateLimiter
-	trustedProxies  []*net.IPNet
+	clientEncryptionJS []byte
+	emailSender        email.Sender
+	config             *config.ServiceConfig
+	repository         db.Repository
+	storage            service.ObjectStore
+	direct             service.DirectUploader
+	directPolicy       service.DirectUploadPolicy
+	templates          *template.Template
+	brandingCSS        []byte
+	themeJS            []byte
+	sharingJS          []byte
+	uploadJS           []byte
+	captchaJS          []byte
+	adminUsersJS       []byte
+	adminUsersCSS      []byte
+	cipher             *appcrypto.Cipher
+	cipherSlot         chan struct{}
+	logger             *slog.Logger
+	users              db.AuthRepository
+	jwt                *appauth.JWTManager
+	csrfSecret         []byte
+	oauthSecret        []byte
+	downloadSecret     []byte
+	oauthProviders     map[string]appauth.OAuthProvider
+	captcha            captchaVerifier
+	rateLimits         db.RateLimitRepository
+	settings           db.SettingsRepository
+	billing            db.BillingRepository
+	billingGateways    map[string]billingGateway
+	settingsKey        string
+	localRateLimits    *localRateLimiter
+	trustedProxies     []*net.IPNet
 }
 
 func New(cfg *config.ServiceConfig, repository db.Repository, storage service.ObjectStore, templates fs.FS, logger *slog.Logger) (*Handler, error) {
@@ -93,6 +94,10 @@ func New(cfg *config.ServiceConfig, repository db.Repository, storage service.Ob
 	uploadJS, err := fs.ReadFile(templates, "template/upload.js")
 	if err != nil {
 		return nil, fmt.Errorf("read upload script: %w", err)
+	}
+	clientEncryptionJS, err := fs.ReadFile(templates, "template/client-encryption.js")
+	if err != nil {
+		return nil, fmt.Errorf("read client encryption script: %w", err)
 	}
 	captchaJS, err := fs.ReadFile(templates, "template/captcha.js")
 	if err != nil {
@@ -128,7 +133,7 @@ func New(cfg *config.ServiceConfig, repository db.Repository, storage service.Ob
 	}
 	handler := &Handler{
 		config: cfg, repository: repository, users: userRepository, storage: storage,
-		templates: parsed, sharingJS: sharingJS, brandingCSS: brandingCSS, themeJS: themeJS, uploadJS: uploadJS, captchaJS: captchaJS,
+		clientEncryptionJS: clientEncryptionJS, templates: parsed, sharingJS: sharingJS, brandingCSS: brandingCSS, themeJS: themeJS, uploadJS: uploadJS, captchaJS: captchaJS,
 		adminUsersJS: adminUsersJS, adminUsersCSS: adminUsersCSS, logger: logger, csrfSecret: csrfSecret,
 		captcha: newCaptchaVerifier(cfg.Captcha), rateLimits: rateLimits,
 		settings: settings, billing: billing, billingGateways: billingGateways,
@@ -266,20 +271,20 @@ func (handler *Handler) FileView(writer http.ResponseWriter, request *http.Reque
 		http.NotFound(writer, request)
 		return
 	}
-	canDirectLink := !handler.captchaEnabled("download") && handler.fileHasDirectLinks(request.Context(), file)
+	canDirectLink := file.ClientEncryption == "" && !handler.captchaEnabled("download") && handler.fileHasDirectLinks(request.Context(), file)
 	handler.render(writer, "file_view.html", struct {
-		Version, FileID, FileName, FileSize, FileSHA256, FileSHA3, CreatedAt, UpdatedAt, DirectURL string
-		CanManage, Encrypted, ChecksumsVerified, CanDirectLink                                     bool
-		SignupEnabled                                                                              bool
-		User                                                                                       *db.User
-		CSRF                                                                                       string
-		Captcha                                                                                    *captchaWidget
-		DownloadToken                                                                              string
+		Version, FileID, FileName, FileSize, FileSHA256, FileSHA3, CreatedAt, UpdatedAt, DirectURL, ClientEncryption string
+		CanManage, Encrypted, ChecksumsVerified, CanDirectLink                                                       bool
+		SignupEnabled                                                                                                bool
+		User                                                                                                         *db.User
+		CSRF                                                                                                         string
+		Captcha                                                                                                      *captchaWidget
+		DownloadToken                                                                                                string
 	}{
 		Version: config.GetVersion(), FileID: file.FileID, FileName: file.FileName,
 		FileSize: humanSize(file.FileSize), FileSHA256: file.FileSHA256, FileSHA3: file.FileSHA3,
 		CreatedAt: file.CreatedAt.UTC().Format(time.RFC3339), UpdatedAt: file.UpdatedAt.UTC().Format(time.RFC3339),
-		CanManage: handler.isOwner(request, file), Encrypted: file.IsEncrypted,
+		ClientEncryption: file.ClientEncryption, CanManage: handler.isOwner(request, file), Encrypted: file.IsEncrypted,
 		ChecksumsVerified: file.ChecksumStatus == "verified",
 		SignupEnabled:     handler.config.Auth != nil && handler.config.Auth.SignupEnabled,
 		User:              identityUser(request), CSRF: identityCSRF(request), Captcha: handler.captchaWidget("download"),
@@ -343,6 +348,27 @@ func (handler *Handler) Upload(writer http.ResponseWriter, request *http.Request
 		http.Error(writer, fmt.Sprintf("Choose no more than %d files per upload.", maxFiles), http.StatusRequestEntityTooLarge)
 		return
 	}
+	metadata := request.MultipartForm.Value["client_encryption"]
+	if len(metadata) != 0 && len(metadata) != len(headers) {
+		_ = fileObject.Close()
+		http.Error(writer, "Encryption metadata must match every file.", http.StatusBadRequest)
+		return
+	}
+	for index, item := range headers {
+		raw := ""
+		if len(metadata) != 0 {
+			raw = metadata[index]
+		}
+		if err := handler.validateClientEncryption(request, raw, item.Size); err != nil {
+			_ = fileObject.Close()
+			if errors.Is(err, errInvalidUpload) {
+				http.Error(writer, err.Error(), http.StatusBadRequest)
+			} else {
+				handler.internalError(writer, request, "validate client encryption", err)
+			}
+			return
+		}
+	}
 	if len(headers) > 1 {
 		_ = fileObject.Close()
 		handler.uploadMultiple(writer, request, headers, maxBytes)
@@ -384,6 +410,11 @@ func (handler *Handler) Upload(writer http.ResponseWriter, request *http.Request
 	}
 	if handler.cipher != nil {
 		record.EncryptionMethod = "aes-256-gcm"
+	}
+	record.ClientEncryption = multipartClientEncryption(request, header)
+	if record.ClientEncryption != "" {
+		contentType = "application/octet-stream"
+		record.ContentType = contentType
 	}
 	record.ShareMode, _ = uploadShareMode(request.FormValue("share_mode"))
 	if !handler.reserveUpload(writer, request, record) {
@@ -506,6 +537,11 @@ func (handler *Handler) storeProxiedHeader(request *http.Request, header *multip
 	if handler.cipher != nil {
 		record.EncryptionMethod = "aes-256-gcm"
 	}
+	record.ClientEncryption = multipartClientEncryption(request, header)
+	if record.ClientEncryption != "" {
+		contentType = "application/octet-stream"
+		record.ContentType = contentType
+	}
 	record.ShareMode, _ = uploadShareMode(request.FormValue("share_mode"))
 	if err := handler.repository.ReserveUpload(request.Context(), record); err != nil {
 		return uploadedFileResult{}, "", err
@@ -622,7 +658,7 @@ func (handler *Handler) Download(writer http.ResponseWriter, request *http.Reque
 		http.Error(writer, "Open the file details page before downloading.", http.StatusForbidden)
 		return
 	}
-	if !file.IsEncrypted && fileShareMode(file) == db.ShareLink && handler.fileModeration(request, file) == db.ModerationNone {
+	if file.ClientEncryption == "" && !file.IsEncrypted && fileShareMode(file) == db.ShareLink && handler.fileModeration(request, file) == db.ModerationNone {
 		if location, err := handler.storage.PresignGet(request.Context(), fileID, file.FileName); err == nil {
 			status := http.StatusTemporaryRedirect
 			if request.Method == http.MethodPost {
@@ -645,7 +681,12 @@ func (handler *Handler) Download(writer http.ResponseWriter, request *http.Reque
 	}
 	defer body.Close()
 	writer.Header().Set("Content-Type", file.ContentType)
-	writer.Header().Set("Content-Disposition", mime.FormatMediaType("attachment", map[string]string{"filename": file.FileName}))
+	downloadName := file.FileName
+	if file.ClientEncryption != "" {
+		downloadName += ".objectshare"
+		writer.Header().Set("Content-Type", "application/octet-stream")
+	}
+	writer.Header().Set("Content-Disposition", mime.FormatMediaType("attachment", map[string]string{"filename": downloadName}))
 	writer.Header().Set("Cache-Control", "private, no-store")
 	if file.IsEncrypted {
 		if handler.cipher == nil {

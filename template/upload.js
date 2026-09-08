@@ -14,7 +14,13 @@
   modes.forEach((mode) => mode.addEventListener("change", updateMode));
   updateMode();
 
-  if (form.dataset.directUpload !== "true") return;
+  const encrypted = form.dataset.clientEncryption === "true";
+  if (!encrypted && form.dataset.directUpload !== "true") return;
+  if (encrypted && (!globalThis.ObjectShareCrypto || !globalThis.crypto?.subtle)) {
+    status.textContent = "Client encryption requires HTTPS (or localhost), JavaScript, and Web Crypto support.";
+    status.classList.remove("d-none"); return;
+  }
+  button.disabled = false;
   const csrfInput = form.querySelector("input[name='csrf_token']");
   const csrfHeaders = csrfInput ? {"X-CSRF-Token": csrfInput.value} : {};
   const captchaToken = () => form.querySelector("input[name='cf-turnstile-response']")?.value || "";
@@ -42,16 +48,46 @@
 
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
-    const files = Array.from(input.files || []);
+    let files = Array.from(input.files || []);
     if (!files.length) { showStatus("Choose at least one file first.", true); return; }
     if (selectedMode() === "single" && files.length !== 1) { showStatus("Single-file mode accepts exactly one file.", true); return; }
+    if (encrypted) {
+      if (files.length > Number(form.dataset.maxFiles)) { showStatus("Too many files for one upload batch.", true); return; }
+      const limit = Number(form.dataset.maxFileMib) * 1024 * 1024;
+      if (files.some(file => file.size + 16 * Math.max(1, Math.ceil(file.size / (1024 * 1024))) > limit)) {
+        showStatus("An encrypted file exceeds the upload size limit (including authentication tags).", true); return;
+      }
+    }
     button.disabled = true; progressWrap.classList.remove("d-none"); progressWrap.setAttribute("aria-hidden", "false");
     progress.style.width = "0%"; progress.setAttribute("aria-valuenow", "0");
     let authorizations = []; const uploaded = new Set();
+    let rawKey;
     try {
+      const metadata = [];
+      if (encrypted) {
+        showStatus("Unlocking your account encryption key…");
+        rawKey = await ObjectShareCrypto.accountKey(form.querySelector("#encryption-passphrase").value);
+        form.querySelector("#encryption-passphrase").value = "";
+        const ciphertexts = [];
+        for (const file of files) {
+          const result = await ObjectShareCrypto.encryptFile(file, rawKey, (n, total) => showStatus(`Encrypting ${file.name}: ${Math.round(n / total * 100)}%`));
+          ciphertexts.push(result.file); metadata.push(result.metadata);
+        }
+        rawKey.fill(0); rawKey = null; files = ciphertexts;
+      }
+      if (form.dataset.directUpload !== "true") {
+        showStatus(`Uploading ${files.length} encrypted file${files.length === 1 ? "" : "s"}…`);
+        const body = new FormData(form); body.delete("file");
+        files.forEach((file, index) => { body.append("file", file, file.name); body.append("client_encryption", metadata[index]); });
+        const response = await fetch(form.action, {method: "POST", headers: {...csrfHeaders, "HX-Request": "true"}, body});
+        if (!response.ok) throw await responseError(response);
+        const location = response.headers.get("HX-Redirect");
+        if (!location || !location.startsWith("/")) throw new Error("Upload finished but its result page is unavailable. Check My account before retrying.");
+        window.location.assign(location); return;
+      }
       showStatus(`Authorizing ${files.length} direct upload${files.length === 1 ? "" : "s"}…`);
       const begin = await fetch("/api/v1/uploads/direct/batch", {method: "POST", headers: {"Content-Type": "application/json", ...csrfHeaders}, body: JSON.stringify({
-        files: files.map((file) => ({share_mode: form.elements.share_mode.value, file_name: file.name, file_size: file.size, content_type: file.type || "application/octet-stream"})), captcha_token: captchaToken()
+        files: files.map((file, index) => ({client_encryption: metadata[index] || "", share_mode: form.elements.share_mode.value, file_name: file.name, file_size: file.size, content_type: file.type || "application/octet-stream"})), captcha_token: captchaToken()
       })});
       if (!begin.ok) throw await responseError(begin);
       authorizations = (await begin.json()).uploads;
@@ -74,6 +110,6 @@
         if (uploaded.has(authorization.file_id)) return;
         fetch(authorization.abort_url, {method: "POST", headers: {"Content-Type": "application/json", ...csrfHeaders}, body: JSON.stringify({token: authorization.token}), keepalive: true}).catch(() => {});
       });
-    }
+    } finally { rawKey?.fill(0); }
   });
 })();

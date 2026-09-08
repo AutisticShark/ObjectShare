@@ -784,15 +784,16 @@ func newTestHandler(t *testing.T, repository db.Repository, storage service.Obje
 func newTestHandlerConfig(t *testing.T, cfg *config.ServiceConfig, repository db.Repository, storage service.ObjectStore) *Handler {
 	t.Helper()
 	templates := fstest.MapFS{
-		"template/index.html":      {Data: []byte(`{{define "index.html"}}index{{end}}`)},
-		"template/file_view.html":  {Data: []byte(`{{define "file_view.html"}}file{{end}}`)},
-		"template/branding.css":    {Data: []byte(`.site-logo { height: 2rem; }`)},
-		"template/theme.js":        {Data: []byte(`console.log("theme test")`)},
-		"template/sharing.js":      {Data: []byte(`// sharing`)},
-		"template/upload.js":       {Data: []byte(`console.log("test")`)},
-		"template/captcha.js":      {Data: []byte(`console.log("captcha test")`)},
-		"template/admin_users.js":  {Data: []byte(`console.log("admin users test")`)},
-		"template/admin_users.css": {Data: []byte(`.admin-user-dialog { display: block; }`)},
+		"template/index.html":           {Data: []byte(`{{define "index.html"}}index{{end}}`)},
+		"template/file_view.html":       {Data: []byte(`{{define "file_view.html"}}file{{end}}`)},
+		"template/branding.css":         {Data: []byte(`.site-logo { height: 2rem; }`)},
+		"template/theme.js":             {Data: []byte(`console.log("theme test")`)},
+		"template/sharing.js":           {Data: []byte(`// sharing`)},
+		"template/client-encryption.js": {Data: []byte(`// test`)},
+		"template/upload.js":            {Data: []byte(`console.log("test")`)},
+		"template/captcha.js":           {Data: []byte(`console.log("captcha test")`)},
+		"template/admin_users.js":       {Data: []byte(`console.log("admin users test")`)},
+		"template/admin_users.css":      {Data: []byte(`.admin-user-dialog { display: block; }`)},
 	}
 	handler, err := New(cfg, repository, storage, templates, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	if err != nil {

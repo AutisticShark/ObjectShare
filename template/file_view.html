@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{{.FileName}} · {{(branding).SiteName}}</title>
   {{template "tabler-head" .}}
+  {{if .ClientEncryption}}<script defer src="/assets/client-encryption.js?v=1"></script>{{end}}
   {{if .Captcha}}<script defer src="/assets/captcha.js"></script><script defer src="https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit&amp;onload=objectShareTurnstileReady"></script>{{end}}
 </head>
 <body>
@@ -36,7 +37,7 @@
               <h2 class="page-title">{{.FileName}}</h2>
             </div>
             <div class="col-auto ms-auto d-print-none">
-              {{if .CanDirectLink}}<a class="btn btn-primary" href="/api/v1/download/{{.FileID}}">Download</a>{{else}}<form action="/api/v1/download/{{.FileID}}" method="post">
+              {{if .ClientEncryption}}<a class="btn btn-primary" href="#encrypted-download">Decrypt &amp; download</a>{{else if .CanDirectLink}}<a class="btn btn-primary" href="/api/v1/download/{{.FileID}}">Download</a>{{else}}<form action="/api/v1/download/{{.FileID}}" method="post">
                 <input type="hidden" name="download_token" value="{{.DownloadToken}}">
                 {{template "captcha-widget" .Captcha}}
                 <button class="btn btn-primary" type="submit">Download</button>
@@ -50,6 +51,17 @@
         <div class="container-xl">
           <div class="card">
             <div class="card-body">
+              {{if .ClientEncryption}}<form id="encrypted-download" action="/api/v1/download/{{.FileID}}" method="post" data-metadata="{{.ClientEncryption}}" data-filename="{{.FileName}}" class="mb-4">
+                <input type="hidden" name="download_token" value="{{.DownloadToken}}">
+                <h3>Encrypted in the uploader's browser</h3>
+                <p>Enter your encryption passphrase if this is your upload, or open the owner's sharing link containing this file's key. File contents are decrypted and authenticated in your browser. Displayed size and checksums describe the encrypted upload.</p>
+                <label class="form-label" for="encryption_passphrase">Your encryption passphrase (for your own uploads)</label><input class="form-control mb-3" id="encryption_passphrase" type="password" autocomplete="off">
+                <label class="form-label" for="encryption-key-backup">Encrypted key backup (optional recovery)</label><input id="encryption-key-backup" type="file" accept=".json,application/json" class="form-control mb-3"><div class="form-hint mb-3">Choose your saved encrypted account key and enter its passphrase to recover a file. The backup stays in this browser.</div>
+                {{template "captcha-widget" .Captcha}}
+                <button class="btn btn-primary" type="submit">Decrypt &amp; download</button>
+                {{if .CanManage}}<button id="encrypted-share" class="btn btn-outline-primary" type="button">Create sharing link with file key</button><input id="encrypted-share-link" class="form-control mt-3" aria-label="Sharing link containing this file's key" readonly hidden><p class="form-hint mt-2">Send the generated link only to intended recipients. Access changes cannot revoke keys or copies already received.</p>{{end}}
+                <div role="status" aria-live="polite" class="mt-3"></div><noscript>JavaScript and HTTPS are required for browser decryption. A native download returns encrypted bytes.</noscript>
+              </form>{{end}}
               <div class="datagrid">
                 <div class="datagrid-item">
                   <div class="datagrid-title">File ID</div>
@@ -62,7 +74,7 @@
                 <div class="datagrid-item">
                   <div class="datagrid-title">Encryption</div>
                   <div class="datagrid-content">
-                    {{if .Encrypted}}<span class="status status-green">AES-256-GCM</span>{{else}}<span class="status">None</span>{{end}}
+                    {{if .ClientEncryption}}<span class="status status-green">Client AES-256-GCM</span>{{else if .Encrypted}}<span class="status status-green">AES-256-GCM</span>{{else}}<span class="status">None</span>{{end}}
                   </div>
                 </div>
                 <div class="datagrid-item">

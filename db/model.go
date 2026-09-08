@@ -3,6 +3,7 @@ package db
 import "time"
 
 type FileList struct {
+	ClientEncryption      string     `gorm:"type:text;not null;default:''"`
 	ID                    uint       `gorm:"primaryKey"`
 	AnonymousSessionToken string     `gorm:"column:anonymous_session_token;type:varchar(64);not null"`
 	FileID                string     `gorm:"column:file_id;type:uuid;uniqueIndex;not null"`

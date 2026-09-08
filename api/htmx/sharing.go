@@ -77,6 +77,7 @@ func (handler *Handler) sharingFile(writer http.ResponseWriter, request *http.Re
 }
 
 type sharingPageData struct {
+	ClientEncrypted                                                             bool
 	Version, CSRF, FileID, FileName, ShareURL, Mode, Recipients, Error, Message string
 	User                                                                        *db.User
 	SignupEnabled                                                               bool
@@ -119,7 +120,7 @@ func (handler *Handler) renderSharing(writer http.ResponseWriter, request *http.
 	}
 	handler.render(writer, "sharing.html", sharingPageData{
 		Version: config.GetVersion(), CSRF: csrf, FileID: file.FileID, FileName: file.FileName,
-		ShareURL: shareURL, Mode: mode, Recipients: recipients, Error: formError, Message: message,
+		ClientEncrypted: file.ClientEncryption != "", ShareURL: shareURL, Mode: mode, Recipients: recipients, Error: formError, Message: message,
 		User: identityUser(request), SignupEnabled: handler.config.Auth != nil && handler.config.Auth.SignupEnabled,
 	})
 }

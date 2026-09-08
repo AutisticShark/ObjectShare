@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
   <title>My account · {{(branding).SiteName}}</title>{{template "tabler-head" .}}
-</head>
+<script defer src="/assets/client-encryption.js?v=1"></script></head>
 <body><div class="page">{{template "app-nav" .}}<div class="page-wrapper">
   <div class="page-header d-print-none"><div class="container-xl"><div class="row g-2 align-items-center"><div class="col"><div class="page-pretitle">Account</div><h2 class="page-title">My account</h2></div><div class="col-auto ms-auto"><a class="btn btn-primary" href="/">Upload a file</a></div></div></div></div>
   <div class="page-body"><div class="container-xl">
@@ -44,6 +44,16 @@
 		  {{if .Linked}}<form action="/account/oauth/{{.Key}}/unlink" method="post" hx-post="/account/oauth/{{.Key}}/unlink" hx-disabled-elt="button" hx-confirm="Remove {{.Label}} login from this account?"><input type="hidden" name="csrf_token" value="{{$.CSRF}}"><button class="btn btn-outline-danger btn-sm" type="submit">Unlink</button></form>{{else if .Configured}}<a class="btn btn-primary btn-sm" href="/oauth/{{.Key}}/start">Link {{.Label}}</a>{{end}}
 		</div></div></div>{{end}}
 	  </div></div></div>{{end}}
+      <div class="col-12" id="client-encryption"><form id="encryption-setup" class="card" method="post">
+        <div class="card-header"><h3 class="card-title">Client-side encryption</h3></div><div class="card-body">
+          <p>Generate a unique account key in your browser. After setup, new account uploads must be encrypted. Existing files keep their current format.</p>
+          <div class="alert alert-warning">Choose a separate encryption passphrase and save it safely. ObjectShare cannot recover it. Resetting your login password will not unlock encrypted files. Keep the encrypted key backup together with a separately stored copy of your passphrase.</div>
+          <div class="mb-3"><label class="form-label" for="encryption_passphrase">New encryption passphrase</label><input id="encryption_passphrase" type="password" class="form-control" minlength="16" maxlength="512" autocomplete="off" required></div>
+          <div class="mb-3"><label class="form-label" for="encryption_confirm">Confirm encryption passphrase</label><input id="encryption_confirm" type="password" class="form-control" minlength="16" maxlength="512" autocomplete="off" required></div>
+          <p class="text-secondary">The key and passphrase stay in this page's memory while in use. On another page or device, enter the passphrase again. There is no key replacement or passphrase reset that could make existing files unreadable.</p>
+          <div role="status" aria-live="polite"></div><noscript>JavaScript and HTTPS are required to set up encryption.</noscript>
+        </div><div class="card-footer d-flex flex-wrap gap-2"><button type="submit" class="btn btn-primary" disabled>Generate account key</button><button id="encryption-backup" type="button" class="btn btn-outline-secondary">Download encrypted key backup</button></div>
+      </form></div>
       <div class="col-12"><div class="card"><div class="card-header"><div><h3 class="card-title">My uploads</h3>{{if .QuotaLabel}}<div class="text-secondary small mt-1">{{.QuotaLabel}}</div>{{end}}</div><div class="card-actions"><span class="badge bg-blue-lt">{{len .Files}}</span></div></div>
         {{if .Files}}<div class="table-responsive"><table class="table table-vcenter card-table"><thead><tr><th>Name</th><th>Size</th><th>Uploaded</th><th></th></tr></thead><tbody>{{range .Files}}<tr><td><a href="/file/{{.ID}}">{{.Name}}</a></td><td class="text-secondary">{{.Size}}</td><td class="text-secondary">{{.CreatedAt}}</td><td class="text-end"><a class="btn btn-sm" href="/file/{{.ID}}/sharing">Share</a> <a class="btn btn-sm" href="/file/{{.ID}}">Manage</a></td></tr>{{end}}</tbody></table></div>{{else}}<div class="empty"><div class="empty-header">0</div><p class="empty-title">No account uploads yet</p><p class="empty-subtitle text-secondary">Files uploaded while logged in will appear here.</p><div class="empty-action"><a href="/" class="btn btn-primary">Upload a file</a></div></div>{{end}}
       </div></div>

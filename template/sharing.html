@@ -14,6 +14,7 @@
       {{if .Message}}<div class="alert alert-success" role="status">{{.Message}}</div>{{end}}
       {{if .Error}}<div class="alert alert-danger" role="alert">{{.Error}}</div>{{end}}
       <div class="card mb-3"><div class="card-body">
+          {{if .ClientEncrypted}}<div class="alert alert-info">This file is client-encrypted. After setting access, <a href="/file/{{.FileID}}#encrypted-download">open the file page to create a sharing link containing its file key</a>. The ordinary link alone cannot decrypt it. Never share your account key or encryption passphrase.</div>{{end}}
         <label class="form-label" for="share-url">Share link</label>
         <div class="input-group"><input class="form-control" id="share-url" value="{{.ShareURL}}" readonly><button class="btn" id="copy-share-link" type="button" hidden>Copy link</button><a class="btn" href="{{.ShareURL}}">Open</a></div>
         <div class="form-hint">Recipients use this link to view file details and download. Access follows the saved permissions below.</div>
