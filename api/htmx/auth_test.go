@@ -237,6 +237,34 @@ func (repository *authMemoryRepository) AdminUpdateUser(_ context.Context, id, r
 	user.Role, user.Active = role, active
 	return nil
 }
+func (repository *authMemoryRepository) AdminModerateUser(_ context.Context, id, status string) error {
+	if !db.ValidModerationStatus(status) {
+		return db.ErrInvalidModeration
+	}
+	user, ok := repository.users[id]
+	if !ok {
+		return db.ErrNotFound
+	}
+	if user.ModerationStatus == status {
+		return nil
+	}
+	if user.IsAvailableAdmin() && status != db.ModerationNone {
+		count := 0
+		for _, candidate := range repository.users {
+			if candidate.IsAvailableAdmin() {
+				count++
+			}
+		}
+		if count <= 1 {
+			return db.ErrLastAdmin
+		}
+	}
+	if status == db.ModerationBanned || user.ModerationStatus == db.ModerationBanned || user.Role == db.RoleAdmin {
+		user.TokenVersion++
+	}
+	user.ModerationStatus = status
+	return nil
+}
 func (repository *authMemoryRepository) UpdatePaidStatus(_ context.Context, id string, paid bool) error {
 	user, ok := repository.users[id]
 	if !ok {

@@ -314,6 +314,11 @@ func (handler *Handler) directUploadIntent(writer http.ResponseWriter, request *
 		http.Error(writer, "Forbidden", http.StatusForbidden)
 		return nil, "", false
 	}
+	moderation := handler.fileModeration(request, file)
+	if moderation != db.ModerationNone && (moderation != db.ModerationShadowbanned || !signedInFileOwner(request, file)) {
+		http.NotFound(writer, request)
+		return nil, "", false
+	}
 	if file.UploadExpiresAt == nil || time.Now().UTC().After(*file.UploadExpiresAt) {
 		_ = handler.storage.Delete(request.Context(), fileID)
 		_ = handler.repository.Delete(request.Context(), fileID)

@@ -29,11 +29,15 @@ type FileList struct {
 func (FileList) TableName() string { return "file_lists" }
 
 const (
-	RoleAdmin = "admin"
-	RoleUser  = "user"
+	RoleAdmin              = "admin"
+	RoleUser               = "user"
+	ModerationNone         = ""
+	ModerationBanned       = "banned"
+	ModerationShadowbanned = "shadowbanned"
 )
 
 type User struct {
+	ModerationStatus           string     `gorm:"column:moderation_status;type:varchar(16);not null;default:'';check:chk_users_moderation_status,moderation_status IN ('','banned','shadowbanned')" json:"-"`
 	EmailVerifiedAt            *time.Time `gorm:"column:email_verified_at"`
 	EmailVerificationHash      string     `gorm:"column:email_verification_hash;type:varchar(64);not null;default:''" json:"-"`
 	EmailVerificationExpiresAt *time.Time `gorm:"column:email_verification_expires_at" json:"-"`
@@ -55,6 +59,14 @@ type User struct {
 }
 
 func (User) TableName() string { return "users" }
+
+func (user *User) CanAuthenticate() bool {
+	return user != nil && user.Active && user.ModerationStatus != ModerationBanned
+}
+
+func (user *User) IsAvailableAdmin() bool {
+	return user.CanAuthenticate() && user.Role == RoleAdmin && user.ModerationStatus == ModerationNone
+}
 
 type OAuthIdentity struct {
 	ID        uint      `gorm:"primaryKey"`

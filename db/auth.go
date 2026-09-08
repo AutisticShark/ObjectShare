@@ -209,9 +209,9 @@ func (repo *GormRepository) AdminUpdateUser(ctx context.Context, id, role string
 		} else if err != nil {
 			return err
 		}
-		if user.Role == RoleAdmin && user.Active && (role != RoleAdmin || !active) {
+		if user.IsAvailableAdmin() && (role != RoleAdmin || !active) {
 			var count int64
-			if err := transaction.Model(&User{}).Where("role = ? AND active = ?", RoleAdmin, true).Count(&count).Error; err != nil {
+			if err := transaction.Model(&User{}).Where("role = ? AND active = ? AND moderation_status = ?", RoleAdmin, true, ModerationNone).Count(&count).Error; err != nil {
 				return err
 			}
 			if count <= 1 {
@@ -268,14 +268,17 @@ func (repo *GormRepository) DeleteUser(ctx context.Context, id string) error {
 		} else if err != nil {
 			return err
 		}
-		if user.Role == RoleAdmin && user.Active {
+		if user.IsAvailableAdmin() {
 			var count int64
-			if err := transaction.Model(&User{}).Where("role = ? AND active = ?", RoleAdmin, true).Count(&count).Error; err != nil {
+			if err := transaction.Model(&User{}).Where("role = ? AND active = ? AND moderation_status = ?", RoleAdmin, true, ModerationNone).Count(&count).Error; err != nil {
 				return err
 			}
 			if count <= 1 {
 				return ErrLastAdmin
 			}
+		}
+		if user.ModerationStatus != ModerationNone {
+			return ErrModeratedUser
 		}
 		if err := transaction.Model(&FileList{}).Where("file_owner = ?", id).
 			Updates(map[string]any{"file_owner": nil, "is_anonymous_upload": true}).Error; err != nil {

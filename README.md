@@ -20,6 +20,7 @@ ObjectShare is a small self-hosted file sharing service written in Go. Files use
 - Local paid plans with one price for upgraded storage, longer active-plan retention, and direct download links; optional Stripe/PayPal account top-ups
 - Prepaid account-credit top-ups and credit-funded fixed-duration plans
 - Password, Google, GitHub, and Discord login with separate user and administrator management interfaces
+- Account bans and shadowbans with administrator controls and file-access enforcement
 - Optional server-verified Turnstile protection and shared PostgreSQL request rate limits
 - Encrypted PostgreSQL-backed configuration with a dedicated administrator dashboard
 - Modular outgoing email through SMTP, Alibaba Cloud Direct Mail, or AWS SES, with an administrator test-email action
@@ -48,7 +49,7 @@ File links are unlisted by default; owners can restrict details and downloads to
 - [x] File deletion
 - [x] Auto file deletion after days for guest and unpaid users
 - [x] User management
-- [ ] User ban & shadowban
+- [x] User ban & shadowban
 - [x] Administrator configuration dashboard
 - [x] Custom branding support
 - [x] Third-party OAuth login support
@@ -263,6 +264,46 @@ HTTPS. First-import environment equivalents are
 exists, use `/admin/settings`; environment or seed JSON changes do not overwrite it.
 
 Public signup is changed from the configuration dashboard. `auth.jwt_secret` and `auth.token_lifetime` remain bootstrap JSON settings and are intentionally not editable from the browser.
+
+### User bans and shadowbans
+
+Administrators can set **No ban**, **Banned**, or **Shadowbanned** for each account
+at `/admin/users`. Moderation is separate from the existing Active/Disabled control.
+It is stored in PostgreSQL and applied to existing and future account-owned files.
+Existing accounts migrate to No ban automatically; no configuration changes are needed.
+
+- **Banned:** password and OAuth login are denied, existing browser and bearer JWTs
+  lose access, and owned files return a generic `404` to all readers.
+- **Shadowbanned:** sign-in, uploads, and account features continue to work. Only the
+  signed-in owner can view, download, or manage their files. Everyone else, including
+  administrators and selected recipients, receives `404`, regardless of sharing mode.
+  Ordinary user JWTs remain valid when a shadowban is applied or removed. The account
+  and login API do not disclose the moderation status to the user.
+- **No ban:** restores the saved sharing permissions without changing the account's
+  Active/Disabled setting, role, quota, paid status, or credit balance. JWTs invalidated
+  by a full ban remain invalid; the user must sign in again.
+
+The admin form uses `POST /admin/users/{id}/moderation` with `moderation_status`
+(`banned`, `shadowbanned`, or an empty string). It supports HTMX and native form
+submission, requires administrator authorization, and enforces browser CSRF checks;
+JWT bearer clients use the same endpoint. Administrators cannot moderate themselves
+or remove the final available administrator. Shadowbanned administrators cannot use
+administration routes. Access changes, moderation, and deletion serialize their
+last-administrator checks in PostgreSQL.
+
+Old owner cookies and direct-upload completion tokens cannot bypass moderation.
+Shadowbanned owners download through ObjectShare, without receiving new reusable
+storage download URLs. Storage URLs issued **before** moderation may continue to
+work until their existing expiry; already downloaded content cannot be recalled.
+An upload already authorized at object storage may still transfer bytes until its PUT
+URL expires, but a banned account cannot finalize it through ObjectShare.
+Guest uploads and newly registered accounts are independent of an account ban;
+disable guest uploads or public signup in runtime settings if needed for your policy.
+
+Remove a ban or shadowban before deleting the account: account deletion intentionally
+makes retained uploads anonymous, so deletion is blocked while moderation is active.
+Moderation does not delete files, stop normal retention cleanup, cancel subscriptions,
+or alter invoices or billing records.
 
 ### Custom branding
 

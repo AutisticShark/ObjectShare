@@ -72,6 +72,7 @@ type creditTransactionRow struct {
 }
 
 type adminUserRow struct {
+	ModerationStatus                                                                                string
 	EmailVerified                                                                                   bool
 	ID, Email, DisplayName, Role, CreatedAt, LastLogin, StorageUsed, CreditBalance, CreditRequestID string
 	Active, IsCurrent, IsPaid                                                                       bool
@@ -125,13 +126,18 @@ func (handler *Handler) Authenticate(next http.Handler) http.Handler {
 			handler.internalError(writer, request, "load JWT subject", err)
 			return
 		}
+		if user.ModerationStatus == db.ModerationBanned {
+			writer.Header().Set("Cache-Control", "private, no-store")
+			http.Error(writer, "This account is banned.", http.StatusForbidden)
+			return
+		}
 		now := time.Now().UTC()
 		revoked, err := handler.users.TokenRevoked(request.Context(), appauth.TokenHash(claims.ID), now)
 		if err != nil {
 			handler.internalError(writer, request, "check JWT revocation", err)
 			return
 		}
-		if revoked || !user.Active || user.Role != claims.Role || user.TokenVersion != claims.TokenVersion {
+		if revoked || !user.CanAuthenticate() || user.Role != claims.Role || user.TokenVersion != claims.TokenVersion {
 			if transport == transportCookie {
 				handler.clearJWTCookie(writer)
 			}
@@ -194,7 +200,7 @@ func (handler *Handler) RequireUser(next http.Handler) http.Handler {
 
 func (handler *Handler) RequireAdmin(next http.Handler) http.Handler {
 	return handler.RequireUser(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		if currentIdentity(request).User.Role != db.RoleAdmin {
+		if !currentIdentity(request).User.IsAvailableAdmin() {
 			http.Error(writer, "Forbidden", http.StatusForbidden)
 			return
 		}
@@ -390,7 +396,7 @@ func (handler *Handler) authenticateCredentials(request *http.Request, emailValu
 	} else {
 		_ = appauth.VerifyPassword(password, appauth.DummyPasswordHash())
 	}
-	if user == nil || !user.Active || !passwordCorrect {
+	if user == nil || !user.CanAuthenticate() || !passwordCorrect {
 		if recordErr := handler.users.RecordLoginFailure(request.Context(), throttleKey, time.Now().UTC()); recordErr != nil {
 			handler.logger.Error("record login failure", "error", recordErr)
 		}
@@ -795,11 +801,15 @@ func (handler *Handler) adminUserAction(writer http.ResponseWriter, request *htt
 	}
 	if err := action(request.Context(), id); err != nil {
 		if errors.Is(err, db.ErrLastAdmin) {
-			handler.renderAdminError(writer, request, identity, "The final active administrator cannot be disabled, demoted, or deleted.")
+			handler.renderAdminError(writer, request, identity, "The final active administrator cannot be disabled, demoted, banned, shadowbanned, or deleted.")
 			return
 		}
 		if errors.Is(err, db.ErrNotFound) {
 			http.NotFound(writer, request)
+			return
+		}
+		if errors.Is(err, db.ErrModeratedUser) {
+			handler.renderAdminError(writer, request, identity, "Remove the ban or shadowban before deleting this account; deletion would otherwise make its uploads anonymous and available again.")
 			return
 		}
 		if errors.Is(err, errInvalidAdminForm) {
@@ -841,8 +851,8 @@ func (handler *Handler) adminUsersPageData(ctx context.Context, identity *identi
 		storageUsed := usage[user.ID]
 		totalStorageUsed += storageUsed
 		rows = append(rows, adminUserRow{ID: user.ID, Email: user.Email, DisplayName: user.DisplayName, Role: user.Role,
-			EmailVerified: user.EmailVerifiedAt != nil,
-			Active:        user.Active, CreatedAt: user.CreatedAt.UTC().Format("2006-01-02"), LastLogin: lastLogin,
+			EmailVerified: user.EmailVerifiedAt != nil, ModerationStatus: user.ModerationStatus,
+			Active: user.Active, CreatedAt: user.CreatedAt.UTC().Format("2006-01-02"), LastLogin: lastLogin,
 			IsCurrent: user.ID == identity.User.ID, IsPaid: user.IsPaid, UploadQuotaMiB: user.UploadQuotaBytes / mebibyte,
 			StorageUsed: humanSize(storageUsed), CreditBalance: fmt.Sprintf("%d credits", user.CreditBalance), CreditRequestID: uuid.NewString()})
 	}

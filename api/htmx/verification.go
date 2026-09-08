@@ -188,7 +188,7 @@ func (handler *Handler) directUploadVerificationAllowed(writer http.ResponseWrit
 		return true
 	}
 	user, err := handler.users.UserByID(request.Context(), *file.FileOwner)
-	if errors.Is(err, db.ErrNotFound) || (err == nil && (!user.Active || user.EmailVerifiedAt == nil)) {
+	if errors.Is(err, db.ErrNotFound) || (err == nil && (!user.CanAuthenticate() || user.EmailVerifiedAt == nil)) {
 		http.Error(writer, "The upload owner must verify their email before completing this upload.", http.StatusForbidden)
 		return false
 	}

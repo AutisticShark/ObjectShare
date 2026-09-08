@@ -25,6 +25,13 @@ func (handler *Handler) canReadFile(request *http.Request, file *db.FileList) bo
 	if file.UploadStatus != "complete" {
 		return false
 	}
+	switch handler.fileModeration(request, file) {
+	case db.ModerationShadowbanned:
+		return signedInFileOwner(request, file)
+	case db.ModerationNone:
+	default:
+		return false
+	}
 	if handler.isOwner(request, file) {
 		return true
 	}

@@ -28,6 +28,8 @@ var (
 	ErrInvalidCredit      = errors.New("invalid account credit operation")
 	ErrAdminExists        = errors.New("an administrator already exists")
 	ErrLastAdmin          = errors.New("the final active administrator must be preserved")
+	ErrInvalidModeration  = errors.New("invalid moderation status")
+	ErrModeratedUser      = errors.New("remove the ban or shadowban before deleting this account")
 	ErrLastLoginMethod    = errors.New("the final login method must be preserved")
 )
 
@@ -87,6 +89,7 @@ type AuthRepository interface {
 	UpdateDarkMode(context.Context, string, bool) error
 	UpdatePassword(context.Context, string, string) (*User, error)
 	AdminUpdateUser(context.Context, string, string, bool) error
+	AdminModerateUser(context.Context, string, string) error
 	UpdateUploadQuota(context.Context, string, int64) error
 	UpdatePaidStatus(context.Context, string, bool) error
 	DeleteUser(context.Context, string) error

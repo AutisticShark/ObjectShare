@@ -165,7 +165,7 @@ func (handler *Handler) OAuthCallback(writer http.ResponseWriter, request *http.
 
 func (handler *Handler) finishOAuthLink(writer http.ResponseWriter, request *http.Request, flow oauthFlow, identity *db.OAuthIdentity, label string) {
 	user, err := handler.users.UserByID(request.Context(), flow.LinkUserID)
-	if err != nil || !user.Active || user.TokenVersion != flow.LinkTokenVersion || flow.LinkJWTExpiresAt <= time.Now().Unix() || flow.LinkJTIHash == "" {
+	if err != nil || !user.CanAuthenticate() || user.TokenVersion != flow.LinkTokenVersion || flow.LinkJWTExpiresAt <= time.Now().Unix() || flow.LinkJTIHash == "" {
 		handler.renderOAuthError(writer, request, "Your ObjectShare account changed while OAuth was in progress. Log in and try linking again.", true)
 		return
 	}
@@ -238,7 +238,7 @@ func (handler *Handler) finishOAuthLogin(writer http.ResponseWriter, request *ht
 		handler.internalError(writer, request, "look up OAuth identity", err)
 		return
 	}
-	if !user.Active {
+	if !user.CanAuthenticate() {
 		handler.renderOAuthError(writer, request, "This ObjectShare account is disabled.", false)
 		return
 	}

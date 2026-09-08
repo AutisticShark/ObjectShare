@@ -298,6 +298,8 @@ func TestDirectUploadReservationConsumesAndReleasesQuota(t *testing.T) {
 	storage := &directMemoryStorage{&memoryStorage{objects: make(map[string][]byte)}}
 	cfg := &config.ServiceConfig{MaxFileSize: 1, StorageService: "r2", Upload: &config.UploadConfig{GuestEnabled: true}, Encryption: &config.EncryptionConfig{}}
 	handler := newTestHandlerConfig(t, cfg, repository, storage)
+	handler.users = newAuthMemoryRepository()
+	handler.users.(*authMemoryRepository).users[user.ID] = user
 	begin := func() (*httptest.ResponseRecorder, string, string) {
 		response := httptest.NewRecorder()
 		request := httptest.NewRequest(http.MethodPost, "/api/v1/uploads/direct", strings.NewReader(`{"file_name":"account.txt","file_size":614400,"content_type":"text/plain"}`))

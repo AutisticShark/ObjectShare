@@ -130,6 +130,8 @@ func TestDirectDownloadRequiresActivePlanEntitlement(t *testing.T) {
 	}}}
 	storage := &memoryStorage{objects: map[string][]byte{fileID: []byte("data")}}
 	handler := newTestHandler(t, repository, storage)
+	handler.users = newAuthMemoryRepository()
+	handler.users.(*authMemoryRepository).users[owner] = &db.User{ID: owner, Active: true}
 	router := chi.NewRouter()
 	router.Get("/api/v1/download/{id}", handler.Download)
 
@@ -237,7 +239,7 @@ func TestLegacyCreditFormGeneratesInvoice(t *testing.T) {
 }
 
 func TestAdminCreditAdjustmentIsCSRFProtectedAndAudited(t *testing.T) {
-	admin := &db.User{ID: "11111111-1111-4111-8111-111111111111", Role: db.RoleAdmin}
+	admin := &db.User{ID: "11111111-1111-4111-8111-111111111111", Role: db.RoleAdmin, Active: true}
 	targetID := "22222222-2222-4222-8222-222222222222"
 	repository := &entitlementRepository{memoryRepository: &memoryRepository{files: make(map[string]*db.FileList)}}
 	handler := newTestHandler(t, repository, &memoryStorage{objects: make(map[string][]byte)})

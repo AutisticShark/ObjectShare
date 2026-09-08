@@ -549,6 +549,7 @@ func (handler *Handler) storeProxiedHeader(request *http.Request, header *multip
 }
 
 func (handler *Handler) UploadResults(writer http.ResponseWriter, request *http.Request) {
+	writer.Header().Set("Cache-Control", "private, no-store")
 	parts := strings.Split(request.URL.Query().Get("ids"), ",")
 	maxFiles := handler.uploadSettings().MaxFilesPerBatch
 	if len(parts) < 2 || len(parts) > maxFiles {
@@ -562,7 +563,7 @@ func (handler *Handler) UploadResults(writer http.ResponseWriter, request *http.
 			return
 		}
 		file, err := handler.repository.Get(request.Context(), id)
-		if err != nil || file.UploadStatus != "complete" {
+		if err != nil || !handler.canReadFile(request, file) {
 			http.NotFound(writer, request)
 			return
 		}
@@ -621,7 +622,7 @@ func (handler *Handler) Download(writer http.ResponseWriter, request *http.Reque
 		http.Error(writer, "Open the file details page before downloading.", http.StatusForbidden)
 		return
 	}
-	if !file.IsEncrypted && fileShareMode(file) == db.ShareLink {
+	if !file.IsEncrypted && fileShareMode(file) == db.ShareLink && handler.fileModeration(request, file) == db.ModerationNone {
 		if location, err := handler.storage.PresignGet(request.Context(), fileID, file.FileName); err == nil {
 			status := http.StatusTemporaryRedirect
 			if request.Method == http.MethodPost {
@@ -832,6 +833,13 @@ func (handler *Handler) redirect(writer http.ResponseWriter, request *http.Reque
 }
 
 func (handler *Handler) isOwner(request *http.Request, file *db.FileList) bool {
+	switch handler.fileModeration(request, file) {
+	case db.ModerationShadowbanned:
+		return signedInFileOwner(request, file)
+	case db.ModerationNone:
+	default:
+		return false
+	}
 	if identity := currentIdentity(request); identity != nil && file.FileOwner != nil && *file.FileOwner == identity.User.ID {
 		return true
 	}
