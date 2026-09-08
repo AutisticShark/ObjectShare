@@ -35,7 +35,7 @@ type adminSettingsPageData struct {
 	User                                                          *db.User
 	Config                                                        config.RuntimeConfig
 	Secrets                                                       settingsSecretState
-	RestartRequired                                               bool
+	ActivationPending                                             bool
 	EmailEnabled                                                  bool
 }
 
@@ -99,7 +99,22 @@ func (handler *Handler) AdminSaveSettings(writer http.ResponseWriter, request *h
 		handler.internalError(writer, request, "save administrator configuration", err)
 		return
 	}
-	handler.redirect(writer, request, "/admin/settings?message=saved")
+	handler.redirect(writer, request, "/admin/settings?message="+handler.activateSavedSettings(request))
+}
+
+// activateSavedSettings applies the revision this request just committed to the
+// running replica. A failure here leaves the previous configuration serving
+// traffic: the revision is stored, so a retry, another replica, or a restart
+// still activates it.
+func (handler *Handler) activateSavedSettings(request *http.Request) string {
+	if handler.reloadConfig == nil {
+		return "saved"
+	}
+	if err := handler.reloadConfig(request.Context()); err != nil {
+		handler.logger.Error("activate saved configuration failed", "error", err)
+		return "saved-inactive"
+	}
+	return "activated"
 }
 
 func (handler *Handler) readDatabaseSettings(request *http.Request) (*db.ApplicationSetting, config.RuntimeConfig, error) {
@@ -135,7 +150,7 @@ func (handler *Handler) renderSettings(writer http.ResponseWriter, identity *ide
 		Config: runtime, Error: formError, Message: message,
 		UpdatedAt: setting.UpdatedAt.UTC().Format("2006-01-02 15:04:05 UTC"), UpdatedBy: setting.UpdatedBy,
 		TrustedProxyCIDRs: strings.Join(runtime.RateLimit.TrustedProxyCIDRs, ", "),
-		RestartRequired:   string(pendingJSON) != string(activeJSON),
+		ActivationPending: string(pendingJSON) != string(activeJSON),
 		Secrets:           secrets,
 		EmailEnabled:      handler.config.Email != nil && handler.config.Email.Provider != "none" && handler.config.Email.Provider != "",
 	}
@@ -337,6 +352,12 @@ func formDuration(request *http.Request, name string, target *config.Duration) e
 func settingsMessage(value string) string {
 	if value == "email-sent" {
 		return "The active email provider accepted a test email to your account address. Check your inbox and spam folder."
+	}
+	if value == "activated" {
+		return "Configuration saved and activated. Other replicas activate it at their next configuration reload."
+	}
+	if value == "saved-inactive" {
+		return "Configuration saved, but this replica could not activate it and is still running the previous revision. Check the application log, then save again or restart."
 	}
 	if value == "saved" {
 		return "Configuration saved. Restart every ObjectShare application replica to activate it."

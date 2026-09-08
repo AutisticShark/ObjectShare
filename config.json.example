@@ -4,6 +4,7 @@
   "write_timeout": "5m",
   "idle_timeout": "1m",
   "shutdown_timeout": "15s",
+  "config_reload_interval": "30s",
   "settings_key": "replace-with-a-different-32-byte-random-secret",
   "branding": {
     "site_name": "ObjectShare",

@@ -1,6 +1,7 @@
 package config
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
@@ -78,5 +79,54 @@ func TestSettingsKeyDefaultsForUpgradeButRejectsDocumentedPlaceholder(t *testing
 	cfg.SettingsKey = "replace-with-a-different-32-byte-random-secret"
 	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "settings_key") {
 		t.Fatalf("documented settings placeholder was accepted: %v", err)
+	}
+}
+
+func TestWithRuntimeBuildsSnapshotsFromAnUnchangedBootstrap(t *testing.T) {
+	cfg := testDefaults()
+	cfg.MaxFileSize = 100
+	runtime := RuntimeFromService(cfg)
+	runtime.MaxFileSize = 42
+	runtime.Branding.SiteName = "Cat Cloud"
+	first, err := WithRuntime(cfg, runtime)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.MaxFileSize != 42 || first.Branding.SiteName != "Cat Cloud" {
+		t.Fatalf("the snapshot did not carry the database document: %#v", first)
+	}
+	if cfg.MaxFileSize != 100 || cfg.Branding.SiteName == "Cat Cloud" {
+		t.Fatal("building a snapshot mutated the bootstrap configuration")
+	}
+	// A later revision must not inherit anything from the one it replaces.
+	runtime.MaxFileSize = 7
+	// An empty site name normalizes back to the default, which also shows the
+	// second snapshot inherited nothing from the first.
+	runtime.Branding.SiteName = ""
+	second, err := WithRuntime(cfg, runtime)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.MaxFileSize != 7 || second.Branding.SiteName != "ObjectShare" || first.MaxFileSize != 42 || first.Branding.SiteName != "Cat Cloud" {
+		t.Fatalf("snapshots shared state: first=%d/%q second=%d/%q", first.MaxFileSize, first.Branding.SiteName, second.MaxFileSize, second.Branding.SiteName)
+	}
+	// Re-applying a document to a configuration already carrying it must be a
+	// no-op, so the dashboard does not report a pending activation after one.
+	reapplied, err := WithRuntime(first, RuntimeFromService(first))
+	if err != nil {
+		t.Fatal(err)
+	}
+	before, _ := json.Marshal(RuntimeFromService(first))
+	after, _ := json.Marshal(RuntimeFromService(reapplied))
+	if string(before) != string(after) {
+		t.Fatalf("activating a document was not idempotent: %s and %s", before, after)
+	}
+	invalid := RuntimeFromService(cfg)
+	invalid.MaxFileSize = 0
+	if _, err := WithRuntime(cfg, invalid); err == nil {
+		t.Fatal("an invalid database document produced a snapshot")
+	}
+	if cfg.MaxFileSize != 100 {
+		t.Fatal("a rejected document mutated the bootstrap configuration")
 	}
 }

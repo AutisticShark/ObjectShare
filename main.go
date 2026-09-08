@@ -15,13 +15,9 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/AutisticShark/ObjectShare/api"
-	"github.com/AutisticShark/ObjectShare/api/htmx"
 	appauth "github.com/AutisticShark/ObjectShare/auth"
 	"github.com/AutisticShark/ObjectShare/config"
 	"github.com/AutisticShark/ObjectShare/db"
-	"github.com/AutisticShark/ObjectShare/retention"
-	"github.com/AutisticShark/ObjectShare/service"
 	"github.com/google/uuid"
 )
 
@@ -73,30 +69,19 @@ func run() error {
 	if *createAdmin {
 		return createInitialAdmin(startupContext, repository, *adminEmail, *adminName, *adminPasswordFile, *adminPasswordStdin)
 	}
-	objectStore, err := service.New(cfg)
-	if err != nil {
-		return fmt.Errorf("initialize object storage: %w", err)
-	}
-	handler, err := htmx.New(cfg, repository, objectStore, templateFiles, logger)
-	if err != nil {
-		return fmt.Errorf("initialize HTTP handlers: %w", err)
-	}
 	runContext, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	invoiceEmailDone := make(chan struct{})
-	go func() { defer close(invoiceEmailDone); handler.RunInvoiceEmails(runContext) }()
-	retentionDone := make(chan struct{})
-	go func() {
-		defer close(retentionDone)
-		retention.New(repository, objectStore, *cfg.Retention, logger).Run(runContext)
-	}()
+	reloader := newConfigReloader(runContext, cfg, repository, templateFiles, logger)
 	defer func() {
 		stop()
-		<-retentionDone
-		<-invoiceEmailDone
+		reloader.Stop()
 	}()
+	if err := reloader.Reload(startupContext); err != nil {
+		return err
+	}
+	go reloader.Watch(runContext, cfg.ConfigReload.Duration())
 
 	server := &http.Server{
-		Addr: cfg.Address, Handler: api.Router(handler, logger),
+		Addr: cfg.Address, Handler: reloader,
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       cfg.ReadTimeout.Duration(), WriteTimeout: cfg.WriteTimeout.Duration(),
 		IdleTimeout: cfg.IdleTimeout.Duration(), MaxHeaderBytes: 1 << 20,

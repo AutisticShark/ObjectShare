@@ -44,6 +44,7 @@ type ServiceConfig struct {
 	WriteTimeout    Duration           `json:"write_timeout"`
 	IdleTimeout     Duration           `json:"idle_timeout"`
 	ShutdownTimeout Duration           `json:"shutdown_timeout"`
+	ConfigReload    Duration           `json:"config_reload_interval"`
 	MaxFileSize     int64              `json:"max_file_size"`
 	SecureCookies   bool               `json:"secure_cookies"`
 	SettingsKey     string             `json:"settings_key,omitempty"`

@@ -117,18 +117,30 @@ func ApplyRuntime(cfg *ServiceConfig, runtime RuntimeConfig) error {
 // NormalizeRuntime validates and normalizes a candidate without mutating the
 // active bootstrap configuration. The admin dashboard uses this before commit.
 func NormalizeRuntime(cfg *ServiceConfig, runtime RuntimeConfig) (RuntimeConfig, error) {
-	if cfg == nil {
-		return RuntimeConfig{}, errors.New("bootstrap configuration is required")
-	}
-	candidate, err := cloneService(cfg)
+	candidate, err := WithRuntime(cfg, runtime)
 	if err != nil {
 		return RuntimeConfig{}, err
 	}
+	return RuntimeFromService(candidate), nil
+}
+
+// WithRuntime returns a validated copy of the bootstrap configuration carrying
+// the database-owned document. The caller keeps its own configuration, so a
+// configuration reload always builds its snapshot from the same pristine
+// bootstrap values instead of from the revision it is replacing.
+func WithRuntime(cfg *ServiceConfig, runtime RuntimeConfig) (*ServiceConfig, error) {
+	if cfg == nil {
+		return nil, errors.New("bootstrap configuration is required")
+	}
+	candidate, err := cloneService(cfg)
+	if err != nil {
+		return nil, err
+	}
 	applyRuntimeUnchecked(candidate, runtime)
 	if err := candidate.Validate(); err != nil {
-		return RuntimeConfig{}, fmt.Errorf("validate database configuration: %w", err)
+		return nil, fmt.Errorf("validate database configuration: %w", err)
 	}
-	return RuntimeFromService(candidate), nil
+	return candidate, nil
 }
 
 func applyRuntimeUnchecked(cfg *ServiceConfig, runtime RuntimeConfig) {

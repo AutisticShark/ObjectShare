@@ -36,27 +36,39 @@ File links are unlisted by default; owners can restrict details and downloads to
 
 ## Roadmap
 
-- [x] File upload
-- [x] Single-file and multiple-file upload modes
-- [x] Upload quota
-- [x] CAPTCHA and API rate limiting
-- [x] File download
-- [x] Email sending
-- [x] Paid storage, retention, and direct-link plans
 - [x] Account credit, top-ups, and prepaid plan purchases
-- [x] Invoice generation
-- [x] File sharing & permission
-- [x] File deletion
-- [x] Auto file deletion after days for guest and unpaid users
-- [x] User management
-- [x] User ban & shadowban
 - [x] Administrator configuration dashboard
-- [x] Custom branding support
-- [x] Third-party OAuth login support
-- [x] Server-side encryption & decryption
+- [x] Auto file deletion after days for guest and unpaid users
+- [x] CAPTCHA and API rate limiting
 - [x] Client-side encryption & decryption
+- [x] Custom branding support
+- [x] Email sending
+- [x] File deletion
+- [x] File download
+- [x] File sharing & permission
+- [x] File upload
+- [x] Hot configuration reload without a container restart
+- [x] Invoice generation
+- [x] Paid storage, retention, and direct-link plans
+- [x] Server-side encryption & decryption
+- [x] Single-file and multiple-file upload modes
+- [x] Third-party OAuth login support
+- [x] Upload quota
+- [x] User ban & shadowban
+- [x] User management
 
 HTMX is intentionally part of the frontend architecture. The native forms are accessibility and no-JavaScript fallbacks; login, account, and user-management interactions use HTMX progressive enhancement, and file-sharing permissions follow the same pattern.
+
+### Supported Object Storage Services
+
+- [x] Alibaba Cloud OSS
+- [x] AWS S3
+- [x] Backblaze B2
+- [x] Cloudflare R2
+- [x] Tencent Cloud COS
+- [ ] Google Cloud Storage
+- [ ] Microsoft Azure Blob Storage
+- [ ] Oracle Cloud Object Storage
 
 ### Client-side encryption and per-user keys
 
@@ -151,25 +163,15 @@ adversarial checks; `go test -mod=mod ./...` also runs them when Node is install
 PostgreSQL migration/concurrency tests use an isolated schema when
 `OBJECTSHARE_TEST_POSTGRES_DSN` is set to a disposable PostgreSQL instance.
 
-### Supported Object Storage Services
-
-- [x] Cloudflare R2
-- [x] AWS S3
-- [x] Backblaze B2
-- [x] Alibaba Cloud OSS
-- [x] Tencent Cloud COS
-- [ ] Google Cloud Storage
-- [ ] Oracle Cloud Object Storage
-- [ ] Microsoft Azure Blob Storage
-
 ### Email providers
 
 Outgoing email is optional and disabled by default. Administrators select **SMTP**,
 **Alibaba Cloud Direct Mail**, or **AWS SES** under **Configuration → Email delivery**.
 Credentials use the existing encrypted PostgreSQL runtime document. Blank secret
-fields preserve their values; the adjacent clear checkboxes remove them. Save and
-restart **every replica**, then use **Send test email** to send a fixed message to
-your signed-in administrator account address using that replica's active settings.
+fields preserve their values; the adjacent clear checkboxes remove them. Save the
+configuration, which the saving replica activates immediately, then use **Send test
+email** to send a fixed message to your signed-in administrator account address
+using that replica's active settings.
 The action requires administrator access, same-origin checks, and JWT CSRF; when
 shared rate limiting is enabled, it permits three tests per administrator per
 configured rate-limit window. Provider acceptance does not prove inbox delivery.
@@ -264,7 +266,7 @@ Open <http://localhost:8080>. Compose uses PostgreSQL 18 and a persistent local 
 
 The first visit redirects to the one-time setup page. Create the initial administrator there; after that, `/setup` is locked. Administrators configure the application from **Configuration** (`/admin/settings`) and manage accounts from **Users**. Public signup is enabled by default and creates normal users.
 
-For HTTPS deployments, terminate TLS at a reverse proxy, enable secure cookies in the configuration dashboard, save, and restart every application replica. Back up both named volumes together so metadata, encrypted configuration, and objects remain consistent.
+For HTTPS deployments, terminate TLS at a reverse proxy, enable secure cookies in the configuration dashboard, and save. The saving replica activates the change immediately and other replicas activate it at their next configuration reload. Back up both named volumes together so metadata, encrypted configuration, and objects remain consistent.
 
 ## Run from source
 
@@ -294,11 +296,12 @@ Only bootstrap settings remain file/environment-owned because they are needed be
 | `OBJECTSHARE_DB_*` | varies | PostgreSQL connection and pool settings |
 | `OBJECTSHARE_JWT_SECRET` | none (required) | JWT HMAC signing secret, at least 32 random bytes |
 | `OBJECTSHARE_JWT_LIFETIME` | `12h` | JWT lifetime (`5m` to `24h`) |
+| `OBJECTSHARE_CONFIG_RELOAD_INTERVAL` | `30s` | How often a replica checks PostgreSQL for a newer configuration revision and activates it without a restart; `0` disables polling and `1s` to `24h` are accepted |
 | `OBJECTSHARE_SETTINGS_KEY` | JWT secret for upgrade compatibility | Independent key that encrypts the database configuration document; set it before the first import and keep it stable |
 
 Generate separate JWT and settings secrets with `openssl rand -base64 48`, provide the same values to every replica, and keep the settings key with database backups. The fallback to the JWT secret exists only so an older deployment can upgrade without a new mandatory variable; a new deployment should always set an independent `OBJECTSHARE_SETTINGS_KEY`. Losing or changing that key makes the database configuration unreadable and startup fails closed. Rotating the JWT secret invalidates every issued JWT but does not affect database configuration when the independent settings key is configured.
 
-The dashboard stores the entire operational document as authenticated AES-GCM ciphertext. Secret inputs are write-only: an empty field preserves its stored value, while an explicit checkbox clears it. A save validates the complete candidate before one optimistic, revision-checked database update; a stale admin page cannot overwrite a newer revision. Saved changes intentionally require a restart because storage clients, encryption, OAuth, CAPTCHA CSP, cookies, and proxy trust must change as one consistent startup snapshot. Restart every replica after saving. Changing a storage provider, bucket, or filesystem path does not migrate existing objects, and changing the object-encryption key does not re-encrypt them; complete those data migrations separately before activating such changes.
+The dashboard stores the entire operational document as authenticated AES-GCM ciphertext. Secret inputs are write-only: an empty field preserves its stored value, while an explicit checkbox clears it. A save validates the complete candidate before one optimistic, revision-checked database update; a stale admin page cannot overwrite a newer revision. Saving also activates the revision without a restart. The replica builds a complete new snapshot — storage clients, encryption, OAuth, CAPTCHA CSP, cookies, and proxy trust together — and swaps it in atomically, so no subsystem changes on its own and a request already in progress finishes against the configuration it started with. If the snapshot cannot be built, the stored revision stays saved, the replica keeps serving the previous snapshot, and the dashboard reports that this replica did not activate it; the reason is in the application log. Other replicas activate the stored revision at their next configuration reload (`config_reload_interval` / `OBJECTSHARE_CONFIG_RELOAD_INTERVAL`, default 30 seconds), or immediately when sent `SIGHUP` (`docker compose kill -s HUP app`). Bootstrap settings — listen address, database connection, JWT secret, settings key, server timeouts, and the reload interval itself — are not part of the document and still require a restart. Changing a storage provider, bucket, or filesystem path does not migrate existing objects, and changing the object-encryption key does not re-encrypt them; complete those data migrations separately before activating such changes.
 
 The operational `OBJECTSHARE_*` variables retained in `.env.example`, Compose, and the full parser are compatibility seed inputs only. They are consulted when no database configuration row exists; the dashboard becomes authoritative once the row has been created. Existing `config.json` files remain valid and are not rewritten. After verifying the imported dashboard revision and restarting successfully, remove legacy provider, CAPTCHA, OAuth, and object-encryption secrets from the JSON/environment deployment inputs so those extra plaintext copies no longer remain available to the process.
 
@@ -312,7 +315,7 @@ Normal users manage their profile, password, appearance, paid plan, and account-
 
 Under **Configuration → Email verification**, set **Public site URL** to the
 browser-visible origin (for example, `https://files.example.com`) and configure
-**Outgoing email**. Save and restart every replica. Password signup then signs the
+**Outgoing email**. Save; the saving replica activates it at once. Password signup then signs the
 user in and sends a verification link; **My account** shows verification status and
 lets the user resend it. Email changes clear verification and send a new link.
 Delivery failures leave the account usable and unverified, with a retry message.
@@ -321,7 +324,7 @@ No email credentials or actual configuration values are changed by upgrading.
 Administrators can independently enable **Require verified email to purchase
 plans** and **Require verified email for account uploads**. Both default to off.
 Enabling either requires a public site URL and an enabled email provider. These
-settings follow the existing encrypted database configuration and restart lifecycle.
+settings follow the existing encrypted database configuration and activation lifecycle.
 
 - Purchase restrictions cover invoice creation and payment initiation through
   account credit or gateways, including the compatible purchase routes. Existing
@@ -407,8 +410,9 @@ name appears in page titles and navigation on public, login, setup, account, and
 administrator pages. The tagline also supplies the HTML page description. The
 existing ObjectShare version and “Made with” heart / “by Cat” credit remain visible.
 
-Save the configuration and **restart every application replica** to activate the
-branding and its image Content Security Policy together. These settings use the
+Saving the configuration activates the branding and its image Content Security
+Policy together in the saving replica, and in every other replica at its next
+configuration reload. These settings use the
 same encrypted PostgreSQL runtime document, administrator authorization, CSRF
 protection, and revision checks as other dashboard settings. No schema migration
 is needed. Existing installations keep the ObjectShare name and no custom images
@@ -446,7 +450,7 @@ branding does not change JWT identifiers, API paths, or payment-provider setting
 
 ### Guest uploads and per-user storage quotas
 
-Guest uploads are enabled by default. A guest receives a random per-file owner token in an HTTP-only cookie, allowing that browser to rename or delete the file without creating an account. Disable **Allow guest uploads** in the configuration dashboard and restart to require login for new uploads; existing unlisted download links and owner tokens continue to work.
+Guest uploads are enabled by default. A guest receives a random per-file owner token in an HTTP-only cookie, allowing that browser to rename or delete the file without creating an account. Disable **Allow guest uploads** in the configuration dashboard and save to require login for new uploads; existing unlisted download links and owner tokens continue to work.
 
 Storage quota is an entitlement of an individual account. Its standard limit is stored in PostgreSQL as `users.upload_quota_bytes`; it is not selected by role and there is no guest-wide or server-wide quota setting. New accounts default to `0` (unlimited). Administrators can choose an initial quota when creating an account and change it later from `/admin/users`; the web form uses MiB while the database stores bytes. While a subscription is active, ObjectShare uses the larger of the standard account quota and the plan quota. The historical `0` value remains unlimited, so a finite paid plan never reduces a legacy unlimited account.
 
@@ -507,7 +511,7 @@ Account credit is a PostgreSQL-backed prepaid wallet. One credit equals one whol
 
 A plan purchase first creates an unpaid invoice. Paying that invoice atomically records payment and creates or extends access for its snapshotted duration. Account-credit payment also deducts the invoice price from the wallet; direct gateway payment leaves the wallet balance unchanged. Buying the same active local plan extends access from its current expiry; a different active plan cannot overlap it. The browser submits the plan ID and an account-scoped purchase request ID, never an authoritative amount. Insufficient balances and repeated requests cannot cause an extra debit. Access does not automatically renew; after it expires, the account returns to its standard entitlements and the user can buy a plan again. Administrator balance adjustments allow local plan purchases even when both top-up gateways are disabled.
 
-Register `https://your-origin.example/api/v1/billing/stripe/webhook` in Stripe for `checkout.session.completed` and `checkout.session.async_payment_succeeded`. ObjectShare verifies the `Stripe-Signature` against the raw body with a five-minute tolerance. Checkout events settle a plan or top-up invoice only when `mode=payment`, `payment_status=paid`, and their metadata, currency, and total match a pending server-side top-up. Browser success pages never grant access or credit. Restart every replica after enabling a gateway or rotating its secrets.
+Register `https://your-origin.example/api/v1/billing/stripe/webhook` in Stripe for `checkout.session.completed` and `checkout.session.async_payment_succeeded`. ObjectShare verifies the `Stripe-Signature` against the raw body with a five-minute tolerance. Checkout events settle a plan or top-up invoice only when `mode=payment`, `payment_status=paid`, and their metadata, currency, and total match a pending server-side top-up. Browser success pages never grant access or credit. Every replica activates an enabled gateway or a rotated secret at its next configuration reload.
 
 For PayPal, create REST API credentials, first test with `environment` set to `sandbox`, then switch the credentials and environment to `live` for production. Register `https://your-origin.example/api/v1/billing/paypal/webhook` for `PAYMENT.CAPTURE.COMPLETED` and copy the webhook ID into ObjectShare. ObjectShare authenticates webhook signatures through PayPal's verification endpoint. PayPal returns an order token to a narrowly scoped endpoint; ObjectShare matches it to a pending top-up, captures the approved order over PayPal's authenticated API, and verifies the capture ID, custom ID, amount, and currency before settling the invoice. A top-up adds credit; a direct plan payment activates the plan without minting wallet credit. A later authenticated webhook is idempotent.
 
@@ -550,7 +554,7 @@ with the paid PDF attached. The background worker checks the database every ten
 seconds, claims at most 20 messages per pass, and retries failures after five
 minutes. Row leases with `SKIP LOCKED` support multiple replicas and crash recovery.
 Email failure never reverses payment. Configure an outgoing provider under
-`/admin/settings` and restart every replica to enable delivery; while email is
+`/admin/settings` and save to enable delivery; while email is
 disabled, confirmations remain queued. Provider acceptance is displayed on the
 invoice page. A crash after provider acceptance but before recording it can cause
 a duplicate confirmation email; the purchase itself remains idempotent.
@@ -581,7 +585,7 @@ An active plan raises a finite account quota to at least the plan quota. It appl
 
 ### Automatic file retention
 
-ObjectShare can permanently delete completed guest files and completed files owned by accounts without an active plan after separate administrator-defined numbers of days. Both policies default to `0` (disabled), so an upgrade never starts deleting existing data until an administrator deliberately enables retention. Configure **Guest retention** and **Unpaid retention** at `/admin/settings`, save, and restart every application replica. Active plans use their plan-specific retention days instead. `/admin/users` retains a manual retention exemption for complimentary or externally billed accounts; it is independent from billing gateways, quota, and direct-link access. Removing an exemption or ending a subscription can make older files immediately eligible at the next sweep.
+ObjectShare can permanently delete completed guest files and completed files owned by accounts without an active plan after separate administrator-defined numbers of days. Both policies default to `0` (disabled), so an upgrade never starts deleting existing data until an administrator deliberately enables retention. Configure **Guest retention** and **Unpaid retention** at `/admin/settings` and save; each replica's retention sweep uses the new policy as soon as that replica activates the revision. Active plans use their plan-specific retention days instead. `/admin/users` retains a manual retention exemption for complimentary or externally billed accounts; it is independent from billing gateways, quota, and direct-link access. Removing an exemption or ending a subscription can make older files immediately eligible at the next sweep.
 
 The legacy first-import inputs are:
 

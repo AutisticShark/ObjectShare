@@ -1,6 +1,7 @@
 package htmx
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -257,4 +258,94 @@ func runtimeFormValues(runtime config.RuntimeConfig) url.Values {
 		}
 	}
 	return values
+}
+
+func TestSavedConfigurationActivatesInProcessWithoutRestart(t *testing.T) {
+	t.Setenv("OBJECTSHARE_JWT_SECRET", "activation-test-jwt-secret-with-at-least-32-bytes")
+	t.Setenv("OBJECTSHARE_SETTINGS_KEY", "activation-test-settings-key-with-at-least-32-bytes")
+	cfg, err := config.Load("../../config.json.example")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.RateLimit.Enabled = false
+	runtime := config.RuntimeFromService(cfg)
+	sealed, err := config.SealRuntime(runtime, cfg.SettingsKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repository := newAuthMemoryRepository()
+	repository.setting = &db.ApplicationSetting{Key: "runtime_config", Value: sealed, UpdatedBy: "bootstrap import", CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}
+	admin := &db.User{ID: "admin", Email: "admin@example.com", DisplayName: "Admin", Role: db.RoleAdmin, Active: true, TokenVersion: 1}
+	repository.users[admin.ID] = admin
+	handler, err := New(cfg, repository, &memoryStorage{objects: make(map[string][]byte)}, os.DirFS("../.."), slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	claims := &appauth.Claims{CSRF: "signed-csrf"}
+	activations := 0
+	var activationErr error
+	handler.SetConfigReloader(func(context.Context) error {
+		activations++
+		return activationErr
+	})
+
+	save := func(maxFileSize string) *httptest.ResponseRecorder {
+		values := runtimeFormValues(runtime)
+		values.Set("csrf_token", claims.CSRF)
+		values.Set("revision", settingsRevision(repository.setting.Value))
+		values.Set("max_file_size", maxFileSize)
+		request := httptest.NewRequest(http.MethodPost, "/admin/settings", strings.NewReader(values.Encode()))
+		request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		request = request.WithContext(context.WithValue(request.Context(), identityContextKey{}, &identity{User: admin, Claims: claims, Transport: transportCookie}))
+		response := httptest.NewRecorder()
+		handler.AdminSaveSettings(response, request)
+		return response
+	}
+
+	response := save("55")
+	if response.Code != http.StatusSeeOther || response.Header().Get("Location") != "/admin/settings?message=activated" {
+		t.Fatalf("activating save response = %d, %q", response.Code, response.Header().Get("Location"))
+	}
+	if activations != 1 {
+		t.Fatalf("saved revision was activated %d times", activations)
+	}
+
+	activationErr = errors.New("storage credentials rejected")
+	response = save("66")
+	if response.Code != http.StatusSeeOther || response.Header().Get("Location") != "/admin/settings?message=saved-inactive" {
+		t.Fatalf("failed activation response = %d, %q", response.Code, response.Header().Get("Location"))
+	}
+	stored, err := config.OpenRuntime(repository.setting.Value, cfg.SettingsKey)
+	if err != nil || stored.MaxFileSize != 66 {
+		t.Fatalf("a failed activation discarded the saved revision: size=%d err=%v", stored.MaxFileSize, err)
+	}
+}
+
+func TestActivatedHandlerInheritsProcessLocalState(t *testing.T) {
+	t.Setenv("OBJECTSHARE_JWT_SECRET", "inherit-test-jwt-secret-with-at-least-32-bytes")
+	t.Setenv("OBJECTSHARE_SETTINGS_KEY", "inherit-test-settings-key-with-at-least-32-bytes")
+	cfg, err := config.Load("../../config.json.example")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.RateLimit.Enabled = false
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	previous, err := New(cfg, newAuthMemoryRepository(), &memoryStorage{objects: make(map[string][]byte)}, os.DirFS("../.."), logger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	activated, err := New(cfg, newAuthMemoryRepository(), &memoryStorage{objects: make(map[string][]byte)}, os.DirFS("../.."), logger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Equal(activated.csrfSecret, previous.csrfSecret) {
+		t.Fatal("independently built handlers shared a pre-authentication CSRF secret")
+	}
+	activated.InheritProcessState(previous)
+	if !bytes.Equal(activated.csrfSecret, previous.csrfSecret) {
+		t.Fatal("activation invalidated pre-authentication CSRF tokens")
+	}
+	if activated.localRateLimits != previous.localRateLimits {
+		t.Fatal("activation reset the local rate-limit windows")
+	}
 }

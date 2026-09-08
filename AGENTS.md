@@ -14,6 +14,15 @@ These instructions apply to every change in this repository.
   preserve it and secure or update it in place.
 - Never remove or rewrite the README roadmap merely because work was requested on
   its TODOs. Keep the checklist and update each item's status accurately.
+- Record every new user-visible feature in the README `## Roadmap` checklist as a
+  completed `- [x]` item in the same change that implements it. A new object
+  storage backend belongs in `### Supported Object Storage Services` instead:
+  tick its existing `- [ ]` entry, or add a `- [x]` entry when the provider is
+  not listed yet. A feature is not finished while either list still misrepresents
+  what the code supports.
+- Keep both checklists sorted: completed `- [x]` items first in case-insensitive
+  alphabetical order, then unchecked `- [ ]` items in the same order. Insert new
+  entries at their sorted position rather than appending them.
 - Preserve the Tabler-based UI and the footer credit, including the heart icon and
   "Made with ... by Cat", unless the user explicitly requests a visual redesign or
   attribution change.
@@ -78,5 +87,10 @@ These instructions apply to every change in this repository.
   preserve behavior, and explain any unavoidable breaking change before making it.
 - A syntax check alone is insufficient for configuration-heavy changes. Exercise
   the relevant behavior matrix and report what was actually verified.
+- Record agent instructions in this `AGENTS.md` only. Do not create or write
+  agent-specific instruction files such as `CLAUDE.md`, `.cursorrules`, or
+  `.github/copilot-instructions.md`. Every agent working on this repository reads
+  `AGENTS.md`; a tool-specific file is invisible to the others and silently forks
+  the rules.
 - Concrete failures that established these rules are recorded in personal global
   Codex memory, outside this repository. Do not commit a project `MEMORY.md`.

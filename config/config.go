@@ -52,6 +52,7 @@ func LoadBootstrap(path string) (*ServiceConfig, error) {
 	bootstrap.Address, bootstrap.Port, bootstrap.Timeout = cfg.Address, cfg.Port, cfg.Timeout
 	bootstrap.ReadTimeout, bootstrap.WriteTimeout = cfg.ReadTimeout, cfg.WriteTimeout
 	bootstrap.IdleTimeout, bootstrap.ShutdownTimeout = cfg.IdleTimeout, cfg.ShutdownTimeout
+	bootstrap.ConfigReload = cfg.ConfigReload
 	bootstrap.Db, bootstrap.SettingsKey = cfg.Db, cfg.SettingsKey
 	bootstrap.Auth.JWTSecret, bootstrap.Auth.TokenLifetime = cfg.Auth.JWTSecret, cfg.Auth.TokenLifetime
 	if err := bootstrap.Validate(); err != nil {
@@ -60,6 +61,7 @@ func LoadBootstrap(path string) (*ServiceConfig, error) {
 	cfg.Address, cfg.Port = bootstrap.Address, bootstrap.Port
 	cfg.ReadTimeout, cfg.WriteTimeout = bootstrap.ReadTimeout, bootstrap.WriteTimeout
 	cfg.IdleTimeout, cfg.ShutdownTimeout = bootstrap.IdleTimeout, bootstrap.ShutdownTimeout
+	cfg.ConfigReload = bootstrap.ConfigReload
 	cfg.Db, cfg.SettingsKey = bootstrap.Db, bootstrap.SettingsKey
 	cfg.Auth.JWTSecret, cfg.Auth.TokenLifetime = bootstrap.Auth.JWTSecret, bootstrap.Auth.TokenLifetime
 	return cfg, nil
@@ -95,7 +97,7 @@ func (cfg *ServiceConfig) ValidateSeed() error { return cfg.seedProblems }
 func bootstrapEnvironmentProblems(err error) error {
 	bootstrapNames := []string{
 		"OBJECTSHARE_PORT", "OBJECTSHARE_READ_TIMEOUT", "OBJECTSHARE_WRITE_TIMEOUT", "OBJECTSHARE_IDLE_TIMEOUT", "OBJECTSHARE_SHUTDOWN_TIMEOUT",
-		"OBJECTSHARE_JWT_LIFETIME", "OBJECTSHARE_DB_PORT", "OBJECTSHARE_DB_MAX_OPEN_CONNS", "OBJECTSHARE_DB_MAX_IDLE_CONNS", "OBJECTSHARE_DB_CONN_MAX_LIFETIME",
+		"OBJECTSHARE_CONFIG_RELOAD_INTERVAL", "OBJECTSHARE_JWT_LIFETIME", "OBJECTSHARE_DB_PORT", "OBJECTSHARE_DB_MAX_OPEN_CONNS", "OBJECTSHARE_DB_MAX_IDLE_CONNS", "OBJECTSHARE_DB_CONN_MAX_LIFETIME",
 	}
 	var selected []error
 	var visit func(error)
@@ -126,6 +128,7 @@ func defaults() *ServiceConfig {
 		WriteTimeout:    Duration(5 * time.Minute),
 		IdleTimeout:     Duration(60 * time.Second),
 		ShutdownTimeout: Duration(15 * time.Second),
+		ConfigReload:    Duration(30 * time.Second),
 		MaxFileSize:     100,
 		Upload:          &UploadConfig{GuestEnabled: true, MaxFilesPerBatch: 10},
 		Retention:       &RetentionConfig{},
@@ -202,6 +205,7 @@ func applyEnvironment(cfg *ServiceConfig) error {
 	problems = append(problems, setDuration("OBJECTSHARE_WRITE_TIMEOUT", &cfg.WriteTimeout))
 	problems = append(problems, setDuration("OBJECTSHARE_IDLE_TIMEOUT", &cfg.IdleTimeout))
 	problems = append(problems, setDuration("OBJECTSHARE_SHUTDOWN_TIMEOUT", &cfg.ShutdownTimeout))
+	problems = append(problems, setDuration("OBJECTSHARE_CONFIG_RELOAD_INTERVAL", &cfg.ConfigReload))
 	problems = append(problems, setInt64("OBJECTSHARE_MAX_FILE_SIZE_MB", &cfg.MaxFileSize))
 	problems = append(problems, setBool("OBJECTSHARE_SECURE_COOKIES", &cfg.SecureCookies))
 	setString("OBJECTSHARE_SETTINGS_KEY", &cfg.SettingsKey)
@@ -402,6 +406,11 @@ func (cfg *ServiceConfig) Validate() error {
 	}
 	if cfg.ReadTimeout <= 0 || cfg.WriteTimeout <= 0 || cfg.IdleTimeout <= 0 || cfg.ShutdownTimeout <= 0 {
 		return errors.New("all server timeouts must be positive")
+	}
+	// Zero disables background polling; a replica then activates a saved
+	// revision only on its own save or on SIGHUP.
+	if cfg.ConfigReload < 0 || (cfg.ConfigReload > 0 && (cfg.ConfigReload < Duration(time.Second) || cfg.ConfigReload > Duration(24*time.Hour))) {
+		return errors.New("config_reload_interval must be 0 or between 1s and 24h")
 	}
 	if cfg.Auth == nil {
 		cfg.Auth = &AuthConfig{SignupEnabled: true, TokenLifetime: Duration(12 * time.Hour), OAuth: &OAuthConfig{}}

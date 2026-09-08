@@ -487,3 +487,63 @@ func TestEncryptionMemoryLimit(t *testing.T) {
 		t.Fatal("expected encrypted upload limit error")
 	}
 }
+
+func TestConfigReloadIntervalDefaultsEnvironmentAndValidation(t *testing.T) {
+	cfg := testDefaults()
+	if cfg.ConfigReload != Duration(30*time.Second) {
+		t.Fatalf("configuration reload interval must default to 30s: %s", cfg.ConfigReload)
+	}
+	t.Setenv("OBJECTSHARE_CONFIG_RELOAD_INTERVAL", "45s")
+	if err := applyEnvironment(cfg); err != nil {
+		t.Fatal(err)
+	}
+	if cfg.ConfigReload != Duration(45*time.Second) {
+		t.Fatalf("configuration reload interval environment was not applied: %s", cfg.ConfigReload)
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	// Zero deliberately remains valid: it disables polling and leaves SIGHUP
+	// and a restart as the activation triggers.
+	disabled := testDefaults()
+	disabled.ConfigReload = 0
+	if err := disabled.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	for _, interval := range []Duration{Duration(-time.Second), Duration(500 * time.Millisecond), Duration(25 * time.Hour)} {
+		candidate := testDefaults()
+		candidate.ConfigReload = interval
+		if err := candidate.Validate(); err == nil || !strings.Contains(err.Error(), "config_reload_interval") {
+			t.Fatalf("invalid configuration reload interval %s was accepted", interval)
+		}
+	}
+}
+
+func TestBootstrapKeepsConfigReloadIntervalOutOfTheDatabaseDocument(t *testing.T) {
+	t.Setenv("OBJECTSHARE_JWT_SECRET", "bootstrap-test-jwt-secret-with-at-least-32-bytes")
+	t.Setenv("OBJECTSHARE_SETTINGS_KEY", "bootstrap-test-settings-key-with-at-least-32-bytes")
+	t.Setenv("OBJECTSHARE_CONFIG_RELOAD_INTERVAL", "90s")
+	cfg, err := LoadBootstrap("../config.json.example")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.ConfigReload != Duration(90*time.Second) {
+		t.Fatalf("bootstrap load lost the configuration reload interval: %s", cfg.ConfigReload)
+	}
+	activated, err := WithRuntime(cfg, RuntimeFromService(cfg))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if activated.ConfigReload != Duration(90*time.Second) {
+		t.Fatalf("an activated snapshot lost the configuration reload interval: %s", activated.ConfigReload)
+	}
+}
+
+func TestConfigReloadIntervalRejectsInvalidBootstrapValue(t *testing.T) {
+	t.Setenv("OBJECTSHARE_JWT_SECRET", "bootstrap-test-jwt-secret-with-at-least-32-bytes")
+	t.Setenv("OBJECTSHARE_SETTINGS_KEY", "bootstrap-test-settings-key-with-at-least-32-bytes")
+	t.Setenv("OBJECTSHARE_CONFIG_RELOAD_INTERVAL", "half an hour")
+	if _, err := LoadBootstrap("../config.json.example"); err == nil || !strings.Contains(err.Error(), "OBJECTSHARE_CONFIG_RELOAD_INTERVAL") {
+		t.Fatalf("an unparsable bootstrap reload interval was accepted: %v", err)
+	}
+}

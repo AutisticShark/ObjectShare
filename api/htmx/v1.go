@@ -72,6 +72,26 @@ type Handler struct {
 	settingsKey        string
 	localRateLimits    *localRateLimiter
 	trustedProxies     []*net.IPNet
+	reloadConfig       func(context.Context) error
+}
+
+// InheritProcessState carries state that belongs to the process rather than to
+// a configuration revision across a hot reload, so activating a saved revision
+// neither invalidates pre-authentication CSRF tokens nor resets the local
+// rate-limit windows that protect a replica without a shared repository.
+func (handler *Handler) InheritProcessState(previous *Handler) {
+	if previous == nil {
+		return
+	}
+	handler.csrfSecret = previous.csrfSecret
+	handler.localRateLimits = previous.localRateLimits
+}
+
+// SetConfigReloader registers the callback that activates a saved
+// configuration revision in this replica without a restart. Handlers built
+// without one keep the previous restart-to-activate behaviour.
+func (handler *Handler) SetConfigReloader(reload func(context.Context) error) {
+	handler.reloadConfig = reload
 }
 
 func New(cfg *config.ServiceConfig, repository db.Repository, storage service.ObjectStore, templates fs.FS, logger *slog.Logger) (*Handler, error) {
