@@ -54,7 +54,7 @@ func TestOAuthLoginCreatesJWTAccountWithoutPersistingProviderToken(t *testing.T)
 		t.Fatalf("OAuth callback status=%d location=%q users=%d identities=%d body=%q", response.Code, response.Header().Get("Location"), len(repository.users), len(repository.identities), response.Body.String())
 	}
 	user, err := repository.UserByEmail(context.Background(), "user@example.com")
-	if err != nil || user.PasswordHash != "" || user.Role != db.RoleUser {
+	if err != nil || user.PasswordHash != "" || user.Role != db.RoleUser || user.EmailVerifiedAt == nil {
 		t.Fatalf("OAuth-created user = %#v err=%v", user, err)
 	}
 	var rawJWT string

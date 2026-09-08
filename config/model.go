@@ -112,10 +112,17 @@ type PayPalBillingConfig struct {
 }
 
 type AuthConfig struct {
-	SignupEnabled bool         `json:"signup_enabled"`
-	JWTSecret     string       `json:"jwt_secret"`
-	TokenLifetime Duration     `json:"token_lifetime"`
-	OAuth         *OAuthConfig `json:"oauth,omitempty"`
+	EmailVerification EmailVerificationConfig `json:"email_verification"`
+	SignupEnabled     bool                    `json:"signup_enabled"`
+	JWTSecret         string                  `json:"jwt_secret"`
+	TokenLifetime     Duration                `json:"token_lifetime"`
+	OAuth             *OAuthConfig            `json:"oauth,omitempty"`
+}
+
+type EmailVerificationConfig struct {
+	PublicURL           string `json:"public_url"`
+	RequireForPurchases bool   `json:"require_for_purchases"`
+	RequireForUploads   bool   `json:"require_for_uploads"`
 }
 
 // CaptchaConfig controls server-verified Cloudflare Turnstile challenges. The

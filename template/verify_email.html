@@ -1,0 +1,10 @@
+<!doctype html>
+<html lang="en"{{if and .User .User.DarkMode}} data-bs-theme="dark"{{end}}>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Verify email · {{(branding).SiteName}}</title>{{template "tabler-head" .}}</head>
+<body class="d-flex flex-column"><div class="page page-center"><div class="container container-tight py-4">
+<div class="text-center mb-4"><a href="/" class="navbar-brand justify-content-center">{{template "brand" .}}</a></div>
+<div class="card card-md"><div class="card-body"><h1 class="h2">Email verification</h1>
+{{if .Success}}<div class="alert alert-success" role="status">Your email address is verified. You can return to your account, or log in if needed.</div>
+{{else if .Error}}<div class="alert alert-danger" role="alert">{{.Error}}</div>
+{{else}}<p>Confirm that you requested email verification for your ObjectShare account.</p><form action="/verify-email" method="post"><input type="hidden" name="csrf_token" value="{{.CSRF}}"><input type="hidden" name="user" value="{{.UserID}}"><input type="hidden" name="token" value="{{.Token}}"><button class="btn btn-primary w-100" type="submit">Verify email</button></form>{{end}}
+<a class="btn w-100 mt-3" href="/account">My account</a></div></div></div></div>{{template "footer" .}}</body></html>

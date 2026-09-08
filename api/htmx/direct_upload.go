@@ -245,6 +245,9 @@ func (handler *Handler) CompleteDirectUpload(writer http.ResponseWriter, request
 	if !ok {
 		return
 	}
+	if !handler.directUploadVerificationAllowed(writer, request, file) {
+		return
+	}
 	info, err := handler.direct.Stat(request.Context(), file.FileID)
 	if err != nil {
 		handler.logger.Warn("direct upload is not available yet", "file_id", file.FileID, "error", err)

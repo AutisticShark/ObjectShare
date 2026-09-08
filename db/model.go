@@ -34,20 +34,24 @@ const (
 )
 
 type User struct {
-	ID               string     `gorm:"column:id;type:uuid;primaryKey"`
-	Email            string     `gorm:"column:email;type:varchar(320);uniqueIndex;not null"`
-	DisplayName      string     `gorm:"column:display_name;type:varchar(100);not null"`
-	PasswordHash     string     `gorm:"column:password_hash;type:text;not null"`
-	Role             string     `gorm:"column:role;type:varchar(16);not null;default:user;index"`
-	Active           bool       `gorm:"column:active;not null;default:true;index"`
-	TokenVersion     int        `gorm:"column:token_version;not null;default:1"`
-	DarkMode         bool       `gorm:"column:dark_mode;not null;default:false"`
-	IsPaid           bool       `gorm:"column:is_paid;not null;default:false;index"`
-	UploadQuotaBytes int64      `gorm:"column:upload_quota_bytes;not null;default:0;check:chk_users_upload_quota_bytes_nonnegative,upload_quota_bytes >= 0"`
-	CreditBalance    int64      `gorm:"column:credit_balance;not null;default:0"`
-	LastLoginAt      *time.Time `gorm:"column:last_login_at"`
-	CreatedAt        time.Time  `gorm:"column:created_at;not null"`
-	UpdatedAt        time.Time  `gorm:"column:updated_at;not null"`
+	EmailVerifiedAt            *time.Time `gorm:"column:email_verified_at"`
+	EmailVerificationHash      string     `gorm:"column:email_verification_hash;type:varchar(64);not null;default:''" json:"-"`
+	EmailVerificationExpiresAt *time.Time `gorm:"column:email_verification_expires_at" json:"-"`
+	EmailVerificationSentAt    *time.Time `gorm:"column:email_verification_sent_at" json:"-"`
+	ID                         string     `gorm:"column:id;type:uuid;primaryKey"`
+	Email                      string     `gorm:"column:email;type:varchar(320);uniqueIndex;not null"`
+	DisplayName                string     `gorm:"column:display_name;type:varchar(100);not null"`
+	PasswordHash               string     `gorm:"column:password_hash;type:text;not null"`
+	Role                       string     `gorm:"column:role;type:varchar(16);not null;default:user;index"`
+	Active                     bool       `gorm:"column:active;not null;default:true;index"`
+	TokenVersion               int        `gorm:"column:token_version;not null;default:1"`
+	DarkMode                   bool       `gorm:"column:dark_mode;not null;default:false"`
+	IsPaid                     bool       `gorm:"column:is_paid;not null;default:false;index"`
+	UploadQuotaBytes           int64      `gorm:"column:upload_quota_bytes;not null;default:0;check:chk_users_upload_quota_bytes_nonnegative,upload_quota_bytes >= 0"`
+	CreditBalance              int64      `gorm:"column:credit_balance;not null;default:0"`
+	LastLoginAt                *time.Time `gorm:"column:last_login_at"`
+	CreatedAt                  time.Time  `gorm:"column:created_at;not null"`
+	UpdatedAt                  time.Time  `gorm:"column:updated_at;not null"`
 }
 
 func (User) TableName() string { return "users" }

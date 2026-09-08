@@ -244,6 +244,9 @@ func applyEnvironment(cfg *ServiceConfig) error {
 		cfg.Auth = &AuthConfig{SignupEnabled: true, TokenLifetime: Duration(12 * time.Hour), OAuth: &OAuthConfig{}}
 	}
 	problems = append(problems, setBool("OBJECTSHARE_SIGNUP_ENABLED", &cfg.Auth.SignupEnabled))
+	setString("OBJECTSHARE_EMAIL_VERIFICATION_PUBLIC_URL", &cfg.Auth.EmailVerification.PublicURL)
+	problems = append(problems, setBool("OBJECTSHARE_EMAIL_VERIFICATION_REQUIRE_FOR_PURCHASES", &cfg.Auth.EmailVerification.RequireForPurchases))
+	problems = append(problems, setBool("OBJECTSHARE_EMAIL_VERIFICATION_REQUIRE_FOR_UPLOADS", &cfg.Auth.EmailVerification.RequireForUploads))
 	setString("OBJECTSHARE_JWT_SECRET", &cfg.Auth.JWTSecret)
 	problems = append(problems, setDuration("OBJECTSHARE_JWT_LIFETIME", &cfg.Auth.TokenLifetime))
 	if cfg.Auth.OAuth == nil {
@@ -405,6 +408,9 @@ func (cfg *ServiceConfig) Validate() error {
 	}
 	if len(cfg.Auth.JWTSecret) < 32 || cfg.Auth.JWTSecret == "replace-with-at-least-32-random-bytes" {
 		return errors.New("auth jwt_secret must contain at least 32 non-placeholder bytes")
+	}
+	if err := cfg.validateEmailVerification(); err != nil {
+		return err
 	}
 	if cfg.SettingsKey == "" {
 		// Compatibility for existing installations. New deployments should use

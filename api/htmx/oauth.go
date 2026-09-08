@@ -220,6 +220,8 @@ func (handler *Handler) finishOAuthLogin(writer http.ResponseWriter, request *ht
 			return
 		}
 		user = &db.User{ID: uuid.NewString(), Email: email, DisplayName: displayName, PasswordHash: "", Role: db.RoleUser, Active: true, TokenVersion: 1}
+		verifiedAt := time.Now().UTC()
+		user.EmailVerifiedAt = &verifiedAt
 		identity.UserID = user.ID
 		if createErr := handler.users.CreateOAuthUser(request.Context(), user, identity); createErr != nil {
 			if !errors.Is(createErr, db.ErrConflict) {

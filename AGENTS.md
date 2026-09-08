@@ -78,4 +78,5 @@ These instructions apply to every change in this repository.
   preserve behavior, and explain any unavoidable breaking change before making it.
 - A syntax check alone is insufficient for configuration-heavy changes. Exercise
   the relevant behavior matrix and report what was actually verified.
-- See `MEMORY.md` for the concrete failures that established these rules.
+- Concrete failures that established these rules are recorded in personal global
+  Codex memory, outside this repository. Do not commit a project `MEMORY.md`.

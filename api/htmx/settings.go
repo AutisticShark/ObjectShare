@@ -193,6 +193,11 @@ func updateRuntimeFromForm(runtime *config.RuntimeConfig, request *http.Request)
 	problems = append(problems, formInt(request, "guest_retention_days", &runtime.Retention.GuestDays))
 	problems = append(problems, formInt(request, "unpaid_retention_days", &runtime.Retention.UnpaidDays))
 	runtime.Auth.SignupEnabled = checked(request, "signup_enabled")
+	if _, present := request.Form["verification_public_url"]; present {
+		runtime.Auth.EmailVerification.PublicURL = strings.TrimSpace(request.FormValue("verification_public_url"))
+		runtime.Auth.EmailVerification.RequireForPurchases = checked(request, "verification_require_for_purchases")
+		runtime.Auth.EmailVerification.RequireForUploads = checked(request, "verification_require_for_uploads")
+	}
 	runtime.Billing.Stripe.Enabled = checked(request, "stripe_enabled")
 	runtime.Billing.PublicURL = strings.TrimSpace(request.FormValue("billing_public_url"))
 	if request.FormValue("billing_credit_currency") != "" {

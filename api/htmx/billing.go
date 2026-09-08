@@ -21,6 +21,7 @@ type planCard struct {
 	DirectLinks                                                bool
 }
 type plansPageData struct {
+	VerificationRequired                                 bool
 	Version, CSRF, Error, CreditBalance, CreditRequestID string
 	User                                                 *db.User
 	Plans                                                []planCard
@@ -57,7 +58,7 @@ func (handler *Handler) Plans(writer http.ResponseWriter, request *http.Request)
 	if user != nil {
 		creditBalance = fmt.Sprintf("%d credits", user.CreditBalance)
 	}
-	handler.render(writer, "plans.html", plansPageData{Version: config.GetVersion(), CSRF: identityCSRF(request), User: user, Plans: cards, BillingEnabled: creditPurchases, CreditBalance: creditBalance, CreditRequestID: uuid.NewString()})
+	handler.render(writer, "plans.html", plansPageData{VerificationRequired: user != nil && user.EmailVerifiedAt == nil && handler.verificationSettings().RequireForPurchases, Version: config.GetVersion(), CSRF: identityCSRF(request), User: user, Plans: cards, BillingEnabled: creditPurchases, CreditBalance: creditBalance, CreditRequestID: uuid.NewString()})
 }
 
 func (handler *Handler) BillingTopUp(writer http.ResponseWriter, request *http.Request) {

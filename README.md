@@ -39,13 +39,16 @@ File links are unlisted by default; owners can restrict details and downloads to
 - [x] Upload quota
 - [x] CAPTCHA and API rate limiting
 - [x] File download
+- [x] Email sending
 - [x] Paid storage, retention, and direct-link plans
 - [x] Account credit, top-ups, and prepaid plan purchases
+- [x] Invoice generation
 - [ ] Better upload UI
 - [x] File sharing & permission
 - [x] File deletion
 - [x] Auto file deletion after days for guest and unpaid users
 - [x] User management
+- [ ] User ban & shadowban
 - [x] Administrator configuration dashboard
 - [x] Custom branding support
 - [x] Third-party OAuth login support
@@ -151,9 +154,9 @@ transport. The SDK bounds each attachment delivery stage; cancellation is checke
 before starting and the remaining deadline is divided across stages.
 
 Paid invoices use a separate persistent delivery queue with a five-minute retry
-and lease interval. Normal message sends do not retry automatically. Bulk mailing,
-bounce processing, and other automatic account emails remain outside this
-integration; account authentication behavior is unchanged.
+and lease interval. Normal message sends do not retry automatically. Bulk mailing
+and bounce processing remain outside this integration. Signup and email changes
+can send verification emails as described below; account login still uses JWTs.
 
 ## Quick start with Docker Compose
 
@@ -210,6 +213,54 @@ Generate an object-encryption key separately with `openssl rand -base64 32` and 
 ### User and administrator management
 
 Normal users manage their profile, password, appearance, paid plan, and account-owned uploads at `/account`. The light/dark theme choice is stored with the account, so it follows the user across browsers and is applied to every authenticated page. Administrators have dedicated `/admin/settings`, `/admin/plans`, and `/admin/users` interfaces for configuration, the purchasable plan catalog, and account management. These routes enforce the administrator role server-side and cookie-authenticated changes require the signed JWT CSRF value. The final active administrator cannot be disabled, demoted, or deleted. Disabling an account, changing its role, or resetting its password increments the account token version so every earlier JWT is rejected. Manual retention-exemption and quota changes do not invalidate JWTs because request authorization reloads current account entitlements from PostgreSQL. Deleting an account keeps its existing shared files available and converts them to anonymous uploads; those files then follow the guest retention policy if it is enabled.
+
+#### Signup email verification
+
+Under **Configuration → Email verification**, set **Public site URL** to the
+browser-visible origin (for example, `https://files.example.com`) and configure
+**Outgoing email**. Save and restart every replica. Password signup then signs the
+user in and sends a verification link; **My account** shows verification status and
+lets the user resend it. Email changes clear verification and send a new link.
+Delivery failures leave the account usable and unverified, with a retry message.
+No email credentials or actual configuration values are changed by upgrading.
+
+Administrators can independently enable **Require verified email to purchase
+plans** and **Require verified email for account uploads**. Both default to off.
+Enabling either requires a public site URL and an enabled email provider. These
+settings follow the existing encrypted database configuration and restart lifecycle.
+
+- Purchase restrictions cover invoice creation and payment initiation through
+  account credit or gateways, including the compatible purchase routes. Existing
+  paid access, legacy renewals, payment settlement already in progress, wallet
+  top-ups, and billing cancellation remain available.
+- Upload restrictions cover authenticated multipart uploads (single and batch),
+  direct upload authorization (single and batch), and direct upload completion.
+  Completion rechecks the stored owner even when its upload token is used without
+  a login JWT. Guest uploads retain their separate policy: **disable Allow guest
+  uploads as well to permit uploads only from verified accounts**.
+- Existing accounts and administrator-created accounts start unverified. No
+  administrator bypass is applied to purchases or account uploads; administrators
+  can still access Configuration and request verification from My account.
+  New OAuth accounts start verified because creation already requires a provider
+  verified email. Existing accounts are never merged or verified by matching an
+  OAuth email; they can use the verification link.
+- Links use 256-bit random tokens, store only a SHA-256 hash, expire after 24 hours,
+  and are consumed atomically once. A confirmation POST with CSRF protection
+  prevents mail scanners from consuming links on GET. A new link invalidates the
+  previous one. A PostgreSQL cooldown permits at most one send attempt per account
+  per minute, including across email changes and application replicas; configured
+  request limits add protection. Failed or ambiguous sends retain their token and
+  cooldown, since the provider may have accepted the email. Verification links
+  never log a user in and cannot serve as authentication JWTs.
+
+For first-import JSON, these options belong under **`auth.email_verification`**:
+`public_url`, `require_for_purchases`, and `require_for_uploads`. The URL must be an
+HTTP(S) origin without credentials, path, query, or fragment; secure cookies require
+HTTPS. First-import environment equivalents are
+`OBJECTSHARE_EMAIL_VERIFICATION_PUBLIC_URL`,
+`OBJECTSHARE_EMAIL_VERIFICATION_REQUIRE_FOR_PURCHASES`, and
+`OBJECTSHARE_EMAIL_VERIFICATION_REQUIRE_FOR_UPLOADS`. Once database configuration
+exists, use `/admin/settings`; environment or seed JSON changes do not overwrite it.
 
 Public signup is changed from the configuration dashboard. `auth.jwt_secret` and `auth.token_lifetime` remain bootstrap JSON settings and are intentionally not editable from the browser.
 

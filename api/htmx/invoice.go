@@ -18,6 +18,7 @@ import (
 )
 
 type invoicePageData struct {
+	VerificationRequired         bool
 	Version, CSRF                string
 	User                         *db.User
 	Invoice                      *db.Invoice
@@ -53,6 +54,9 @@ func (handler *Handler) invoiceFailure(writer http.ResponseWriter, request *http
 
 func (handler *Handler) CreateInvoice(writer http.ResponseWriter, request *http.Request) {
 	if !handler.parseAuthForm(writer, request) || !handler.verifyAuthenticatedMutationCSRF(writer, request) {
+		return
+	}
+	if !handler.purchaseAllowed(writer, request) {
 		return
 	}
 	repo := handler.invoiceRepo(writer)
@@ -131,7 +135,8 @@ func (handler *Handler) Invoice(writer http.ResponseWriter, request *http.Reques
 			gateways = append(gateways, gateway)
 		}
 	}
-	handler.render(writer, "invoice.html", invoicePageData{Version: config.GetVersion(), User: identityUser(request), CSRF: identityCSRF(request), Invoice: invoice, Gateways: gateways, CanPay: invoice.Status == "pending" && invoice.ExpiresAt.After(time.Now().UTC())})
+	verificationRequired := invoice.Kind == "plan" && handler.verificationSettings().RequireForPurchases && identityUser(request).EmailVerifiedAt == nil
+	handler.render(writer, "invoice.html", invoicePageData{Version: config.GetVersion(), User: identityUser(request), CSRF: identityCSRF(request), Invoice: invoice, Gateways: gateways, VerificationRequired: verificationRequired, CanPay: !verificationRequired && invoice.Status == "pending" && invoice.ExpiresAt.After(time.Now().UTC())})
 }
 
 func (handler *Handler) InvoicePDF(writer http.ResponseWriter, request *http.Request) {
@@ -155,6 +160,9 @@ func (handler *Handler) PayInvoice(writer http.ResponseWriter, request *http.Req
 	}
 	invoice := handler.ownedInvoice(writer, request)
 	if invoice == nil {
+		return
+	}
+	if invoice.Kind == "plan" && !handler.purchaseAllowed(writer, request) {
 		return
 	}
 	repo := handler.billing.(db.InvoiceRepository)

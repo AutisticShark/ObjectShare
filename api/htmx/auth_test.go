@@ -189,6 +189,11 @@ func (repository *authMemoryRepository) UpdateProfile(_ context.Context, id, ema
 	if !ok {
 		return db.ErrNotFound
 	}
+	if user.Email != email {
+		user.EmailVerifiedAt = nil
+		user.EmailVerificationHash = ""
+		user.EmailVerificationExpiresAt = nil
+	}
 	user.Email, user.DisplayName = email, name
 	return nil
 }

@@ -78,7 +78,7 @@
                   <div class="card-footer text-end">
                     <button id="upload-button" class="btn btn-primary" type="submit">Upload</button>
                   </div>
-                </form>{{else}}<div class="card-body"><div class="alert alert-info mb-0" role="status">Guest uploads are disabled. <a href="/login">Log in</a>{{if .SignupEnabled}} or <a href="/signup">create an account</a>{{end}} to upload files.</div></div>{{end}}
+                </form>{{else}}<div class="card-body"><div class="alert alert-info mb-0" role="status">{{if .User}}<a href="/account">Verify your email from My account</a> before uploading files.{{else}}Guest uploads are disabled. <a href="/login">Log in</a>{{if .SignupEnabled}} or <a href="/signup">create an account</a>{{end}} to upload files.{{end}}</div></div>{{end}}
               </div>
             </div>
           </div>

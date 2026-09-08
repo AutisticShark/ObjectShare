@@ -24,3 +24,6 @@ data/
 .tmp/
 build/
 .cache/
+
+# Personal Codex memory (stored globally, outside the repository)
+/MEMORY.md

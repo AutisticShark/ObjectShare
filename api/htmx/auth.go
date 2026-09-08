@@ -53,6 +53,7 @@ type accountFile struct {
 }
 
 type accountPageData struct {
+	VerificationEnabled, VerificationPurchases, VerificationUploads          bool
 	Version, CSRF, Error, Message, QuotaLabel, CreditBalance, CreditCurrency string
 	User                                                                     *db.User
 	Files                                                                    []accountFile
@@ -71,6 +72,7 @@ type creditTransactionRow struct {
 }
 
 type adminUserRow struct {
+	EmailVerified                                                                                   bool
 	ID, Email, DisplayName, Role, CreatedAt, LastLogin, StorageUsed, CreditBalance, CreditRequestID string
 	Active, IsCurrent, IsPaid                                                                       bool
 	UploadQuotaMiB                                                                                  int64
@@ -459,7 +461,7 @@ func (handler *Handler) Signup(writer http.ResponseWriter, request *http.Request
 		handler.internalError(writer, request, "issue signup JWT", err)
 		return
 	}
-	handler.redirect(writer, request, "/account?message=welcome")
+	handler.redirect(writer, request, "/account?message="+handler.verificationDeliveryMessage(request.Context(), user))
 }
 
 func (handler *Handler) Logout(writer http.ResponseWriter, request *http.Request) {
@@ -517,6 +519,9 @@ func (handler *Handler) renderAccount(writer http.ResponseWriter, request *http.
 		return
 	}
 	data := accountPageData{Version: config.GetVersion(), CSRF: identity.Claims.CSRF, User: identity.User, Files: rows, OAuthProviders: providers, HasPassword: identity.User.PasswordHash != "", Error: formError, Message: message, QuotaLabel: handler.uploadQuotaLabel(request, identity.User)}
+	data.VerificationEnabled = handler.verificationEnabled()
+	data.VerificationPurchases = handler.verificationSettings().RequireForPurchases
+	data.VerificationUploads = handler.verificationSettings().RequireForUploads
 	if handler.billing != nil {
 		data.CreditBalance = fmt.Sprintf("%d credits", identity.User.CreditBalance)
 		if handler.config.Billing != nil {
@@ -585,6 +590,15 @@ func (handler *Handler) UpdateProfile(writer http.ResponseWriter, request *http.
 	}
 	if err != nil {
 		handler.internalError(writer, request, "update profile", err)
+		return
+	}
+	if email != identity.User.Email {
+		user, loadErr := handler.users.UserByID(request.Context(), identity.User.ID)
+		if loadErr != nil {
+			handler.internalError(writer, request, "reload changed email", loadErr)
+			return
+		}
+		handler.redirect(writer, request, "/account?message="+handler.verificationDeliveryMessage(request.Context(), user))
 		return
 	}
 	handler.redirect(writer, request, "/account?message=profile")
@@ -827,7 +841,8 @@ func (handler *Handler) adminUsersPageData(ctx context.Context, identity *identi
 		storageUsed := usage[user.ID]
 		totalStorageUsed += storageUsed
 		rows = append(rows, adminUserRow{ID: user.ID, Email: user.Email, DisplayName: user.DisplayName, Role: user.Role,
-			Active: user.Active, CreatedAt: user.CreatedAt.UTC().Format("2006-01-02"), LastLogin: lastLogin,
+			EmailVerified: user.EmailVerifiedAt != nil,
+			Active:        user.Active, CreatedAt: user.CreatedAt.UTC().Format("2006-01-02"), LastLogin: lastLogin,
 			IsCurrent: user.ID == identity.User.ID, IsPaid: user.IsPaid, UploadQuotaMiB: user.UploadQuotaBytes / mebibyte,
 			StorageUsed: humanSize(storageUsed), CreditBalance: fmt.Sprintf("%d credits", user.CreditBalance), CreditRequestID: uuid.NewString()})
 	}
@@ -956,6 +971,10 @@ func (handler *Handler) verifyAuthenticatedMutationCSRF(writer http.ResponseWrit
 }
 
 func (handler *Handler) preAuthCSRF(writer http.ResponseWriter, request *http.Request) string {
+	return handler.preAuthCSRFWithSecret(writer, request, handler.csrfSecret)
+}
+
+func (handler *Handler) preAuthCSRFWithSecret(writer http.ResponseWriter, request *http.Request, secret []byte) string {
 	name := handler.preAuthCookieName()
 	value := ""
 	if cookie, err := request.Cookie(name); err == nil {
@@ -972,12 +991,16 @@ func (handler *Handler) preAuthCSRF(writer http.ResponseWriter, request *http.Re
 		value = base64.RawURLEncoding.EncodeToString(raw)
 		http.SetCookie(writer, &http.Cookie{Name: name, Value: value, Path: "/", HttpOnly: true, Secure: handler.config.SecureCookies, SameSite: http.SameSiteStrictMode})
 	}
-	mac := hmac.New(sha256.New, handler.csrfSecret)
+	mac := hmac.New(sha256.New, secret)
 	_, _ = mac.Write([]byte(value))
 	return base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
 }
 
 func (handler *Handler) verifyPreAuthCSRF(writer http.ResponseWriter, request *http.Request) bool {
+	return handler.verifyPreAuthCSRFWithSecret(writer, request, handler.csrfSecret)
+}
+
+func (handler *Handler) verifyPreAuthCSRFWithSecret(writer http.ResponseWriter, request *http.Request, secret []byte) bool {
 	cookie, err := request.Cookie(handler.preAuthCookieName())
 	if err != nil {
 		http.Error(writer, "Invalid CSRF token.", http.StatusForbidden)
@@ -988,7 +1011,7 @@ func (handler *Handler) verifyPreAuthCSRF(writer http.ResponseWriter, request *h
 		http.Error(writer, "Invalid CSRF token.", http.StatusForbidden)
 		return false
 	}
-	mac := hmac.New(sha256.New, handler.csrfSecret)
+	mac := hmac.New(sha256.New, secret)
 	_, _ = mac.Write([]byte(cookie.Value))
 	want := base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
 	if subtle.ConstantTimeCompare([]byte(request.FormValue("csrf_token")), []byte(want)) != 1 {
@@ -1047,6 +1070,15 @@ func (handler *Handler) redirectAfterLogin(writer http.ResponseWriter, request *
 }
 
 func accountMessage(value string) string {
+	if message, ok := map[string]string{
+		"verification-sent":     "Account saved. A verification email was accepted for delivery. Check your inbox and spam folder.",
+		"verification-disabled": "Account saved. Email verification is not configured yet; contact the administrator if needed.",
+		"verification-wait":     "Please wait at least one minute before requesting another verification email.",
+		"verification-failed":   "Account saved, but verification email delivery could not be confirmed. Check your inbox; if no email arrives, wait one minute and request another below.",
+		"email-verified":        "Your email address is already verified.",
+	}[value]; ok {
+		return message
+	}
 	return map[string]string{"welcome": "Welcome to ObjectShare.", "profile": "Profile updated.", "theme": "Appearance updated.", "password": "Password changed and all earlier JWTs were invalidated.", "oauth-linked": "OAuth login linked.", "oauth-unlinked": "OAuth login removed.", "topup-pending": "Checkout returned. Credit will appear after the gateway confirms payment.", "topup-complete": "Your account credit has been added.", "credit-plan": "Plan purchased with account credit."}[value]
 }
 

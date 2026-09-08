@@ -40,8 +40,9 @@ type RuntimeConfig struct {
 }
 
 type RuntimeAuthConfig struct {
-	SignupEnabled bool        `json:"signup_enabled"`
-	OAuth         OAuthConfig `json:"oauth"`
+	EmailVerification EmailVerificationConfig `json:"email_verification"`
+	SignupEnabled     bool                    `json:"signup_enabled"`
+	OAuth             OAuthConfig             `json:"oauth"`
 }
 
 func RuntimeFromService(cfg *ServiceConfig) RuntimeConfig {
@@ -66,6 +67,7 @@ func RuntimeFromService(cfg *ServiceConfig) RuntimeConfig {
 		runtime.Email = *cfg.Email
 	}
 	if cfg.Auth != nil {
+		runtime.Auth.EmailVerification = cfg.Auth.EmailVerification
 		runtime.Auth.SignupEnabled = cfg.Auth.SignupEnabled
 		if cfg.Auth.OAuth != nil {
 			runtime.Auth.OAuth = *cfg.Auth.OAuth
@@ -141,6 +143,7 @@ func applyRuntimeUnchecked(cfg *ServiceConfig, runtime RuntimeConfig) {
 		cfg.Auth = &AuthConfig{}
 	}
 	cfg.Auth.SignupEnabled = runtime.Auth.SignupEnabled
+	cfg.Auth.EmailVerification = runtime.Auth.EmailVerification
 	cfg.Auth.OAuth = &runtime.Auth.OAuth
 	cfg.Captcha = &runtime.Captcha
 	cfg.RateLimit = &runtime.RateLimit

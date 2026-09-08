@@ -190,6 +190,9 @@ func (handler *Handler) Index(writer http.ResponseWriter, request *http.Request)
 	settings := handler.uploadSettings()
 	user := identityUser(request)
 	canUpload := user != nil || settings.GuestEnabled
+	if user != nil && user.EmailVerifiedAt == nil && handler.verificationSettings().RequireForUploads {
+		canUpload = false
+	}
 	quotaLabel := handler.uploadQuotaLabel(request, user)
 	signupEnabled := handler.config.Auth != nil && handler.config.Auth.SignupEnabled
 	handler.render(writer, "index.html", struct {
@@ -865,6 +868,10 @@ func (handler *Handler) uploadSettings() config.UploadConfig {
 }
 
 func (handler *Handler) uploadAllowed(writer http.ResponseWriter, request *http.Request) bool {
+	if user := identityUser(request); user != nil && user.EmailVerifiedAt == nil && handler.verificationSettings().RequireForUploads {
+		http.Error(writer, "Verify your email from My account before uploading files.", http.StatusForbidden)
+		return false
+	}
 	if currentIdentity(request) == nil && !handler.uploadSettings().GuestEnabled {
 		http.Error(writer, "Guest uploads are disabled. Log in before uploading.", http.StatusForbidden)
 		return false
