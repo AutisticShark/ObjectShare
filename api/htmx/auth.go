@@ -13,6 +13,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -80,9 +81,12 @@ type adminUserRow struct {
 }
 
 type adminPageData struct {
-	Version, CSRF, Error, Message, TotalStorageUsed string
-	User                                            *db.User
-	Users                                           []adminUserRow
+	Version, CSRF, Error, Message, TotalStorageUsed   string
+	Search, Filter, PreviousURL, NextURL, QuerySuffix string
+	Page                                              int
+	TotalUsers                                        int64
+	User                                              *db.User
+	Users                                             []adminUserRow
 }
 
 var errInvalidAdminForm = errors.New("invalid administrator form")
@@ -509,20 +513,32 @@ func (handler *Handler) Account(writer http.ResponseWriter, request *http.Reques
 	handler.renderAccount(writer, request, identity, "", accountMessage(request.URL.Query().Get("message")))
 }
 
+func (handler *Handler) BillingOverview(writer http.ResponseWriter, request *http.Request) {
+	handler.renderAccountPage(writer, request, currentIdentity(request), "", "", "billing.html")
+}
+
 func (handler *Handler) renderAccount(writer http.ResponseWriter, request *http.Request, identity *identity, formError, message string) {
-	files, err := handler.users.ListFilesByOwner(request.Context(), identity.User.ID)
-	if err != nil {
-		handler.internalError(writer, request, "list account files", err)
-		return
-	}
-	rows := make([]accountFile, 0, len(files))
-	for _, file := range files {
-		rows = append(rows, accountFile{ID: file.FileID, Name: file.FileName, Size: humanSize(file.FileSize), CreatedAt: file.CreatedAt.UTC().Format("2006-01-02 15:04 UTC")})
-	}
-	providers, err := handler.oauthAccountProviders(request.Context(), identity.User.ID)
-	if err != nil {
-		handler.internalError(writer, request, "list linked OAuth identities", err)
-		return
+	handler.renderAccountPage(writer, request, identity, formError, message, "account.html")
+}
+
+func (handler *Handler) renderAccountPage(writer http.ResponseWriter, request *http.Request, identity *identity, formError, message, pageTemplate string) {
+	var rows []accountFile
+	var providers []oauthAccountProvider
+	if pageTemplate == "account.html" {
+		files, err := handler.users.ListFilesByOwner(request.Context(), identity.User.ID)
+		if err != nil {
+			handler.internalError(writer, request, "list account files", err)
+			return
+		}
+		rows = make([]accountFile, 0, len(files))
+		for _, file := range files {
+			rows = append(rows, accountFile{ID: file.FileID, Name: file.FileName, Size: humanSize(file.FileSize), CreatedAt: file.CreatedAt.UTC().Format("2006-01-02 15:04 UTC")})
+		}
+		providers, err = handler.oauthAccountProviders(request.Context(), identity.User.ID)
+		if err != nil {
+			handler.internalError(writer, request, "list linked OAuth identities", err)
+			return
+		}
 	}
 	data := accountPageData{Version: config.GetVersion(), CSRF: identity.Claims.CSRF, User: identity.User, Files: rows, OAuthProviders: providers, HasPassword: identity.User.PasswordHash != "", Error: formError, Message: message, QuotaLabel: handler.uploadQuotaLabel(request, identity.User)}
 	data.VerificationEnabled = handler.verificationEnabled()
@@ -572,7 +588,7 @@ func (handler *Handler) renderAccount(writer http.ResponseWriter, request *http.
 			data.PlanRenews = entitlements.CurrentPeriodEnd.UTC().Format("2006-01-02")
 		}
 	}
-	handler.render(writer, "account.html", data)
+	handler.render(writer, pageTemplate, data)
 }
 
 func (handler *Handler) UpdateProfile(writer http.ResponseWriter, request *http.Request) {
@@ -624,6 +640,12 @@ func (handler *Handler) UpdateTheme(writer http.ResponseWriter, request *http.Re
 		handler.internalError(writer, request, "update account theme", err)
 		return
 	}
+	if request.Header.Get("HX-Request") == "true" && request.FormValue("theme_toggle") == "true" {
+		writer.Header().Set("Cache-Control", "private, no-store")
+		writer.Header().Set("HX-Trigger", `{"objectshare:theme":{"theme":"`+theme+`"}}`)
+		writer.WriteHeader(http.StatusNoContent)
+		return
+	}
 	handler.redirect(writer, request, "/account?message=theme")
 }
 
@@ -664,7 +686,11 @@ func (handler *Handler) UpdateOwnPassword(writer http.ResponseWriter, request *h
 
 func (handler *Handler) AdminUsers(writer http.ResponseWriter, request *http.Request) {
 	identity := currentIdentity(request)
-	data, err := handler.adminUsersPageData(request.Context(), identity)
+	query, ok := adminDirectoryQuery(writer, request)
+	if !ok {
+		return
+	}
+	data, err := handler.adminUsersPageData(request.Context(), identity, query)
 	if err != nil {
 		handler.internalError(writer, request, "load user management data", err)
 		return
@@ -676,6 +702,10 @@ func (handler *Handler) AdminUsers(writer http.ResponseWriter, request *http.Req
 func (handler *Handler) AdminCreateUser(writer http.ResponseWriter, request *http.Request) {
 	identity := currentIdentity(request)
 	if !handler.parseAuthForm(writer, request) || !handler.verifyJWTCSRF(writer, request, identity) {
+		return
+	}
+	query, ok := adminDirectoryQuery(writer, request)
+	if !ok {
 		return
 	}
 	email, displayName, password, err := validatedRegistration(request)
@@ -703,6 +733,16 @@ func (handler *Handler) AdminCreateUser(writer http.ResponseWriter, request *htt
 	}
 	if err != nil {
 		handler.internalError(writer, request, "create administrator-managed user", err)
+		return
+	}
+	if request.Header.Get("HX-Request") == "true" {
+		data, err := handler.adminUsersPageData(request.Context(), identity, query)
+		if err != nil {
+			handler.internalError(writer, request, "reload user directory", err)
+			return
+		}
+		data.Message = adminMessage("created")
+		handler.render(writer, "admin_users.html", data)
 		return
 	}
 	handler.redirect(writer, request, "/admin/users?message=created")
@@ -794,6 +834,10 @@ func (handler *Handler) adminUserAction(writer http.ResponseWriter, request *htt
 	if !handler.parseAuthForm(writer, request) || !handler.verifyJWTCSRF(writer, request, identity) {
 		return
 	}
+	query, ok := adminDirectoryQuery(writer, request)
+	if !ok {
+		return
+	}
 	id := chi.URLParam(request, "id")
 	if parsed, err := uuid.Parse(id); err != nil || parsed.String() != strings.ToLower(id) {
 		http.NotFound(writer, request)
@@ -819,11 +863,28 @@ func (handler *Handler) adminUserAction(writer http.ResponseWriter, request *htt
 		handler.internalError(writer, request, "perform administrator user action", err)
 		return
 	}
+	// Re-render the same bounded directory for enhanced forms. Changes to the
+	// acting administrator still redirect through authentication before any new
+	// administrator data is returned (their role/token may have changed).
+	if request.Header.Get("HX-Request") == "true" && id != identity.User.ID {
+		data, err := handler.adminUsersPageData(request.Context(), identity, query)
+		if err != nil {
+			handler.internalError(writer, request, "reload user directory", err)
+			return
+		}
+		data.Message = adminMessage(message)
+		handler.render(writer, "admin_users.html", data)
+		return
+	}
 	handler.redirect(writer, request, "/admin/users?message="+message)
 }
 
 func (handler *Handler) renderAdminError(writer http.ResponseWriter, request *http.Request, identity *identity, message string) {
-	data, err := handler.adminUsersPageData(request.Context(), identity)
+	query, ok := adminDirectoryQuery(writer, request)
+	if !ok {
+		return
+	}
+	data, err := handler.adminUsersPageData(request.Context(), identity, query)
 	if err != nil {
 		handler.internalError(writer, request, "render admin error", err)
 		return
@@ -832,31 +893,40 @@ func (handler *Handler) renderAdminError(writer http.ResponseWriter, request *ht
 	handler.render(writer, "admin_users.html", data)
 }
 
-func (handler *Handler) adminUsersPageData(ctx context.Context, identity *identity) (adminPageData, error) {
-	users, err := handler.users.ListUsers(ctx)
+func adminDirectoryQuery(writer http.ResponseWriter, request *http.Request) (workspacePageData, bool) {
+	return workspaceQuery(writer, request, "admin", "disabled", "banned", "shadowbanned", "verified", "unverified")
+}
+
+func (handler *Handler) adminUsersPageData(ctx context.Context, identity *identity, query workspacePageData) (adminPageData, error) {
+	directory, err := handler.users.AdminUserDirectory(ctx, query.Search, query.Filter, query.Page)
 	if err != nil {
 		return adminPageData{}, err
 	}
-	usage, err := handler.users.StorageUsageByUser(ctx)
-	if err != nil {
-		return adminPageData{}, err
+	users := directory.Users
+	querySuffix := ""
+	if query.Search != "" || query.Filter != "" || query.Page != 0 {
+		querySuffix = "?" + url.Values{"q": {query.Search}, "filter": {query.Filter}, "page": {strconv.Itoa(query.Page)}}.Encode()
+	}
+	query.pagination("/admin/users", len(users) > db.WorkspacePageSize)
+	if len(users) > db.WorkspacePageSize {
+		users = users[:db.WorkspacePageSize]
 	}
 	rows := make([]adminUserRow, 0, len(users))
-	var totalStorageUsed int64
 	for _, user := range users {
 		lastLogin := "Never"
 		if user.LastLoginAt != nil {
 			lastLogin = user.LastLoginAt.UTC().Format("2006-01-02 15:04 UTC")
 		}
-		storageUsed := usage[user.ID]
-		totalStorageUsed += storageUsed
+		storageUsed := directory.Usage[user.ID]
 		rows = append(rows, adminUserRow{ID: user.ID, Email: user.Email, DisplayName: user.DisplayName, Role: user.Role,
 			EmailVerified: user.EmailVerifiedAt != nil, ModerationStatus: user.ModerationStatus,
 			Active: user.Active, CreatedAt: user.CreatedAt.UTC().Format("2006-01-02"), LastLogin: lastLogin,
 			IsCurrent: user.ID == identity.User.ID, IsPaid: user.IsPaid, UploadQuotaMiB: user.UploadQuotaBytes / mebibyte,
 			StorageUsed: humanSize(storageUsed), CreditBalance: fmt.Sprintf("%d credits", user.CreditBalance), CreditRequestID: uuid.NewString()})
 	}
-	return adminPageData{Version: config.GetVersion(), CSRF: identity.Claims.CSRF, User: identity.User, Users: rows, TotalStorageUsed: humanSize(totalStorageUsed)}, nil
+	return adminPageData{Version: config.GetVersion(), CSRF: identity.Claims.CSRF, User: identity.User, Users: rows,
+		TotalStorageUsed: humanSize(directory.TotalStorageUsed), TotalUsers: directory.TotalUsers,
+		Search: query.Search, Filter: query.Filter, Page: query.Page, PreviousURL: query.PreviousURL, NextURL: query.NextURL, QuerySuffix: querySuffix}, nil
 }
 
 func (handler *Handler) setupAvailable(writer http.ResponseWriter, request *http.Request) bool {
@@ -1052,6 +1122,20 @@ func safeLoginDestination(value string) string {
 		return loginDestinationAdminUsers
 	case loginDestinationAdminSettings:
 		return loginDestinationAdminSettings
+	case "files":
+		return "files"
+	case "billing":
+		return "billing"
+	case "plans":
+		return "plans"
+	case "invoices":
+		return "invoices"
+	case "admin":
+		return "admin"
+	case "admin-invoices":
+		return "admin-invoices"
+	case "admin-plans":
+		return "admin-plans"
 	default:
 		return ""
 	}
@@ -1063,6 +1147,20 @@ func (handler *Handler) redirectToLogin(writer http.ResponseWriter, request *htt
 		handler.redirect(writer, request, "/login?next="+loginDestinationAdminUsers)
 	case "/admin/settings":
 		handler.redirect(writer, request, "/login?next="+loginDestinationAdminSettings)
+	case "/files":
+		handler.redirect(writer, request, "/login?next=files")
+	case "/billing":
+		handler.redirect(writer, request, "/login?next=billing")
+	case "/plans":
+		handler.redirect(writer, request, "/login?next=plans")
+	case "/invoices":
+		handler.redirect(writer, request, "/login?next=invoices")
+	case "/admin":
+		handler.redirect(writer, request, "/login?next=admin")
+	case "/admin/invoices":
+		handler.redirect(writer, request, "/login?next=admin-invoices")
+	case "/admin/plans":
+		handler.redirect(writer, request, "/login?next=admin-plans")
 	default:
 		handler.redirect(writer, request, "/login")
 	}
@@ -1074,6 +1172,20 @@ func (handler *Handler) redirectAfterLogin(writer http.ResponseWriter, request *
 		handler.redirect(writer, request, "/admin/users")
 	case loginDestinationAdminSettings:
 		handler.redirect(writer, request, "/admin/settings")
+	case "files":
+		handler.redirect(writer, request, "/files")
+	case "billing":
+		handler.redirect(writer, request, "/billing")
+	case "plans":
+		handler.redirect(writer, request, "/plans")
+	case "invoices":
+		handler.redirect(writer, request, "/invoices")
+	case "admin":
+		handler.redirect(writer, request, "/admin")
+	case "admin-invoices":
+		handler.redirect(writer, request, "/admin/invoices")
+	case "admin-plans":
+		handler.redirect(writer, request, "/admin/plans")
 	default:
 		handler.redirect(writer, request, "/account")
 	}

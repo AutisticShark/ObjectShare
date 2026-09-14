@@ -9,12 +9,61 @@
   const status = form.querySelector("#upload-status");
   const progressWrap = form.querySelector("#upload-progress-wrap");
   const progress = form.querySelector("#upload-progress");
+  const recovery = form.querySelector("#upload-recovery");
+  const completedList = form.querySelector("#completed-uploads");
+  const retryButton = form.querySelector("#retry-upload");
+  let busy = false;
+  let attempt = null;
   const selectedMode = () => form.querySelector("input[name='upload_mode']:checked")?.value || "single";
-  const updateMode = () => { input.multiple = selectedMode() === "multiple"; input.value = ""; };
+  const selection = form.querySelector("#file-selection");
+  const dropzone = form.querySelector("#upload-dropzone");
+  const encrypted = form.dataset.clientEncryption === "true";
+  const describeSelection = () => {
+    const files = Array.from(input.files || []);
+    input.setCustomValidity("");
+    if (selection) {
+      selection.replaceChildren();
+      for (const file of files) {
+        const row = document.createElement("div");
+        row.textContent = `${file.name} · ${(file.size / (1024 * 1024)).toFixed(2)} MiB`;
+        selection.append(row);
+      }
+    }
+    if (selectedMode() === "single" && files.length > 1) {
+      input.setCustomValidity("Choose Multiple files to upload more than one file.");
+    } else if (files.length > Number(form.dataset.maxFiles)) {
+      input.setCustomValidity(`Choose up to ${form.dataset.maxFiles} files per batch.`);
+    } else {
+      const limit = Number(form.dataset.maxFileMib) * 1024 * 1024;
+      if (files.some(file => file.size + (encrypted ? 16 * Math.max(1, Math.ceil(file.size / (1024 * 1024))) : 0) > limit)) {
+        input.setCustomValidity(`Each file must fit within ${form.dataset.maxFileMib} MiB${encrypted ? ", including encryption overhead" : ""}.`);
+      }
+    }
+  };
+  const updateMode = () => { input.multiple = selectedMode() === "multiple"; input.value = ""; describeSelection(); };
   modes.forEach((mode) => mode.addEventListener("change", updateMode));
+  input.addEventListener("change", describeSelection);
+  if (dropzone) {
+    dropzone.addEventListener("dragover", event => { event.preventDefault(); dropzone.classList.add("is-dragging"); });
+    dropzone.addEventListener("dragleave", () => dropzone.classList.remove("is-dragging"));
+    dropzone.addEventListener("drop", event => {
+      event.preventDefault(); dropzone.classList.remove("is-dragging");
+      if (button.disabled || !event.dataTransfer?.files.length) return;
+      try { input.files = event.dataTransfer.files; describeSelection(); input.reportValidity(); }
+      catch { if (selection) selection.textContent = "Use Browse to choose files on this device."; }
+    });
+  }
+  const access = form.querySelector("#share-mode");
+  const explanation = form.querySelector("#sharing-explanation");
+  access?.addEventListener("change", () => {
+    if (explanation) explanation.textContent = {
+      link: "Anyone who receives the link can open the file. Encrypted files also need a file key.",
+      signed_in: "Recipients must log in before opening this file. Encrypted files also need a file key.",
+      private: "Only you can open this file. After uploading, use Share to add selected accounts."
+    }[access.value] || "";
+  });
   updateMode();
 
-  const encrypted = form.dataset.clientEncryption === "true";
   if (!encrypted && form.dataset.directUpload !== "true") return;
   if (encrypted && (!globalThis.ObjectShareCrypto || !globalThis.crypto?.subtle)) {
     status.textContent = "Client encryption requires HTTPS (or localhost), JavaScript, and Web Crypto support.";
@@ -29,7 +78,31 @@
     status.classList.remove("d-none", "alert-info", "alert-danger");
     status.classList.add(isError ? "alert-danger" : "alert-info");
   };
-  const responseError = async (response) => new Error((await response.text()).trim() || `Upload failed with HTTP ${response.status}.`);
+  const responseError = async (response) => {
+    const error = new Error((await response.text()).trim() || `Upload failed with HTTP ${response.status}.`);
+    error.status = response.status;
+    return error;
+  };
+  const controls = [input, ...modes, access, form.querySelector("#encryption-passphrase")].filter(Boolean);
+  const setBusy = (value) => {
+    busy = value;
+    button.disabled = value || attempt !== null;
+    controls.forEach(control => { control.disabled = value || attempt !== null; });
+    if (retryButton) retryButton.disabled = value;
+    form.setAttribute?.("aria-busy", String(value));
+  };
+  const showCompleted = () => {
+    if (!completedList || !attempt) return;
+    completedList.replaceChildren();
+    for (const index of attempt.completed) {
+      const row = document.createElement("li");
+      const link = document.createElement("a");
+      link.href = `/file/${encodeURIComponent(attempt.authorizations[index].file_id)}`;
+      link.textContent = `Uploaded: ${attempt.names[index]}`;
+      link.target = "_blank"; link.rel = "noopener";
+      row.append(link); completedList.append(row);
+    }
+  };
   const putFile = (url, file, contentType, index, total) => new Promise((resolve, reject) => {
     const upload = new XMLHttpRequest();
     upload.open("PUT", url); upload.setRequestHeader("Content-Type", contentType);
@@ -46,22 +119,67 @@
     upload.send(file);
   });
 
+  const sendDirectAttempt = async () => {
+    const current = attempt;
+    for (let index = 0; index < current.files.length; index += 1) {
+      if (current.completed.has(index)) continue;
+      const authorization = current.authorizations[index];
+      const file = current.files[index];
+      if (!current.uploaded.has(index)) {
+        await putFile(authorization.upload_url, file, file.type || "application/octet-stream", index, current.files.length);
+        current.uploaded.add(index);
+      }
+      showStatus(`Verifying ${current.names[index]}…`);
+      const complete = await fetch(authorization.complete_url, {method: "POST", headers: {"Content-Type": "application/json", ...csrfHeaders}, body: JSON.stringify({token: authorization.token})});
+      if (!complete.ok) throw await responseError(complete);
+      await complete.json();
+      current.completed.add(index);
+      current.files[index] = null; // Release the completed ciphertext Blob.
+      showCompleted();
+    }
+    const ids = current.authorizations.map(authorization => encodeURIComponent(authorization.file_id));
+    window.location.assign(ids.length === 1 ? `/file/${ids[0]}` : `/uploads/complete?ids=${ids.join(",")}`);
+  };
+  const failed = (error) => {
+    const message = error instanceof Error ? error.message : "Upload failed.";
+    showStatus(message, true);
+    setBusy(false);
+    if (attempt) {
+      recovery?.classList.remove("d-none");
+      showCompleted();
+      if (error?.status === 410 || error?.status === 422) {
+        if (retryButton) retryButton.disabled = true;
+        showStatus(`${message} Completed files remain available below. Start another upload for the unfinished files.`, true);
+      }
+    } else if (window.turnstile) window.turnstile.reset();
+  };
+  retryButton?.addEventListener("click", async () => {
+    if (busy || !attempt) return;
+    setBusy(true);
+    try { await sendDirectAttempt(); } catch (error) { failed(error); }
+  });
+
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
+    if (busy || attempt) return;
     let files = Array.from(input.files || []);
     if (!files.length) { showStatus("Choose at least one file first.", true); return; }
     if (selectedMode() === "single" && files.length !== 1) { showStatus("Single-file mode accepts exactly one file.", true); return; }
-    if (encrypted) {
-      if (files.length > Number(form.dataset.maxFiles)) { showStatus("Too many files for one upload batch.", true); return; }
-      const limit = Number(form.dataset.maxFileMib) * 1024 * 1024;
-      if (files.some(file => file.size + 16 * Math.max(1, Math.ceil(file.size / (1024 * 1024))) > limit)) {
-        showStatus("An encrypted file exceeds the upload size limit (including authentication tags).", true); return;
-      }
+    if (files.length > Number(form.dataset.maxFiles)) { showStatus("Too many files for one upload batch.", true); return; }
+    const limit = Number(form.dataset.maxFileMib) * 1024 * 1024;
+    if (files.some(file => file.size + (encrypted ? 16 * Math.max(1, Math.ceil(file.size / (1024 * 1024))) : 0) > limit)) {
+      showStatus("A file exceeds the upload size limit (including any encryption overhead).", true); return;
     }
-    button.disabled = true; progressWrap.classList.remove("d-none"); progressWrap.setAttribute("aria-hidden", "false");
+    // Capture the selected policy and form fields before awaiting encryption or
+    // disabling controls. A selection change must never change an active upload.
+    const shareMode = form.elements.share_mode.value;
+    const challenge = captchaToken();
+    const body = form.dataset.directUpload === "true" ? null : new FormData(form);
+    setBusy(true);
+    progressWrap.classList.remove("d-none"); progressWrap.setAttribute("aria-hidden", "false");
     progress.style.width = "0%"; progress.setAttribute("aria-valuenow", "0");
-    let authorizations = []; const uploaded = new Set();
     let rawKey;
+    let proxiedRequestStarted = false;
     try {
       const metadata = [];
       if (encrypted) {
@@ -75,41 +193,31 @@
         }
         rawKey.fill(0); rawKey = null; files = ciphertexts;
       }
-      if (form.dataset.directUpload !== "true") {
+      if (body) {
         showStatus(`Uploading ${files.length} encrypted file${files.length === 1 ? "" : "s"}…`);
-        const body = new FormData(form); body.delete("file");
+        body.delete("file");
         files.forEach((file, index) => { body.append("file", file, file.name); body.append("client_encryption", metadata[index]); });
+        proxiedRequestStarted = true;
         const response = await fetch(form.action, {method: "POST", headers: {...csrfHeaders, "HX-Request": "true"}, body});
         if (!response.ok) throw await responseError(response);
         const location = response.headers.get("HX-Redirect");
-        if (!location || !location.startsWith("/")) throw new Error("Upload finished but its result page is unavailable. Check My account before retrying.");
+        if (!location || !location.startsWith("/") || location.startsWith("//")) throw new Error("Upload finished but its result page is unavailable. Check My files before retrying.");
         window.location.assign(location); return;
       }
       showStatus(`Authorizing ${files.length} direct upload${files.length === 1 ? "" : "s"}…`);
       const begin = await fetch("/api/v1/uploads/direct/batch", {method: "POST", headers: {"Content-Type": "application/json", ...csrfHeaders}, body: JSON.stringify({
-        files: files.map((file, index) => ({client_encryption: metadata[index] || "", share_mode: form.elements.share_mode.value, file_name: file.name, file_size: file.size, content_type: file.type || "application/octet-stream"})), captcha_token: captchaToken()
+        files: files.map((file, index) => ({client_encryption: metadata[index] || "", share_mode: shareMode, file_name: file.name, file_size: file.size, content_type: file.type || "application/octet-stream"})), captcha_token: challenge
       })});
       if (!begin.ok) throw await responseError(begin);
-      authorizations = (await begin.json()).uploads;
-      const completedIDs = [];
-      for (let index = 0; index < files.length; index += 1) {
-        const authorization = authorizations[index]; const file = files[index]; const contentType = file.type || "application/octet-stream";
-        await putFile(authorization.upload_url, file, contentType, index, files.length);
-        uploaded.add(authorization.file_id);
-        showStatus(`Verifying ${file.name}…`);
-        const complete = await fetch(authorization.complete_url, {method: "POST", headers: {"Content-Type": "application/json", ...csrfHeaders}, body: JSON.stringify({token: authorization.token})});
-        if (!complete.ok) throw await responseError(complete);
-        const result = await complete.json(); completedIDs.push(authorization.file_id);
-        if (files.length === 1) { window.location.assign(result.location); return; }
-      }
-      window.location.assign(`/uploads/complete?ids=${completedIDs.join(",")}`);
+      const authorizations = (await begin.json()).uploads;
+      if (!Array.isArray(authorizations) || authorizations.length !== files.length) throw new Error("The upload authorization was incomplete. No files were sent.");
+      attempt = {files, names: files.map(file => file.name), authorizations, uploaded: new Set(), completed: new Set()};
+      await sendDirectAttempt();
     } catch (error) {
-      showStatus(error instanceof Error ? error.message : "Upload failed.", true); button.disabled = false;
-      if (window.turnstile) window.turnstile.reset();
-      authorizations.forEach((authorization) => {
-        if (uploaded.has(authorization.file_id)) return;
-        fetch(authorization.abort_url, {method: "POST", headers: {"Content-Type": "application/json", ...csrfHeaders}, body: JSON.stringify({token: authorization.token}), keepalive: true}).catch(() => {});
-      });
+      failed(error);
+      if (proxiedRequestStarted) {
+        showStatus(`${error instanceof Error ? error.message : "Upload could not be confirmed."} Check My files before uploading again; the server may have received some or all of this batch.`, true);
+      }
     } finally { rawKey?.fill(0); }
   });
 })();

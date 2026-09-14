@@ -50,6 +50,10 @@ func (repository *memoryApplicationRepository) CompleteUpload(context.Context, s
 	return nil
 }
 
+func (repository *memoryApplicationRepository) ClaimPendingUploadDeletion(context.Context, string) error {
+	return db.ErrNotFound
+}
+
 func (repository *memoryApplicationRepository) FinalizeUpload(context.Context, string, string, string, bool, string) error {
 	return nil
 }

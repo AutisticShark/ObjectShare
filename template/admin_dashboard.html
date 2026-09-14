@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="en"{{if .User.DarkMode}} data-bs-theme="dark"{{end}}>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Administration · {{(branding).SiteName}}</title>{{template "tabler-head" .}}</head>
+<body><div class="page">{{template "app-nav" .}}<div class="page-wrapper">{{template "admin-nav" "overview"}}
+<div class="page-header"><div class="container-xl"><div class="row g-3 align-items-center"><div class="col"><div class="page-pretitle">Administration</div><h1 class="page-title">Site overview</h1><p class="text-secondary mt-2 mb-0">Your users, storage, and billing at a glance.</p></div><div class="col-auto"><a class="btn" href="/admin/settings">Configure site</a></div></div></div></div>
+<main class="page-body"><div class="container-xl">
+<div class="row row-cards mb-4">
+<div class="col-6 col-xl-3"><a href="/admin/users" class="card card-link card-body h-100 text-reset"><div class="subheader">Registered users</div><div class="h1 my-2">{{.Stats.Users}}</div><div class="text-secondary">{{.Stats.DisabledUsers}} disabled · {{.Stats.BannedUsers}} banned · {{.Stats.ShadowbannedUsers}} shadowbanned</div></a></div>
+<div class="col-6 col-xl-3"><div class="card card-body h-100"><div class="subheader">Stored files</div><div class="h1 my-2">{{.Stats.Files}}</div><div class="text-secondary">{{.Storage}} · {{.Stats.PendingUploads}} pending uploads</div></div></div>
+<div class="col-6 col-xl-3"><a href="/admin/plans" class="card card-link card-body h-100 text-reset"><div class="subheader">Active plan periods</div><div class="h1 my-2">{{.Stats.ActivePlans}}</div><div class="text-secondary">Active or trialing, before expiry</div></a></div>
+<div class="col-6 col-xl-3"><a href="/admin/invoices" class="card card-link card-body h-100 text-reset"><div class="subheader">Paid invoices</div><div class="h1 my-2">{{.Stats.PaidInvoices}}</div><div class="text-secondary">{{.Stats.PendingInvoices}} pending · {{.Stats.UnsentReceipts}} unsent receipts</div></a></div>
+</div>
+<div class="row row-cards">
+<div class="col-lg-5"><div class="card h-100"><div class="card-header"><h2 class="card-title">Manage your website</h2></div><div class="list-group list-group-flush">
+<a class="list-group-item list-group-item-action py-3" href="/admin/users"><div class="fw-bold">Users &amp; access →</div><div class="text-secondary mt-1">Create accounts, set quotas, adjust credit, and manage bans.</div></a>
+<a class="list-group-item list-group-item-action py-3" href="/admin/plans"><div class="fw-bold">Plan catalog →</div><div class="text-secondary mt-1">Set prices, durations, storage, and download benefits.</div></a>
+<a class="list-group-item list-group-item-action py-3" href="/admin/invoices"><div class="fw-bold">Invoices &amp; payments →</div><div class="text-secondary mt-1">Find customer purchases, payment references, and receipt status.</div></a>
+<a class="list-group-item list-group-item-action py-3" href="/admin/settings"><div class="fw-bold">Configuration →</div><div class="text-secondary mt-1">Branding, storage, email, sign-in, payments, and upload policy.</div></a>
+</div><div class="card-footer text-secondary">Active storage backend: <strong>{{.StorageService}}</strong>. Counts reflect database records when this page loads; stored size excludes pending uploads and storage-provider overhead.</div></div></div>
+<div class="col-lg-7"><div class="card"><div class="card-header"><div><h2 class="card-title">Launch configuration</h2><p class="text-secondary mb-0 mt-1">Configuration indicators, not live provider or deployment tests.</p></div></div><div class="list-group list-group-flush">{{range .Checks}}<div class="list-group-item py-3"><div class="d-flex flex-wrap gap-2 justify-content-between"><a class="fw-bold" href="{{.URL}}">{{.Name}}</a><span class="badge {{if .Configured}}bg-green-lt{{else}}bg-secondary-lt{{end}}">{{if .Configured}}Configured{{else}}Not enabled{{end}}</span></div><p class="text-secondary mt-2 mb-0">{{.Detail}}</p></div>{{end}}</div></div></div>
+</div></div></main>{{template "footer" .}}</div></div></body></html>

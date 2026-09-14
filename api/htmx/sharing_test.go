@@ -334,6 +334,35 @@ func TestDownloadEntitlementsAndFormTokensCannotBypassSharing(t *testing.T) {
 	}
 }
 
+func TestSharingWorkspaceShowsSavedAccessAndOwnerOnlyKeyControls(t *testing.T) {
+	h, _, _, file, owner := sharingTestHandler(t)
+	file.ShareMode = db.SharePrivate
+	file.ClientEncryption = `{"version":1,"key_id":"public-metadata"}`
+	response := httptest.NewRecorder()
+	h.SharingPage(response, sharingRequest("GET", file.FileID, "", owner))
+	if response.Code != http.StatusOK {
+		t.Fatalf("sharing page: %d %s", response.Code, response.Body.String())
+	}
+	for _, expected := range []string{`id="encrypted-sharing"`, `id="create-encrypted-link"`, `id="share-passphrase"`, `Only you can access this file.`, `sharing.js?v=workspace-v2`} {
+		if !strings.Contains(response.Body.String(), expected) {
+			t.Fatalf("sharing page missing %q", expected)
+		}
+	}
+	if strings.Contains(response.Body.String(), `name="share-passphrase"`) || strings.Contains(response.Body.String(), `name="encryption_passphrase"`) {
+		t.Fatal("encryption passphrase must not be a successful native form field")
+	}
+	response = httptest.NewRecorder()
+	h.UpdateSharing(response, sharingRequest("POST", file.FileID, "share_mode=selected", owner))
+	if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), `data-unsaved="true"`) || !strings.Contains(response.Body.String(), `Only you can access this file.`) {
+		t.Fatal("validation failure misrepresented unsaved access as saved")
+	}
+	response = httptest.NewRecorder()
+	h.SharingPage(response, sharingRequest("GET", file.FileID, "", &db.User{ID: uuid.NewString(), Active: true, Role: db.RoleAdmin}))
+	if response.Code != http.StatusNotFound || strings.Contains(response.Body.String(), "public-metadata") {
+		t.Fatal("another account gained access to the owner's sharing controls")
+	}
+}
+
 func TestSharingHTMXValidationAndGuestTokenBinding(t *testing.T) {
 	h, _, _, file, owner := sharingTestHandler(t)
 	request := sharingRequest("POST", file.FileID, "share_mode=selected", owner)

@@ -38,21 +38,32 @@ File links are unlisted by default; owners can restrict details and downloads to
 
 - [x] Account credit, top-ups, and prepaid plan purchases
 - [x] Administrator configuration dashboard
+- [x] Administrator directory with account search, filters, and pagination
+- [x] Administrator invoice monitoring and receipt status
+- [x] Administrator site overview and launch configuration indicators
 - [x] Auto file deletion after days for guest and unpaid users
+- [x] Billing failure recovery with invoice and account navigation
+- [x] Billing overview with plan, credit, and invoice navigation
 - [x] CAPTCHA and API rate limiting
 - [x] Client-side encryption & decryption
 - [x] Custom branding support
+- [x] Direct-upload batch recovery without duplicate completed files
+- [x] Drag-and-drop uploads with file selection summaries and access guidance
 - [x] Email sending
+- [x] Encrypted sharing links and saved access guidance in the sharing workspace
 - [x] File deletion
 - [x] File download
 - [x] File sharing & permission
 - [x] File upload
 - [x] Hot configuration reload without a container restart
+- [x] In-place account theme switching that preserves the current workflow
 - [x] Invoice generation
 - [x] Paid storage, retention, and direct-link plans
+- [x] Searchable, paginated account file workspace
 - [x] Server-side encryption & decryption
 - [x] Single-file and multiple-file upload modes
 - [x] Third-party OAuth login support
+- [x] Unified workspace and administrator navigation
 - [x] Upload quota
 - [x] User ban & shadowban
 - [x] User management
@@ -69,6 +80,72 @@ HTMX is intentionally part of the frontend architecture. The native forms are ac
 - [ ] Google Cloud Storage
 - [ ] Microsoft Azure Blob Storage
 - [ ] Oracle Cloud Object Storage
+
+### Website workspace
+
+The signed-in navigation separates the common tasks:
+
+- **Upload** (`/`): choose single or multiple files, browse or drag files onto the
+  selector, review filenames and sizes, and choose access before uploading. Local
+  validation includes encryption overhead; the server still enforces all limits.
+  If a direct-upload batch is interrupted, keep the page open and choose **Retry
+  unfinished uploads**. Completed files have links and are skipped on retry.
+  The retry reuses the original uploads and encrypted bytes; it does not create
+  another copy or require unlocking the encryption key again. Uploads whose
+  authorization has expired must be selected for a new batch. Recovery state
+  stays in page memory and is lost when you leave or reload the page. For proxied
+  uploads, check My files before retrying an uncertain response.
+- **My files** (`/files`): search your completed uploads by filename and filter by
+  access level. Results are ordered newest first in pages of 25. **Share** opens
+  permissions; **Manage** opens details, decryption, rename, and deletion. Encrypted
+  recipients also need the file key, which owners can include in a link directly
+  from **Share** or generate from the file page.
+- **Billing** (`/billing`): see your current plan, credit balance, recent credit
+  activity, and available top-up methods. **Plans** shows the currency price and
+  credit equivalent for each fixed-duration purchase. **Review invoice** creates
+  the invoice before you choose how to pay. **Invoices & receipts** keeps your
+  purchase history and PDF downloads together. New prepaid plans do not renew
+  automatically; existing gateway subscription controls remain available. If a
+  browser payment fails, the error page keeps a route back to the invoice and
+  billing overview. Check invoice status before retrying an uncertain payment.
+- **My account** (`/account`): manage profile, email verification, login methods,
+  appearance, and encryption keys. Existing billing and upload sections remain
+  available here for compatibility.
+
+Administrators also see **Administration** (`/admin`). Its overview links to user
+management, the plan catalog, invoice monitoring, and configuration, with shared
+navigation across those pages. Counts include registered users and moderation
+states, completed files and their stored bytes, pending uploads, unexpired active
+or trialing plan periods, paid/pending invoices, and paid invoices whose receipt
+has not yet been accepted by the email provider. Counts are a database snapshot;
+file bytes exclude pending uploads and provider overhead, and invoice counts are
+not revenue totals.
+
+**Administration → Users** (`/admin/users`) shows 25 accounts per page. Search by
+name or email (case-insensitive literal text), or an exact account ID. Filters
+include administrators, disabled accounts, bans, shadowbans, and email
+verification. The account and storage totals cover all accounts even when the
+list is filtered; storage includes pending uploads and deletion retries until
+their records are removed. Enhanced management forms preserve the search and
+page after updates or validation errors. Actions affecting your own administrator
+account return through authentication; native forms return to the default user
+directory. Existing account creation, moderation, roles, quota, retention
+exemptions, credit adjustments, password resets, and deletion remain available.
+
+**Administration → Invoices** (`/admin/invoices`) provides a read-only, paginated
+monitor. Search by customer email, purchase name, exact invoice ID, or exact
+payment reference; filter by pending payment, paid, or unsent receipt. An unsent
+receipt can be queued or waiting for email configuration. A pending invoice can
+have an expired payment window. Reconcile ambiguous payments with the provider
+before making existing audited credit adjustments. This monitor does not grant
+access to customers' file contents or change their invoice payment state.
+
+The overview's launch indicators describe active configuration, not end-to-end
+health checks. Before launch, verify HTTPS, a real email delivery, gateway sandbox
+payments and signed webhooks, direct-upload CORS, and backup restoration. See the
+[production checklist](#production-checklist). Browser checks should cover desktop
+and narrow screens, light/dark themes, keyboard navigation, file selection,
+drag-and-drop, and encrypted upload/download/sharing with a second account.
 
 ### Client-side encryption and per-user keys
 
@@ -158,8 +235,8 @@ that a malicious client actually encrypted the submitted bytes.
 
 The implementation uses the browser's [Web Cryptography API](https://www.w3.org/TR/WebCryptoAPI/).
 Its PBKDF2 work factor follows [OWASP's PBKDF2 guidance](https://cheatsheetseries.owasp.org/cheatsheets/Password_Storage_Cheat_Sheet.html#pbkdf2).
-Run `node --test tests/client-encryption.test.cjs` for cryptographic round-trip and
-adversarial checks; `go test -mod=mod ./...` also runs them when Node is installed.
+Run `node --test tests/client-encryption.test.cjs tests/upload-selection.test.cjs`
+for cryptographic round-trip, adversarial, and upload selection checks; `go test -mod=mod ./...` also runs them when Node is installed.
 PostgreSQL migration/concurrency tests use an isolated schema when
 `OBJECTSHARE_TEST_POSTGRES_DSN` is set to a disposable PostgreSQL instance.
 
@@ -259,14 +336,32 @@ can send verification emails as described below; account login still uses JWTs.
 ```sh
 cp .env.example .env
 # Edit .env and replace the PostgreSQL, JWT, and settings encryption secrets.
+docker compose config --quiet
 docker compose up --build -d
 ```
 
-Open <http://localhost:8080>. Compose uses PostgreSQL 18 and a persistent local object volume. Stop it with `docker compose down`; add `--volumes` only when you intentionally want to delete all stored data.
+Open <http://localhost:8080> on the Docker host. The copied example sets
+`OBJECTSHARE_PORT=127.0.0.1:8080`, keeping first-time setup on the host's loopback
+interface. For a remote server, reach that address through an SSH tunnel while
+creating the first administrator. Existing `.env` files keep their current port
+binding; a bare value such as `8080` publishes on all host interfaces. Complete
+administrator setup before intentionally exposing the application.
+
+Compose uses PostgreSQL 18 and a persistent local object volume. Stop it with
+`docker compose down`; add `--volumes` only when you intentionally want to delete
+all stored data. `.dockerignore` excludes `.env` and `.env.*` files at every
+directory depth from the build context, while retaining the root `.env.example`.
+Custom configuration files with other names must also be excluded if they contain
+secrets. Build-context exclusion does not replace runtime secret storage.
 
 The first visit redirects to the one-time setup page. Create the initial administrator there; after that, `/setup` is locked. Administrators configure the application from **Configuration** (`/admin/settings`) and manage accounts from **Users**. Public signup is enabled by default and creates normal users.
 
 For HTTPS deployments, terminate TLS at a reverse proxy, enable secure cookies in the configuration dashboard, and save. The saving replica activates the change immediately and other replicas activate it at their next configuration reload. Back up both named volumes together so metadata, encrypted configuration, and objects remain consistent.
+
+The host-side proxy can connect to `127.0.0.1:8080`. A containerized proxy should
+join the application's Docker network and connect to `app:8080`; its own loopback
+address does not refer to the host or the application container. Set the public
+HTTPS URLs in the dashboard before enabling OAuth, billing, and verification email.
 
 ## Run from source
 
@@ -309,7 +404,7 @@ Generate an object-encryption key separately with `openssl rand -base64 32` and 
 
 ### User and administrator management
 
-Normal users manage their profile, password, appearance, paid plan, and account-owned uploads at `/account`. The light/dark theme choice is stored with the account, so it follows the user across browsers and is applied to every authenticated page. Administrators have dedicated `/admin/settings`, `/admin/plans`, and `/admin/users` interfaces for configuration, the purchasable plan catalog, and account management. These routes enforce the administrator role server-side and cookie-authenticated changes require the signed JWT CSRF value. The final active administrator cannot be disabled, demoted, or deleted. Disabling an account, changing its role, or resetting its password increments the account token version so every earlier JWT is rejected. Manual retention-exemption and quota changes do not invalidate JWTs because request authorization reloads current account entitlements from PostgreSQL. Deleting an account keeps its existing shared files available and converts them to anonymous uploads; those files then follow the guest retention policy if it is enabled.
+Normal users find uploads at `/files`, plan and payment controls at `/billing`, and profile, password, appearance, and encryption settings at `/account`. Existing account-page controls remain available. The light/dark theme choice is stored with the account, so it follows the user across browsers and is applied to every authenticated page. With HTMX available, the navigation theme toggle saves and applies that choice without navigating or replacing the page, preserving selected uploads and unsaved forms. If saving fails, the current theme stays in place and the toggle shows a retry message. The native form fallback still saves the preference and returns to My account. Administrators have a `/admin` overview, a read-only `/admin/invoices` monitor, and dedicated `/admin/settings`, `/admin/plans`, and `/admin/users` interfaces for configuration, the purchasable plan catalog, and account management. These routes enforce the administrator role server-side and cookie-authenticated changes require the signed JWT CSRF value. The final active administrator cannot be disabled, demoted, or deleted. Disabling an account, changing its role, or resetting its password increments the account token version so every earlier JWT is rejected. Manual retention-exemption and quota changes do not invalidate JWTs because request authorization reloads current account entitlements from PostgreSQL. Deleting an account keeps its existing shared files available and converts them to anonymous uploads; those files then follow the guest retention policy if it is enabled.
 
 #### Signup email verification
 
@@ -462,7 +557,7 @@ The uploader offers explicit single-file and multiple-file modes. A batch accept
 
 ### Paid plans and billing gateways
 
-Plans are managed entirely in ObjectShare and work without an enabled payment gateway. Each plan has one price, paid from the account balance. Stripe and PayPal are optional account-credit top-up providers, disabled by default. To accept top-ups, enable either or both in `/admin/settings` with one browser-visible public origin and the selected gateway credentials. Secrets are write-only in the administrator UI: blank preserves the encrypted database value, and the explicit clear control removes it. Gateway configuration is nested so additional providers can be added without changing the shared redirect and account-credit configuration:
+Plans are managed entirely in ObjectShare and work without an enabled payment gateway. Each plan has one price, quoted on an invoice and paid with account credit or an enabled gateway. Stripe and PayPal also support account-credit top-ups and are disabled by default. To accept top-ups, enable either or both in `/admin/settings` with one browser-visible public origin and the selected gateway credentials. Secrets are write-only in the administrator UI: blank preserves the encrypted database value, and the explicit clear control removes it. Gateway configuration is nested so additional providers can be added without changing the shared redirect and account-credit configuration:
 
 ```json
 "billing": {
@@ -507,7 +602,7 @@ Create plans directly at `/admin/plans`. Each plan defines its name, description
 
 Existing numeric plan prices and durations retain their values using the original database columns. Historical display labels and provider mappings remain stored solely for compatibility with subscriptions created before this change. An older plan without a positive numeric price and duration stays in the administrator catalog but is unavailable for new purchases until those fields are set; ObjectShare does not guess an amount or duration from a text label.
 
-Account credit is a PostgreSQL-backed prepaid wallet. One credit equals one whole unit of `credit_currency`; ObjectShare intentionally supports the common two-decimal currencies `AUD`, `BRL`, `CAD`, `CHF`, `CNY`, `CZK`, `DKK`, `EUR`, `GBP`, `HKD`, `ILS`, `MXN`, `MYR`, `NOK`, `NZD`, `PHP`, `PLN`, `SEK`, `SGD`, `THB`, and `USD`. Configure the permitted whole-credit top-up range in `/admin/settings`. Changing the currency affects future invoices only: existing credits and plan prices are not converted. A user chooses an amount and gateway from `/account`; the server records the expected account, currency, and amount before redirecting to Stripe Checkout or PayPal Checkout. The balance changes only when a signed Stripe payment event or an authenticated PayPal capture response matches all of those stored values. Gateway payment identifiers and persistent, account-scoped purchase/adjustment request IDs prevent replays from changing the balance twice across replicas. The account ledger is append-only during the account lifetime and is removed if an administrator deletes that account. Administrators can make a signed positive or negative correction from `/admin/users`, and every correction requires a reason.
+Account credit is a PostgreSQL-backed prepaid wallet. One credit equals one whole unit of `credit_currency`; ObjectShare intentionally supports the common two-decimal currencies `AUD`, `BRL`, `CAD`, `CHF`, `CNY`, `CZK`, `DKK`, `EUR`, `GBP`, `HKD`, `ILS`, `MXN`, `MYR`, `NOK`, `NZD`, `PHP`, `PLN`, `SEK`, `SGD`, `THB`, and `USD`. Configure the permitted whole-credit top-up range in `/admin/settings`. Changing the currency affects future invoices only: existing credits and plan prices are not converted. A user chooses an amount and gateway from `/billing` (also available in `/account`); the server records the expected account, currency, and amount before redirecting to Stripe Checkout or PayPal Checkout. The balance changes only when a signed Stripe payment event or an authenticated PayPal capture response matches all of those stored values. Gateway payment identifiers and persistent, account-scoped purchase/adjustment request IDs prevent replays from changing the balance twice across replicas. The account ledger is append-only during the account lifetime and is removed if an administrator deletes that account. Administrators can make a signed positive or negative correction from `/admin/users`, and every correction requires a reason.
 
 A plan purchase first creates an unpaid invoice. Paying that invoice atomically records payment and creates or extends access for its snapshotted duration. Account-credit payment also deducts the invoice price from the wallet; direct gateway payment leaves the wallet balance unchanged. Buying the same active local plan extends access from its current expiry; a different active plan cannot overlap it. The browser submits the plan ID and an account-scoped purchase request ID, never an authoritative amount. Insufficient balances and repeated requests cannot cause an extra debit. Access does not automatically renew; after it expires, the account returns to its standard entitlements and the user can buy a plan again. Administrator balance adjustments allow local plan purchases even when both top-up gateways are disabled.
 
@@ -519,7 +614,7 @@ New external subscription checkouts are disabled. Existing subscriptions retain 
 
 #### Invoices and payment confirmations
 
-At `/plans`, **Generate invoice** creates a 24-hour quotation without deducting
+At `/plans`, **Review invoice** creates a 24-hour quotation without deducting
 credit or granting access. The invoice snapshots the plan name, description,
 price, currency, access duration, quota, retention, direct-link benefits, and
 recipient email. Form retries return the same invoice. `/invoices` lists the
@@ -709,7 +804,9 @@ The CLI bootstrap is intentionally one-time and refuses to create an administrat
 
 ### File sharing and permissions
 
-Open **Sharing & permissions** from a file's details page, or **Share** beside an upload in **My account**. The dedicated owner page is `GET /file/{id}/sharing`; recipients use the existing `/file/{id}` link. The page includes a copy-link button and a native form enhanced with HTMX.
+Open **Sharing & permissions** from a file's details page, or **Share** beside an upload in **My files** or **My account**. The dedicated owner page is `GET /file/{id}/sharing`; recipients use the existing `/file/{id}` link. The page includes a copy-link button and a native form enhanced with HTMX. A saved-access summary states who can currently download. Unsaved permission edits disable link creation and copying until saved; selected-account fields appear when that access option is chosen.
+
+For a client-encrypted file, enter your separate encryption passphrase on the sharing page and select **Create sharing link**, then **Copy link**. You can also unlock with your encrypted key backup. The browser derives only this file's key and places it in the URL fragment; the account key and passphrase are never sent to recipients or the server. A plain file-page address remains available but cannot decrypt the file by itself. Wrong passphrases do not produce a link, and leaving the page clears the generated link. Recipients still need the saved access permissions; private files remain private even when someone has the key.
 
 | Access option | Who can view details and download? |
 | --- | --- |
@@ -739,7 +836,7 @@ Restricted downloads stream through the application to recheck authorization on 
 
 ### Object storage
 
-All five object-storage providers use private buckets and the S3 API. When server-side encryption is disabled, JavaScript-enabled browsers upload directly to a short-lived URL bound to one object key, exact size, and content type. ObjectShare creates a pending database record first, then verifies the stored object's size and content type before publishing its share page. Expired or aborted pending uploads are removed. Only authorization and completion requests pass through ObjectShare, so a reverse proxy or CDN in front of the app does not carry the file body.
+All five object-storage providers use private buckets and the S3 API. When server-side encryption is disabled, JavaScript-enabled browsers upload directly to a short-lived URL bound to one object key, exact size, and content type. ObjectShare creates a pending database record first, then verifies the stored object's size and content type before publishing its share page. Expired or aborted pending uploads are removed. Cancellation and expiry cleanup claim unfinished uploads in the database before deleting objects, so a stale request cannot delete an upload that has already completed. Failed object deletions remain reserved against the owner's quota and are retried during cleanup triggered by subsequent uploads. Only authorization and completion requests pass through ObjectShare, so a reverse proxy or CDN in front of the app does not carry the file body.
 
 Files shared with anyone use short-lived presigned download URLs unless ObjectShare server-side encryption is enabled. Signed-in, selected-account, and private downloads stream through ObjectShare after authorization on each request; provision application bandwidth and proxy download timeouts accordingly. The direct path cannot provide application-verified SHA checksums because ObjectShare never receives the file bytes; the details page labels those checksums as unavailable. Server-side encryption and direct upload are mutually exclusive because that encryption runs on the server. Client-side encryption supports direct uploads: browsers send ciphertext with the same size/type-bound authorization and finalize checks. Client-encrypted downloads stream through ObjectShare for same-origin browser decryption and access checks, including files shared with anyone.
 
@@ -801,6 +898,10 @@ See Tencent Cloud's [S3-compatible configuration guide](https://intl.cloud.tence
 
 ## Production checklist
 
+See the [production-readiness acceptance checklist](docs/production-readiness.md)
+for product and deployment release gates, the available local evidence, and
+checks that still require a browser or staging environment.
+
 - Put the service behind HTTPS and enable secure cookies.
 - Set stable, independent, high-entropy JWT and database-settings keys on every replica; rotate the JWT only when intentionally invalidating all tokens and never change the settings key without a supported re-encryption migration.
 - Disable public signup if accounts should be invitation-only.
@@ -813,6 +914,10 @@ See Tencent Cloud's [S3-compatible configuration guide](https://intl.cloud.tence
 - Keep bootstrap secrets in a secret manager; object-storage and object-encryption secrets are encrypted in PostgreSQL and remain write-only in the dashboard.
 - Monitor `/health/live` for process health and `/health/ready` for database readiness.
 - Test upgrades and restores in a staging environment before production rollout.
+
+Follow the [backup and restore runbook](docs/backup-and-restore.md) to capture the
+database, objects, and encryption settings together, rehearse recovery in isolation,
+and reconcile billing and authentication state before returning a restored site to service.
 
 ## Container publishing
 
@@ -839,7 +944,27 @@ go run golang.org/x/vuln/cmd/govulncheck@v1.7.0 ./...
 
 CI also verifies formatting and builds the container. Dependency and action updates are proposed weekly by Dependabot.
 
-Credit transaction and startup migration integration tests require PostgreSQL and are skipped unless `OBJECTSHARE_TEST_POSTGRES_DSN` is set. Point it at a **disposable test database**, never the production database, using a role that can create schemas. Run `go test -count=1 -run 'TestPostgres(Credit|Migration)' -v ./db` (with `-mod=mod` if your ignored vendor directory is stale). These tests create a unique `credit_test_*` schema, exercise fresh startup, upgrades of populated top-up tables, repeated startup, concurrent payment replay, concurrent spending, form resubmission, and transaction rollback, then remove only that schema. The ordinary test suite also covers gateway requests, payment validation, authorization, CSRF, configuration, and actual HTML template rendering without contacting payment providers.
+PostgreSQL integration tests are skipped unless `OBJECTSHARE_TEST_POSTGRES_DSN` is set. Point it at a **disposable test database**, never the production database, using a role that can create schemas. Run `go test -count=1 -run TestPostgres -v ./db` (with `-mod=mod` if your ignored vendor directory is stale). These tests create unique isolated schemas and remove them afterward. Coverage includes startup and migration, concurrent billing settlement, rollback, account encryption, sharing and moderation, administrator queries, and competing upload completion/deletion. The ordinary test suite also covers gateway requests, payment validation, authorization, CSRF, configuration, and actual HTML template rendering without contacting payment providers.
+
+The CI Go job supplies a disposable PostgreSQL service to the full race-enabled
+suite and checks that Node is available for the JavaScript tests. Its database
+credentials are test-only and require no repository secrets. Local race checks need
+CGO and a supported C compiler; see the [Go race detector requirements](https://go.dev/doc/articles/race_detector).
+
+The CI container job also loads the built image and starts a new, isolated Compose
+project. `tests/install-smoke.cjs` creates a synthetic first administrator, checks
+the admin and customer pages, uploads/downloads a private encrypted fixture, and
+repeats the access checks after restarting the application container. The job
+collects diagnostics on failure and removes its disposable volumes afterward.
+This smoke script is **only for a fresh disposable installation**: its CLI requires
+`OBJECTSHARE_SMOKE_ALLOW_SETUP=1` and a CI-specific Compose project name, accepts
+only a loopback target, and refuses a site where administrator setup is closed.
+
+For listing performance, run the optional PostgreSQL workspace benchmark described
+in [workspace performance](docs/workspace-performance.md). It seeds an isolated
+schema with 5,000 accounts, 50,000 file records, and 25,000 invoices, then checks
+bounded pages and measures serial and concurrent queries. This database benchmark
+does not replace staging HTTP, upload, or multi-replica load tests.
 
 ## License
 

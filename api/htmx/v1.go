@@ -869,11 +869,22 @@ func (handler *Handler) Ready(writer http.ResponseWriter, request *http.Request)
 }
 
 func (handler *Handler) render(writer http.ResponseWriter, name string, data any) {
-	writer.Header().Set("Content-Type", "text/html; charset=utf-8")
+	handler.renderStatus(writer, http.StatusOK, name, data)
+}
+
+// Render before committing headers so a template failure cannot masquerade as
+// a successful, partially rendered page (including pages containing forms).
+func (handler *Handler) renderStatus(writer http.ResponseWriter, status int, name string, data any) {
 	writer.Header().Set("Cache-Control", "private, no-store")
-	if err := handler.templates.ExecuteTemplate(writer, name, data); err != nil {
+	var page bytes.Buffer
+	if err := handler.templates.ExecuteTemplate(&page, name, data); err != nil {
 		handler.logger.Error("render template", "template", name, "error", err)
+		http.Error(writer, "This page could not be displayed. Please try again.", http.StatusInternalServerError)
+		return
 	}
+	writer.Header().Set("Content-Type", "text/html; charset=utf-8")
+	writer.WriteHeader(status)
+	_, _ = writer.Write(page.Bytes())
 }
 
 func (handler *Handler) internalError(writer http.ResponseWriter, request *http.Request, operation string, err error) {

@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"sort"
 	"strings"
 	"testing"
 	"testing/fstest"
@@ -178,11 +179,54 @@ func (repository *authMemoryRepository) ListUsers(context.Context) ([]db.User, e
 func (repository *authMemoryRepository) StorageUsageByUser(context.Context) (map[string]int64, error) {
 	usage := make(map[string]int64)
 	for _, file := range repository.files {
-		if file.FileOwner != nil && (file.UploadStatus == "pending" || file.UploadStatus == "complete" || file.UploadStatus == "deleting") {
+		if file.FileOwner != nil && (file.UploadStatus == "pending" || file.UploadStatus == "complete" || file.UploadStatus == "deleting" || file.UploadStatus == "aborting") {
 			usage[*file.FileOwner] += file.FileSize
 		}
 	}
 	return usage, nil
+}
+
+func (repository *authMemoryRepository) AdminUserDirectory(ctx context.Context, search, filter string, page int) (db.AdminDirectory, error) {
+	users, _ := repository.ListUsers(ctx)
+	usage, _ := repository.StorageUsageByUser(ctx)
+	result := db.AdminDirectory{Usage: usage, TotalUsers: int64(len(users))}
+	search = strings.ToLower(search)
+	for _, user := range users {
+		result.TotalStorageUsed += usage[user.ID]
+		if search != "" && !strings.Contains(strings.ToLower(user.Email), search) && !strings.Contains(strings.ToLower(user.DisplayName), search) && user.ID != search {
+			continue
+		}
+		match := filter == "" || (filter == "admin" && user.Role == db.RoleAdmin) || (filter == "disabled" && !user.Active) ||
+			(filter == "banned" && user.ModerationStatus == db.ModerationBanned) || (filter == "shadowbanned" && user.ModerationStatus == db.ModerationShadowbanned) ||
+			(filter == "verified" && user.EmailVerifiedAt != nil) || (filter == "unverified" && user.EmailVerifiedAt == nil)
+		if match {
+			result.Users = append(result.Users, user)
+		}
+	}
+	sort.Slice(result.Users, func(i, j int) bool {
+		a, b := result.Users[i], result.Users[j]
+		if a.Role != b.Role {
+			return a.Role < b.Role
+		}
+		if a.DisplayName != b.DisplayName {
+			return a.DisplayName < b.DisplayName
+		}
+		if a.Email != b.Email {
+			return a.Email < b.Email
+		}
+		return a.ID < b.ID
+	})
+	start := page * db.WorkspacePageSize
+	if start >= len(result.Users) {
+		result.Users = nil
+	} else {
+		end := start + db.WorkspacePageSize + 1
+		if end > len(result.Users) {
+			end = len(result.Users)
+		}
+		result.Users = result.Users[start:end]
+	}
+	return result, nil
 }
 func (repository *authMemoryRepository) UpdateProfile(_ context.Context, id, email, name string) error {
 	user, ok := repository.users[id]
@@ -615,6 +659,43 @@ func TestAccountThemePreferencePersistsAndRequiresCSRF(t *testing.T) {
 	protected.ServeHTTP(response, request)
 	if response.Code != http.StatusSeeOther || repository.users[user.ID].DarkMode {
 		t.Fatalf("light theme update status=%d dark=%t", response.Code, repository.users[user.ID].DarkMode)
+	}
+}
+
+func TestNavigationThemeUpdateDoesNotRedirectAndStillRequiresCSRF(t *testing.T) {
+	repository := newAuthMemoryRepository()
+	user := &db.User{ID: "60c628c1-85cb-4463-b895-a629c31bfa55", Email: "user@example.com", Role: db.RoleUser, Active: true, TokenVersion: 1}
+	repository.users[user.ID] = user
+	handler := newAuthTestHandler(t, repository, false)
+	token, claims := issueTestJWT(t, handler, user)
+	protected := handler.Authenticate(handler.RequireUser(http.HandlerFunc(handler.UpdateTheme)))
+	for _, test := range []struct {
+		theme, csrf string
+		status      int
+		wantDark    bool
+	}{
+		{"dark", "", http.StatusForbidden, false},
+		{"dark", claims.CSRF, http.StatusNoContent, true},
+		{"light", claims.CSRF, http.StatusNoContent, false},
+	} {
+		request := formRequest("/account/theme", url.Values{"theme": {test.theme}, "csrf_token": {test.csrf}, "theme_toggle": {"true"}})
+		request.Header.Set("HX-Request", "true")
+		request.AddCookie(&http.Cookie{Name: "objectshare_jwt", Value: token})
+		response := httptest.NewRecorder()
+		protected.ServeHTTP(response, request)
+		if response.Code != test.status || repository.users[user.ID].DarkMode != test.wantDark {
+			t.Fatalf("theme=%s status=%d dark=%v", test.theme, response.Code, repository.users[user.ID].DarkMode)
+		}
+		if response.Header().Get("HX-Redirect") != "" || response.Header().Get("Location") != "" {
+			t.Fatal("navigation toggle must not discard the current workflow")
+		}
+		if test.status == http.StatusNoContent {
+			if response.Header().Get("HX-Trigger") != `{"objectshare:theme":{"theme":"`+test.theme+`"}}` || response.Body.Len() != 0 {
+				t.Fatal("theme success must emit only the persisted preference event")
+			}
+		} else if response.Header().Get("HX-Trigger") != "" {
+			t.Fatal("rejected theme update emitted a success event")
+		}
 	}
 }
 

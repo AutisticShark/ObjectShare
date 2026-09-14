@@ -7,28 +7,16 @@
   {{if not .User}}{{template "auto-theme" .}}{{end}}
   {{template "tabler-head" .}}
   <script defer src="/assets/client-encryption.js?v=1"></script>
-  <script defer src="/assets/upload.js?v=client-encryption-v1"></script>
+  <script defer src="/assets/upload.js?v=retry-v3"></script>
   {{if .Captcha}}<script defer src="/assets/captcha.js"></script><script defer src="https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit&amp;onload=objectShareTurnstileReady"></script>{{end}}
 </head>
 <body>
   <div class="page">
-    <header class="navbar navbar-expand-md d-print-none">
-      <div class="container-xl">
-        <div class="navbar-brand navbar-brand-autodark">
-          <a href="/" class="text-decoration-none">{{template "brand" .}}</a>
-        </div>
-        <div class="navbar-nav flex-row order-md-last align-items-center gap-2 ms-auto">
-          {{if .User}}
-          <a class="nav-link" href="/plans">Plans</a>{{if eq .User.Role "admin"}}<a class="nav-link" href="/admin/users">Users</a>{{end}}
-          <a class="nav-link" href="/account">{{.User.DisplayName}}</a>
-          <form action="/logout" method="post" hx-post="/logout" hx-disabled-elt="button"><input type="hidden" name="csrf_token" value="{{.CSRF}}"><button class="btn btn-outline-secondary btn-sm" type="submit">Log out</button></form>
-          {{template "theme-toggle" .}}
-          {{else}}
+    {{if .User}}{{template "app-nav" .}}{{else}}
+    <header class="navbar navbar-expand-md d-print-none"><div class="container-xl"><div class="navbar-brand"><a href="/" class="text-decoration-none">{{template "brand" .}}</a></div><nav class="navbar-nav flex-row gap-3 ms-auto" aria-label="Main navigation"><a class="nav-link" href="/plans">Plans</a>
+
           <a class="nav-link" href="/login">Log in</a>{{if .SignupEnabled}}<a class="btn btn-primary btn-sm" href="/signup">Sign up</a>{{end}}
-          {{end}}
-        </div>
-      </div>
-    </header>
+</nav></div></header>{{end}}
 
     <div class="page-wrapper">
       {{template "brand-banner" .}}
@@ -50,10 +38,10 @@
             <div class="col-12 col-lg-8">
               <div class="card">
                 <div class="card-header">
-                  <h3 class="card-title">Uploader</h3>
+                  <h3 class="card-title">Upload &amp; share</h3>
                 </div>
                 {{if .CanUpload}}<form id="upload-form" action="/api/v1/upload" method="post" enctype="multipart/form-data"
-                      {{if .User}}data-client-encryption="true" data-max-file-mib="{{.MaxFileSize}}" data-max-files="{{.MaxFiles}}"{{end}} {{if .DirectUpload}}data-direct-upload="true"{{else if not .User}}hx-post="/api/v1/upload" hx-encoding="multipart/form-data" hx-disabled-elt="#upload-button"{{end}}>
+                      data-max-file-mib="{{.MaxFileSize}}" data-max-files="{{.MaxFiles}}" {{if .User}}data-client-encryption="true"{{end}} {{if .DirectUpload}}data-direct-upload="true"{{else if not .User}}hx-post="/api/v1/upload" hx-encoding="multipart/form-data" hx-disabled-elt="#upload-button"{{end}}>
                   {{if .User}}<input type="hidden" name="csrf_token" value="{{.CSRF}}">{{end}}
                   <div class="card-body">
                     {{if .User}}<div class="alert alert-info">Your browser encrypts account uploads before sending them. <a href="/account#client-encryption">Set up your encryption key in My account</a> first. Keep your encryption passphrase safe; a login password reset cannot recover encrypted files.</div>
@@ -64,23 +52,28 @@
                     </p>
                     <div class="mb-3">
                       <label class="form-label">Upload mode</label><div class="form-selectgroup mb-3"><label class="form-selectgroup-item"><input class="form-selectgroup-input" type="radio" name="upload_mode" value="single" checked><span class="form-selectgroup-label">Single file</span></label><label class="form-selectgroup-item"><input class="form-selectgroup-input" type="radio" name="upload_mode" value="multiple"><span class="form-selectgroup-label">Multiple files</span></label></div>
-                      <label class="form-label" for="file">Choose file</label>
-                      <input class="form-control" id="file" type="file" name="file" multiple required>
-                      <small class="form-hint">Maximum file size: {{.MaxFileSize}} MiB each; up to {{.MaxFiles}} files per batch.{{if .QuotaLabel}} {{.QuotaLabel}}{{end}}</small>
+                      <div id="upload-dropzone" class="upload-selection"><label class="form-label" for="file">1. Choose files</label><p class="text-secondary small">Browse your device or drag files into this area.</p>
+                      <input class="form-control" id="file" type="file" name="file" multiple required aria-describedby="file-limits"><div id="file-selection" class="upload-file-list small mt-2" role="status" aria-live="polite"></div></div>
+                      <small id="file-limits" class="form-hint">Maximum file size: {{.MaxFileSize}} MiB each; up to {{.MaxFiles}} files per batch.{{if .QuotaLabel}} {{.QuotaLabel}}{{end}}</small>
                     </div>
                     <div class="mb-3">
-                      <label class="form-label" for="share-mode">Who can access these files?</label>
-                      <select class="form-select" id="share-mode" name="share_mode"><option value="link">Anyone with the link</option><option value="signed_in">Signed-in users</option><option value="private">Private — only me</option></select>
+                      <label class="form-label" for="share-mode">2. Choose who can access them</label>
+                      <select class="form-select" id="share-mode" name="share_mode"><option value="link">Anyone with the link</option><option value="signed_in">Signed-in users</option><option value="private">Private — only me</option></select><p id="sharing-explanation" class="form-hint mt-2" aria-live="polite">Anyone who receives the link can open the file. Encrypted files also need a file key.</p>
                       <div class="form-hint">To share with selected accounts, upload privately and add recipients on the sharing page.{{if not .User}} Keep this browser's owner cookie to manage or access private uploads.{{end}}</div>
                     </div>
                     <div id="upload-status" class="alert alert-info d-none" role="status" aria-live="polite"></div>
+                    <div id="upload-recovery" class="d-none mb-3">
+                      <p>Keep this page open to retry unfinished files. Completed files will not be uploaded again.</p>
+                      <ul id="completed-uploads" class="list-unstyled space-y-2"></ul>
+                      <div class="d-flex flex-wrap gap-2"><button id="retry-upload" class="btn btn-primary" type="button">Retry unfinished uploads</button><a class="btn" href="/">Start another upload</a>{{if .User}}<a class="btn" href="/files" target="_blank" rel="noopener">Check My files</a>{{end}}</div>
+                    </div>
                     <div id="upload-progress-wrap" class="progress d-none" aria-hidden="true">
                       <div id="upload-progress" class="progress-bar" role="progressbar" style="width: 0%" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"></div>
                     </div>
                     {{template "captcha-widget" .Captcha}}
                   </div>
                   <div class="card-footer text-end">
-                    <button id="upload-button" class="btn btn-primary" type="submit"{{if .User}} disabled{{end}}>Upload</button>
+                    <button id="upload-button" class="btn btn-primary" type="submit"{{if .User}} disabled{{end}}>3. Upload files</button>
                   </div>
                 </form>{{else}}<div class="card-body"><div class="alert alert-info mb-0" role="status">{{if .User}}<a href="/account">Verify your email from My account</a> before uploading files.{{else}}Guest uploads are disabled. <a href="/login">Log in</a>{{if .SignupEnabled}} or <a href="/signup">create an account</a>{{end}} to upload files.{{end}}</div></div>{{end}}
               </div>

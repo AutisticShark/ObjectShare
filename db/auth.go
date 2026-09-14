@@ -141,7 +141,7 @@ func (repo *GormRepository) StorageUsageByUser(ctx context.Context) (map[string]
 	var rows []usageRow
 	err := repo.connection.WithContext(ctx).Model(&FileList{}).
 		Select("file_owner, COALESCE(SUM(file_size), 0) AS used").
-		Where("file_owner IS NOT NULL AND upload_status IN ?", []string{"pending", "complete", "deleting"}).
+		Where("file_owner IS NOT NULL AND upload_status IN ?", []string{"pending", "complete", "deleting", "aborting"}).
 		Group("file_owner").Scan(&rows).Error
 	if err != nil {
 		return nil, err

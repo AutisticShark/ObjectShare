@@ -7,6 +7,10 @@ build
 data
 vendor
 config.json
+# Compose and local environment secrets must never enter a build context.
+**/.env
+**/.env.*
+!.env.example
 *.exe
 *.test
 *.out

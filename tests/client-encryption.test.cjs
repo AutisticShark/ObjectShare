@@ -61,7 +61,7 @@ test('uploader sends ciphertext through proxied/direct single/batch flows and ne
     let submit;
     let destination;
     const transfers = [], requests = [], metadata = [];
-    const element = () => ({value:'', textContent:'', disabled:true, style:{}, classList:{remove(){},add(){}},setAttribute(){}});
+    const element = () => ({value:'', textContent:'', disabled:true, style:{}, classList:{remove(){},add(){}},setAttribute(){},addEventListener(){},setCustomValidity(){}});
     const status = element(), button = element(), input = {...element(),files};
     const fields = {'#file':input,'#upload-button':button,'#upload-status':status,'#upload-progress-wrap':element(),'#upload-progress':element(),'#encryption-passphrase':element(),"input[name='upload_mode']:checked":{value:count === 1 ? 'single':'multiple'}};
     const form = {dataset:{directUpload:String(direct),clientEncryption:'true',maxFiles:'10',maxFileMib:'10'},action:'/api/v1/upload', elements:{share_mode:{value:'private'}},querySelector:selector=>fields[selector] || null,querySelectorAll:()=>[],addEventListener:(_event,callback)=>{submit=callback;}};

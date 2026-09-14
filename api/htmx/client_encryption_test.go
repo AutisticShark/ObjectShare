@@ -215,7 +215,7 @@ func TestBrowserClientCryptography(t *testing.T) {
 	if err != nil {
 		t.Skip("Node is required for browser Web Crypto tests")
 	}
-	if output, err := exec.CommandContext(t.Context(), node, "--test", "../../tests/client-encryption.test.cjs").CombinedOutput(); err != nil {
+	if output, err := exec.CommandContext(t.Context(), node, "--test", "../../tests/client-encryption.test.cjs", "../../tests/upload-selection.test.cjs", "../../tests/sharing.test.cjs", "../../tests/theme.test.cjs", "../../tests/admin-users.test.cjs").CombinedOutput(); err != nil {
 		t.Fatalf("Web Crypto tests: %v\n%s", err, output)
 	}
 }

@@ -36,3 +36,33 @@
 .site-footer-message {
   white-space: pre-line;
 }
+
+.workspace-nav { gap: .75rem; }
+.workspace-nav .navbar-brand { min-width: 0; max-width: 100%; }
+.workspace-nav .nav-link { padding: .5rem .65rem; }
+.workspace-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: .25rem;
+  border-bottom: 1px solid var(--tblr-border-color);
+}
+.workspace-tabs a {
+  padding: .75rem 1rem;
+  color: var(--tblr-secondary);
+  border-bottom: 2px solid transparent;
+  text-decoration: none;
+}
+.workspace-tabs a.active {
+  color: var(--tblr-primary);
+  border-bottom-color: var(--tblr-primary);
+  font-weight: 600;
+}
+.workspace-tabs a:hover { color: var(--tblr-primary); }
+.workspace-filename { min-width: 12rem; max-width: 25rem; overflow-wrap: anywhere; }
+.upload-selection { padding: 1rem; border: 1px dashed var(--tblr-border-color); border-radius: var(--tblr-border-radius); }
+.upload-selection.is-dragging { border-color: var(--tblr-primary); background: var(--tblr-primary-lt); }
+.upload-file-list { max-height: 12rem; overflow: auto; overflow-wrap: anywhere; }
+@media (max-width: 767px) {
+  .workspace-nav .navbar-nav { width: 100%; margin-left: 0 !important; }
+  .workspace-nav .nav-link { padding: .35rem .5rem; }
+}

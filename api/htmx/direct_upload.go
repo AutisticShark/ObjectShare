@@ -1,6 +1,7 @@
 package htmx
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -260,11 +261,19 @@ func (handler *Handler) CompleteDirectUpload(writer http.ResponseWriter, request
 	if !handler.verifyAuthenticatedMutationCSRF(writer, request) {
 		return
 	}
-	file, token, ok := handler.directUploadIntent(writer, request)
+	file, token, ok := handler.directUploadIntentState(writer, request, true)
 	if !ok {
 		return
 	}
 	if !handler.directUploadVerificationAllowed(writer, request, file) {
+		return
+	}
+	// A response can be lost after the database commit. The same owner token
+	// may retrieve completion again, including the guest owner cookie. Never
+	// re-upload, revalidate storage, or mutate a completed record on this path.
+	if file.UploadStatus == "complete" {
+		http.SetCookie(writer, ownerCookie(file.FileID, token, handler.config.SecureCookies, 30*24*time.Hour))
+		writeJSON(writer, http.StatusOK, map[string]string{"location": "/file/" + file.FileID})
 		return
 	}
 	info, err := handler.direct.Stat(request.Context(), file.FileID)
@@ -274,11 +283,17 @@ func (handler *Handler) CompleteDirectUpload(writer http.ResponseWriter, request
 		return
 	}
 	if info.Size != file.FileSize || !strings.EqualFold(info.ContentType, file.ContentType) {
-		handler.discardUpload(request, file.FileID, true)
+		if err := handler.deletePendingUpload(request.Context(), file.FileID); err != nil && !errors.Is(err, db.ErrNotFound) {
+			handler.logger.Warn("discard mismatched direct upload", "file_id", file.FileID, "error", err)
+		}
 		http.Error(writer, "The uploaded object does not match the authorized upload.", http.StatusUnprocessableEntity)
 		return
 	}
 	if err := handler.repository.CompleteUpload(request.Context(), file.FileID); err != nil {
+		if errors.Is(err, db.ErrNotFound) {
+			http.Error(writer, "The upload state changed. Retry completion to check its status.", http.StatusConflict)
+			return
+		}
 		handler.internalError(writer, request, "complete direct upload", err)
 		return
 	}
@@ -294,18 +309,22 @@ func (handler *Handler) AbortDirectUpload(writer http.ResponseWriter, request *h
 	if !ok {
 		return
 	}
-	if err := handler.storage.Delete(request.Context(), file.FileID); err != nil {
-		handler.internalError(writer, request, "abort direct-upload object", err)
-		return
-	}
-	if err := handler.repository.Delete(request.Context(), file.FileID); err != nil && !errors.Is(err, db.ErrNotFound) {
-		handler.internalError(writer, request, "abort direct-upload intent", err)
+	if err := handler.deletePendingUpload(request.Context(), file.FileID); err != nil {
+		if errors.Is(err, db.ErrNotFound) {
+			http.NotFound(writer, request)
+			return
+		}
+		handler.internalError(writer, request, "abort direct upload", err)
 		return
 	}
 	writer.WriteHeader(http.StatusNoContent)
 }
 
 func (handler *Handler) directUploadIntent(writer http.ResponseWriter, request *http.Request) (*db.FileList, string, bool) {
+	return handler.directUploadIntentState(writer, request, false)
+}
+
+func (handler *Handler) directUploadIntentState(writer http.ResponseWriter, request *http.Request, allowComplete bool) (*db.FileList, string, bool) {
 	if handler.direct == nil {
 		http.NotFound(writer, request)
 		return nil, "", false
@@ -321,7 +340,7 @@ func (handler *Handler) directUploadIntent(writer http.ResponseWriter, request *
 		return nil, "", false
 	}
 	file, err := handler.repository.Get(request.Context(), fileID)
-	if errors.Is(err, db.ErrNotFound) || (err == nil && file.UploadStatus != "pending") {
+	if errors.Is(err, db.ErrNotFound) || (err == nil && file.UploadStatus != "pending" && !(allowComplete && file.UploadStatus == "complete")) {
 		http.NotFound(writer, request)
 		return nil, "", false
 	}
@@ -338,9 +357,13 @@ func (handler *Handler) directUploadIntent(writer http.ResponseWriter, request *
 		http.NotFound(writer, request)
 		return nil, "", false
 	}
+	if file.UploadStatus == "complete" {
+		return file, input.Token, true
+	}
 	if file.UploadExpiresAt == nil || time.Now().UTC().After(*file.UploadExpiresAt) {
-		_ = handler.storage.Delete(request.Context(), fileID)
-		_ = handler.repository.Delete(request.Context(), fileID)
+		if err := handler.deletePendingUpload(request.Context(), fileID); err != nil && !errors.Is(err, db.ErrNotFound) {
+			handler.logger.Warn("delete expired upload authorization", "file_id", fileID, "error", err)
+		}
 		http.Error(writer, "The upload authorization has expired.", http.StatusGone)
 		return nil, "", false
 	}
@@ -354,14 +377,23 @@ func (handler *Handler) cleanupExpiredUploads(request *http.Request) {
 		return
 	}
 	for _, file := range files {
-		if err := handler.storage.Delete(request.Context(), file.FileID); err != nil {
-			handler.logger.Warn("delete expired direct upload", "file_id", file.FileID, "error", err)
-			continue
-		}
-		if err := handler.repository.Delete(request.Context(), file.FileID); err != nil && !errors.Is(err, db.ErrNotFound) {
-			handler.logger.Warn("delete expired direct-upload intent", "file_id", file.FileID, "error", err)
+		if err := handler.deletePendingUpload(request.Context(), file.FileID); err != nil && !errors.Is(err, db.ErrNotFound) {
+			handler.logger.Warn("delete unfinished upload", "file_id", file.FileID, "error", err)
 		}
 	}
+}
+
+func (handler *Handler) deletePendingUpload(ctx context.Context, fileID string) error {
+	if err := handler.repository.ClaimPendingUploadDeletion(ctx, fileID); err != nil {
+		return err
+	}
+	if err := handler.storage.Delete(ctx, fileID); err != nil {
+		return err
+	}
+	if err := handler.repository.Delete(ctx, fileID); err != nil && !errors.Is(err, db.ErrNotFound) {
+		return err
+	}
+	return nil
 }
 
 func decodeJSON(writer http.ResponseWriter, request *http.Request, target any) error {

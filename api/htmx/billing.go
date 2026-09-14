@@ -17,6 +17,7 @@ import (
 )
 
 type planCard struct {
+	CurrencyPrice                                              string
 	ID, Name, Description, Price, Storage, Retention, Duration string
 	DirectLinks                                                bool
 }
@@ -39,6 +40,10 @@ func (handler *Handler) Plans(writer http.ResponseWriter, request *http.Request)
 		return
 	}
 	cards := make([]planCard, 0, len(plans))
+	currency := "USD"
+	if handler.config.Billing != nil {
+		currency = handler.config.Billing.CreditCurrency
+	}
 	creditPurchases := false
 	for _, plan := range plans {
 		retention := "No automatic expiry"
@@ -49,7 +54,8 @@ func (handler *Handler) Plans(writer http.ResponseWriter, request *http.Request)
 			continue
 		}
 		cards = append(cards, planCard{ID: plan.ID, Name: plan.Name, Description: plan.Description,
-			Price: fmt.Sprintf("%d credits", plan.Price), Duration: fmt.Sprintf("%d days", plan.DurationDays),
+			CurrencyPrice: fmt.Sprintf("%s %d.00", currency, plan.Price),
+			Price:         fmt.Sprintf("%d credits", plan.Price), Duration: fmt.Sprintf("%d days", plan.DurationDays),
 			Storage: humanSize(plan.StorageQuotaBytes), Retention: retention, DirectLinks: plan.DirectLinks})
 		creditPurchases = true
 	}

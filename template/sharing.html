@@ -4,7 +4,8 @@
   <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Share {{.FileName}} · {{(branding).SiteName}}</title>
   {{if not .User}}{{template "auto-theme" .}}{{end}}{{template "tabler-head" .}}
-  <script defer src="/assets/sharing.js"></script>
+  {{if .ClientEncrypted}}<script defer src="/assets/client-encryption.js?v=1"></script>{{end}}
+  <script defer src="/assets/sharing.js?v=workspace-v2"></script>
 </head>
 <body><div class="page">
   {{if .User}}{{template "app-nav" .}}{{else}}<header class="navbar"><div class="container-xl"><a class="navbar-brand text-decoration-none" href="/">{{template "brand" .}}</a><a class="btn" href="/login">Log in</a></div></header>{{end}}
@@ -14,13 +15,28 @@
       {{if .Message}}<div class="alert alert-success" role="status">{{.Message}}</div>{{end}}
       {{if .Error}}<div class="alert alert-danger" role="alert">{{.Error}}</div>{{end}}
       <div class="card mb-3"><div class="card-body">
-          {{if .ClientEncrypted}}<div class="alert alert-info">This file is client-encrypted. After setting access, <a href="/file/{{.FileID}}#encrypted-download">open the file page to create a sharing link containing its file key</a>. The ordinary link alone cannot decrypt it. Never share your account key or encryption passphrase.</div>{{end}}
+        <h2 class="card-title">Share this file</h2>
+        <p id="saved-access"><strong>Saved access:</strong> {{if eq .SavedMode "link"}}Anyone with the link can download.{{else if eq .SavedMode "signed_in"}}Recipients must sign in to download.{{else if eq .SavedMode "selected"}}Only the selected accounts can download after signing in.{{else}}Only you can access this file. Choose another access option below before sending a link.{{end}}</p>
+        <div id="unsaved-sharing" class="alert alert-warning" role="status" hidden>Permissions have unsaved changes. Save permissions below before creating or copying a link.</div>
+        {{if .ClientEncrypted}}
+        <p>This file is encrypted. Create a link with this file's key so permitted recipients can decrypt it. Never share your account key or encryption passphrase.</p>
+        <form id="encrypted-sharing" data-metadata="{{.ClientEncryption}}" data-share-url="{{.ShareURL}}">
+          <label class="form-label" for="share-passphrase">Your encryption passphrase</label><input class="form-control mb-3" id="share-passphrase" type="password" autocomplete="off" aria-describedby="share-passphrase-help"><div class="form-hint mb-3" id="share-passphrase-help">Use the separate passphrase you chose for encryption. It stays in your browser.</div>
+          <details class="mb-3"><summary>Recover with an encrypted key backup</summary><label class="form-label mt-2" for="share-key-backup">Encrypted key backup</label><input class="form-control" id="share-key-backup" type="file" accept=".json,application/json"><p class="form-hint">Choose your saved backup and enter its encryption passphrase above.</p></details>
+          <button class="btn btn-primary" id="create-encrypted-link" type="submit" disabled>Create sharing link</button>
+          <div id="encrypted-link-result" class="mt-3" hidden><label class="form-label" for="share-url">Sharing link with file key</label><div class="input-group"><input class="form-control" id="share-url" readonly><button class="btn" id="copy-share-link" type="button" hidden>Copy link</button></div></div>
+          <p class="form-hint mt-2">Saved permissions still apply. Access changes cannot revoke keys or copies already received.</p>
+          <details class="mt-3"><summary>File page address without the key</summary><p class="form-hint mt-2">This address opens the file page but cannot decrypt the file by itself.</p><input class="form-control" aria-label="File page address without decryption key" value="{{.ShareURL}}" readonly></details>
+          <noscript>JavaScript and HTTPS are required to create a link containing the file key.</noscript>
+        </form>
+        {{else}}
         <label class="form-label" for="share-url">Share link</label>
         <div class="input-group"><input class="form-control" id="share-url" value="{{.ShareURL}}" readonly><button class="btn" id="copy-share-link" type="button" hidden>Copy link</button><a class="btn" href="{{.ShareURL}}">Open</a></div>
         <div class="form-hint">Recipients use this link to view file details and download. Access follows the saved permissions below.</div>
+        {{end}}
         <div id="copy-status" class="text-secondary small mt-2" role="status" aria-live="polite"></div>
       </div></div>
-      <form class="card" action="/file/{{.FileID}}/sharing" method="post" hx-post="/file/{{.FileID}}/sharing" hx-target=".page" hx-select=".page" hx-swap="outerHTML" hx-disabled-elt="button[type='submit']">
+      <form id="sharing-permissions" data-unsaved="{{if .Error}}true{{else}}false{{end}}" class="card" action="/file/{{.FileID}}/sharing" method="post" hx-post="/file/{{.FileID}}/sharing" hx-target=".page" hx-select=".page" hx-swap="outerHTML" hx-disabled-elt="button[type='submit']">
         <input type="hidden" name="csrf_token" value="{{.CSRF}}">
         <div class="card-header"><h2 class="card-title">Who can access this file?</h2></div>
         <div class="card-body">
@@ -30,7 +46,7 @@
             <option value="selected"{{if eq .Mode "selected"}} selected{{end}}>Selected accounts</option>
             <option value="private"{{if eq .Mode "private"}} selected{{end}}>Private — only me</option>
           </select><div class="form-hint">Only you can change sharing, rename, or delete. Shared recipients can view and download.</div></div>
-          <div class="mb-3"><label class="form-label" for="recipients">Selected account email addresses</label><textarea class="form-control" id="recipients" name="recipients" rows="4" maxlength="20000" placeholder="person@example.com" aria-describedby="recipient-help">{{.Recipients}}</textarea><div class="form-hint" id="recipient-help">Used only for Selected accounts. Enter up to 50 existing account addresses, separated by commas or new lines. Recipients must log in; send them the link yourself. Saving another access option clears this list.</div></div>
+          <div class="mb-3" id="sharing-recipients"><label class="form-label" for="recipients">Selected account email addresses</label><textarea class="form-control" id="recipients" name="recipients" rows="4" maxlength="20000" placeholder="person@example.com" aria-describedby="recipient-help">{{.Recipients}}</textarea><div class="form-hint" id="recipient-help">Used only for Selected accounts. Enter up to 50 existing account addresses, separated by commas or new lines. Recipients must log in; send them the link yourself. Saving another access option clears this list.</div></div>
           {{if not .User}}<div class="alert alert-info">This browser's owner cookie controls this guest upload. Keep it to manage the file or open it when private.</div>{{end}}
           <p class="text-secondary mb-0">Changes apply to new requests. Downloads already in progress or copies already saved cannot be recalled. Storage download links issued while sharing with anyone remain usable until they expire.</p>
         </div><div class="card-footer text-end"><button class="btn btn-primary" type="submit">Save permissions</button></div>

@@ -36,6 +36,14 @@ func TestBrandingRendersAcrossFullPagesAndEscapesText(t *testing.T) {
 			{"oauth_error.html", oauthErrorData{}}, {"account.html", accountPageData{User: user}},
 			{"admin_users.html", adminPageData{User: user}}, {"admin_settings.html", adminSettingsPageData{User: user}},
 			{"admin_plans.html", adminPlansPageData{User: user}}, {"plans.html", plansPageData{User: user}},
+			{"files.html", workspacePageData{User: user, Page: 1}},
+			{"billing.html", accountPageData{User: user}},
+			{"invoices.html", invoicePageData{User: user}},
+			{"invoices.html", invoicePageData{User: user, Page: 1}},
+			{"invoices.html", invoicePageData{User: user, Invoices: []db.Invoice{{ID: "invoice", Name: "Plan", Currency: "USD", AmountMinor: 1000, Status: "paid"}}}},
+			{"billing_problem.html", billingProblemPageData{User: user, Message: "Payment needs attention"}},
+			{"admin_dashboard.html", overviewPageData{User: user}},
+			{"admin_invoices.html", workspacePageData{User: user, Page: 1}},
 			{"upload_results.html", map[string]any{"User": user, "Files": []any{}}},
 		} {
 			var output strings.Builder

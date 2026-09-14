@@ -1,6 +1,6 @@
 {{define "email-settings"}}
-<div class="col-12"><div class="card"><div class="card-header"><h3 class="card-title">Email delivery</h3></div><div class="card-body">
-<p class="text-secondary">Choose one provider for outgoing email. Save changes and restart every replica to activate them.</p>
+<div class="col-12"><div class="card"><div class="card-header"><h3 id="outgoing-email" class="card-title">Email delivery</h3></div><div class="card-body">
+<p class="text-secondary">Choose one provider for outgoing email. Saving activates changes in this replica; other replicas pick them up on their next configuration reload.</p>
 <div class="row">
 <div class="col-md-6 mb-3"><label class="form-label" for="email_provider">Provider</label><select class="form-select" id="email_provider" name="email_provider">
 <option value="none"{{if eq .Config.Email.Provider "none"}} selected{{end}}>Disabled</option>

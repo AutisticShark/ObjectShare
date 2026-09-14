@@ -1,0 +1,11 @@
+<!doctype html>
+<html lang="en"{{if .User.DarkMode}} data-bs-theme="dark"{{end}}>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Billing · {{(branding).SiteName}}</title>{{template "tabler-head" .}}</head>
+<body><div class="page">{{template "app-nav" .}}<div class="page-wrapper">
+<div class="page-header"><div class="container-xl"><div class="row g-3 align-items-center"><div class="col"><div class="page-pretitle">Your workspace</div><h1 class="page-title">Billing</h1><p class="text-secondary mt-2 mb-0">Manage your plan, add credit, and find your invoices.</p></div><div class="col-auto"><a class="btn btn-primary" href="/plans">Compare plans</a></div></div></div></div>
+<main class="page-body"><div class="container-xl">
+<nav class="workspace-tabs mb-4" aria-label="Billing"><a class="active" aria-current="page" href="/billing">Overview</a><a href="/plans">Plans</a><a href="/invoices">Invoices &amp; receipts</a></nav>
+<div class="row row-cards mb-4"><div class="col-md-4"><div class="card card-body h-100"><div class="subheader mb-2">1 · Choose a plan</div><p class="mb-0">Compare storage, retention, and duration. Plans are prepaid for a fixed period.</p></div></div><div class="col-md-4"><div class="card card-body h-100"><div class="subheader mb-2">2 · Review your invoice</div><p class="mb-0">Check the total and choose account credit or an available payment gateway.</p></div></div><div class="col-md-4"><div class="card card-body h-100"><div class="subheader mb-2">3 · Start using your plan</div><p class="mb-0">Benefits activate after confirmed payment. Your invoice stays in your billing history.</p></div></div></div>
+{{if .QuotaLabel}}<p class="text-secondary">{{.QuotaLabel}} <a href="/files">Manage files</a></p>{{end}}
+<div class="row row-cards">{{template "billing-summary" .}}</div>
+</div></main>{{template "footer" .}}</div></div></body></html>

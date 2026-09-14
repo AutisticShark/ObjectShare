@@ -19,7 +19,7 @@ import (
 
 // Use a disposable PostgreSQL database. Each test creates and removes only its
 // own random schema, and never migrates the database's public schema.
-func creditTestRepository(t *testing.T) *GormRepository {
+func creditTestRepository(t testing.TB) *GormRepository {
 	t.Helper()
 	settings := creditTestSettings(t)
 	pool := stdlib.OpenDB(*settings)
@@ -38,7 +38,7 @@ func creditTestRepository(t *testing.T) *GormRepository {
 	return &GormRepository{connection: connection}
 }
 
-func creditTestSettings(t *testing.T) *pgx.ConnConfig {
+func creditTestSettings(t testing.TB) *pgx.ConnConfig {
 	t.Helper()
 	dsn := os.Getenv("OBJECTSHARE_TEST_POSTGRES_DSN")
 	if dsn == "" {

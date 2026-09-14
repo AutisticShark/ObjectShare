@@ -17,6 +17,20 @@ jobs:
   go:
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:18.6-alpine3.24@sha256:d3e1620b530c944afa6e887d22eb899824da68e19c52024bf98f5220c88a65b2
+        env:
+          POSTGRES_USER: objectshare
+          POSTGRES_PASSWORD: objectshare-ci-only
+          POSTGRES_DB: objectshare_test
+        ports:
+          - 127.0.0.1:5432:5432
+        options: >-
+          --health-cmd "pg_isready -U objectshare -d objectshare_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -31,7 +45,11 @@ jobs:
           go mod verify
           test -z "$(git ls-files '*.go' | xargs gofmt -l)"
       - name: Test
-        run: go test -race -coverprofile=coverage.out ./...
+        env:
+          OBJECTSHARE_TEST_POSTGRES_DSN: host=127.0.0.1 port=5432 user=objectshare password=objectshare-ci-only dbname=objectshare_test sslmode=disable
+        run: |
+          node --version
+          go test -race -coverprofile=coverage.out ./...
       - name: Vet
         run: go vet ./...
       - name: Scan Go dependencies and call graph
@@ -43,6 +61,10 @@ jobs:
   container:
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    env:
+      COMPOSE_PROJECT_NAME: objectshare-ci-${{ github.run_id }}-${{ github.run_attempt }}
+      OBJECTSHARE_IMAGE: objectshare:test
+      OBJECTSHARE_PORT: 127.0.0.1:8080
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -53,6 +75,30 @@ jobs:
         with:
           context: .
           push: false
+          load: true
           tags: objectshare:test
           cache-from: type=gha
           cache-to: type=gha,mode=max
+      - name: Configure disposable installation
+        run: |
+          for key in POSTGRES_PASSWORD OBJECTSHARE_JWT_SECRET OBJECTSHARE_SETTINGS_KEY; do
+            value=$(openssl rand -hex 32)
+            echo "::add-mask::$value"
+            echo "$key=$value" >> "$GITHUB_ENV"
+          done
+      - name: Start fresh Compose installation
+        run: |
+          docker compose config --quiet
+          docker compose up --no-build --wait --wait-timeout 120
+      - name: Verify setup, storage, and restart
+        env:
+          OBJECTSHARE_SMOKE_ALLOW_SETUP: "1"
+        run: node tests/install-smoke.cjs
+      - name: Show container diagnostics on failure
+        if: failure()
+        run: |
+          docker compose ps --all
+          docker compose logs --no-color --tail 100
+      - name: Remove disposable installation
+        if: always()
+        run: docker compose down --volumes --remove-orphans

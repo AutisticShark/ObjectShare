@@ -1,0 +1,9 @@
+<!doctype html>
+<html lang="en"{{if .User.DarkMode}} data-bs-theme="dark"{{end}}>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Billing needs attention · {{(branding).SiteName}}</title>{{template "tabler-head" .}}</head>
+<body><div class="page">{{template "app-nav" .}}<div class="page-wrapper">
+<div class="page-header"><div class="container-xl"><div class="page-pretitle">Billing</div><h1 class="page-title">Billing needs attention</h1></div></div>
+<main class="page-body"><div class="container-xl"><div class="row justify-content-center"><div class="col-lg-8"><div class="card">
+<div class="card-body"><div class="alert alert-warning mb-0" role="alert">{{.Message}}</div></div>
+<div class="card-footer d-flex flex-wrap gap-2">{{if .InvoiceURL}}<a class="btn btn-primary" href="{{.InvoiceURL}}">Return to invoice</a>{{else}}<a class="btn btn-primary" href="/invoices">View your invoices</a>{{end}}<a class="btn" href="/billing">Billing overview</a><a class="btn" href="/plans">View plans</a></div>
+</div></div></div></div></main>{{template "footer" .}}</div></div></body></html>

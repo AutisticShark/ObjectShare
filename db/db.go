@@ -57,6 +57,7 @@ type Repository interface {
 	UploadUsage(context.Context, string) (UploadUsage, error)
 	Get(context.Context, string) (*FileList, error)
 	CompleteUpload(context.Context, string) error
+	ClaimPendingUploadDeletion(context.Context, string) error
 	FinalizeUpload(context.Context, string, string, string, bool, string) error
 	ExpiredUploads(context.Context, time.Time, int) ([]FileList, error)
 	Rename(context.Context, string, string) error
@@ -84,6 +85,7 @@ type AuthRepository interface {
 	LinkOAuthIdentity(context.Context, *OAuthIdentity) error
 	UnlinkOAuthIdentity(context.Context, string, string) error
 	ListUsers(context.Context) ([]User, error)
+	AdminUserDirectory(context.Context, string, string, int) (AdminDirectory, error)
 	StorageUsageByUser(context.Context) (map[string]int64, error)
 	UpdateProfile(context.Context, string, string, string) error
 	UpdateDarkMode(context.Context, string, bool) error
@@ -384,7 +386,7 @@ func effectiveUploadQuota(connection *gorm.DB, userID string, accountQuota int64
 }
 
 func uploadBytesUsed(connection *gorm.DB, userID string) (int64, error) {
-	active := []string{"pending", "complete", "deleting"}
+	active := []string{"pending", "complete", "deleting", "aborting"}
 	var used int64
 	if err := connection.Model(&FileList{}).Select("COALESCE(SUM(file_size), 0)").
 		Where("upload_status IN ? AND file_owner = ?", active, userID).Scan(&used).Error; err != nil {
@@ -439,10 +441,26 @@ func (repo *GormRepository) FinalizeUpload(ctx context.Context, fileID, sha256Su
 	return nil
 }
 
+// ClaimPendingUploadDeletion prevents completion from racing with object deletion.
+// An aborting upload cannot be completed. Keep that state until deletion succeeds
+// so later cleanup can retry after an object-store failure or process restart.
+func (repo *GormRepository) ClaimPendingUploadDeletion(ctx context.Context, fileID string) error {
+	result := repo.connection.WithContext(ctx).Model(&FileList{}).
+		Where("file_id = ? AND upload_status IN ?", fileID, []string{"pending", "aborting"}).
+		Update("upload_status", "aborting")
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 func (repo *GormRepository) ExpiredUploads(ctx context.Context, before time.Time, limit int) ([]FileList, error) {
 	var files []FileList
 	err := repo.connection.WithContext(ctx).
-		Where("upload_status = ? AND upload_expires_at < ?", "pending", before).
+		Where("(upload_status = ? AND upload_expires_at < ?) OR upload_status = ?", "pending", before, "aborting").
 		Order("upload_expires_at ASC").Limit(limit).Find(&files).Error
 	return files, err
 }

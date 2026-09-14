@@ -4,7 +4,7 @@
   <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Configuration · {{(branding).SiteName}}</title>{{template "tabler-head" .}}
 </head>
-<body><div class="page">{{template "app-nav" .}}<div class="page-wrapper">
+<body><div class="page">{{template "app-nav" .}}<div class="page-wrapper">{{template "admin-nav" "settings"}}
   <div class="page-header d-print-none"><div class="container-xl"><div class="row g-2 align-items-center">
     <div class="col"><div class="page-pretitle">Administration</div><h2 class="page-title">Configuration dashboard</h2><div class="text-secondary mt-1">Database-backed application policy, integrations, and storage</div></div>
     <div class="col-auto"><a class="btn btn-outline-secondary" href="/admin/users">Manage users</a></div>
@@ -22,7 +22,7 @@
         {{template "branding-settings" .}}
         {{template "email-settings" .}}
         <div class="col-12 col-xl-6"><div class="card h-100">
-          <div class="card-header"><h3 class="card-title">Application policy</h3></div><div class="card-body">
+          <div class="card-header"><h3 id="application-policy" class="card-title">Application policy</h3></div><div class="card-body">
             <div class="mb-3"><label class="form-label" for="max-file-size">Maximum file size (MiB)</label><input class="form-control" id="max-file-size" name="max_file_size" type="number" min="1" max="10240" value="{{.Config.MaxFileSize}}" required></div>
             <div class="mb-3"><label class="form-label" for="max-files-per-batch">Maximum files per batch</label><input class="form-control" id="max-files-per-batch" name="max_files_per_batch" type="number" min="1" max="100" value="{{.Config.Upload.MaxFilesPerBatch}}" required></div>
             <label class="form-check mb-3"><input class="form-check-input" name="guest_enabled" type="checkbox" {{if .Config.Upload.GuestEnabled}}checked{{end}}><span class="form-check-label">Allow guest uploads</span></label>
@@ -38,7 +38,7 @@
           </div>
         </div></div>
 
-        <div class="col-12"><div class="card"><div class="card-header"><h3 class="card-title">Billing gateways</h3></div><div class="card-body">
+        <div class="col-12"><div class="card"><div class="card-header"><h3 id="billing-gateways" class="card-title">Billing gateways</h3></div><div class="card-body">
           <div class="row g-3 mb-3"><div class="col-lg-6"><label class="form-label">Public origin</label><input class="form-control" name="billing_public_url" value="{{.Config.Billing.PublicURL}}" placeholder="https://share.example.com"><div class="form-hint">Gateway redirects return to this exact browser-visible origin.</div></div>
           <div class="col-lg-2"><label class="form-label">Credit currency</label><input class="form-control text-uppercase" name="billing_credit_currency" value="{{.Config.Billing.CreditCurrency}}" minlength="3" maxlength="3" required><div class="form-hint">One credit equals one whole currency unit.</div></div>
           <div class="col-lg-2"><label class="form-label">Minimum top-up</label><input class="form-control" name="billing_min_top_up_credits" type="number" min="1" max="1000000" value="{{.Config.Billing.MinTopUpCredits}}" required></div>

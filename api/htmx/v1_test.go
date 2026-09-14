@@ -59,7 +59,7 @@ func (repository *memoryRepository) UploadUsage(_ context.Context, userID string
 func (repository *memoryRepository) uploadUsage(userID string) db.UploadUsage {
 	usage := db.UploadUsage{Limit: repository.quotaBytes[userID]}
 	for _, file := range repository.files {
-		if file.UploadStatus != "pending" && file.UploadStatus != "complete" && file.UploadStatus != "deleting" {
+		if file.UploadStatus != "pending" && file.UploadStatus != "complete" && file.UploadStatus != "deleting" && file.UploadStatus != "aborting" {
 			continue
 		}
 		if file.FileOwner != nil && *file.FileOwner == userID {
@@ -105,12 +105,23 @@ func (repository *memoryRepository) FinalizeUpload(_ context.Context, id, sha256
 	file.UploadExpiresAt = nil
 	return nil
 }
+func (repository *memoryRepository) ClaimPendingUploadDeletion(_ context.Context, id string) error {
+	repository.mu.Lock()
+	defer repository.mu.Unlock()
+	file, ok := repository.files[id]
+	if !ok || (file.UploadStatus != "pending" && file.UploadStatus != "aborting") {
+		return db.ErrNotFound
+	}
+	file.UploadStatus = "aborting"
+	return nil
+}
+
 func (repository *memoryRepository) ExpiredUploads(_ context.Context, before time.Time, limit int) ([]db.FileList, error) {
 	repository.mu.Lock()
 	defer repository.mu.Unlock()
 	files := make([]db.FileList, 0, limit)
 	for _, file := range repository.files {
-		if file.UploadStatus == "pending" && file.UploadExpiresAt != nil && file.UploadExpiresAt.Before(before) {
+		if (file.UploadStatus == "pending" && file.UploadExpiresAt != nil && file.UploadExpiresAt.Before(before)) || file.UploadStatus == "aborting" {
 			files = append(files, *file)
 			if len(files) == limit {
 				break
@@ -664,7 +675,7 @@ func TestGuestEntryPagesUseAutomaticSystemTheme(t *testing.T) {
 	if err := parsed.ExecuteTemplate(&authenticated, "index.html", map[string]any{"Version": "test", "MaxFileSize": int64(1), "User": user}); err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(authenticated.String(), `/assets/theme.js`) {
+	if strings.Contains(authenticated.String(), `<script src="/assets/theme.js"></script>`) || !strings.Contains(authenticated.String(), `data-account-theme`) {
 		t.Fatal("authenticated upload page replaced the persisted account theme with the system theme")
 	}
 
@@ -769,6 +780,14 @@ func TestDirectUploadRequiresTokenAndVerifiesObject(t *testing.T) {
 	}
 	if len(completeResponse.Result().Cookies()) != 1 {
 		t.Fatal("owner cookie was not set")
+	}
+	// Simulate losing the first response and its Set-Cookie header. The exact
+	// reservation may be confirmed again without uploading or changing the file.
+	retryRequest := httptest.NewRequest(http.MethodPost, "/"+authorization.FileID, strings.NewReader(`{"token":"`+authorization.Token+`"}`))
+	retryResponse := httptest.NewRecorder()
+	router.ServeHTTP(retryResponse, retryRequest)
+	if retryResponse.Code != http.StatusOK || len(retryResponse.Result().Cookies()) != 1 || string(storage.objects[authorization.FileID]) != "hello" {
+		t.Fatalf("completion retry status=%d body=%q", retryResponse.Code, retryResponse.Body.String())
 	}
 }
 

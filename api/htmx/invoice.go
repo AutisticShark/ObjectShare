@@ -4,9 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"mime"
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/AutisticShark/ObjectShare/config"
@@ -18,6 +20,7 @@ import (
 )
 
 type invoicePageData struct {
+	ReceiptEnabled               bool
 	VerificationRequired         bool
 	Version, CSRF                string
 	User                         *db.User
@@ -27,6 +30,43 @@ type invoicePageData struct {
 	CanPay                       bool
 	Page, NextPage, PreviousPage int
 	HasNext                      bool
+}
+
+type billingProblemPageData struct {
+	Version, CSRF, Message, InvoiceURL string
+	User                               *db.User
+}
+
+// Browser form failures retain the HTTP error status and provide a safe way
+// back to billing. Bearer clients and HTMX callers keep the plain-text contract.
+func (handler *Handler) billingProblem(writer http.ResponseWriter, request *http.Request, status int, message string) {
+	writer.Header().Set("Cache-Control", "private, no-store")
+	identity := currentIdentity(request)
+	acceptsHTML := false
+	for _, accept := range strings.Split(request.Header.Get("Accept"), ",") {
+		mediaType, params, err := mime.ParseMediaType(strings.TrimSpace(accept))
+		if err == nil && mediaType == "text/html" {
+			quality := 1.0
+			if q, present := params["q"]; present {
+				quality, err = strconv.ParseFloat(q, 64)
+			}
+			acceptsHTML = err == nil && quality > 0 && quality <= 1
+			break
+		}
+	}
+	if identity == nil || identity.Transport == transportBearer || !acceptsHTML || request.Header.Get("HX-Request") == "true" {
+		http.Error(writer, message, status)
+		return
+	}
+	invoiceURL := ""
+	if strings.HasPrefix(request.URL.Path, "/invoices/") && strings.HasSuffix(request.URL.Path, "/pay") {
+		if id, err := uuid.Parse(chi.URLParam(request, "id")); err == nil {
+			invoiceURL = "/invoices/" + id.String()
+		}
+	}
+	handler.renderStatus(writer, status, "billing_problem.html", billingProblemPageData{
+		Version: config.GetVersion(), CSRF: identityCSRF(request), User: identity.User, Message: message, InvoiceURL: invoiceURL,
+	})
 }
 
 func (handler *Handler) invoiceRepo(writer http.ResponseWriter) db.InvoiceRepository {
@@ -42,13 +82,14 @@ func (handler *Handler) invoiceFailure(writer http.ResponseWriter, request *http
 	case errors.Is(err, db.ErrNotFound):
 		http.NotFound(writer, request)
 	case errors.Is(err, db.ErrInsufficientCredit):
-		http.Error(writer, "Your account does not have enough credit to pay this invoice.", http.StatusPaymentRequired)
+		handler.billingProblem(writer, request, http.StatusPaymentRequired, "Your account does not have enough credit to pay this invoice. Add credit from Billing or return to the invoice to choose an available payment gateway.")
 	case errors.Is(err, db.ErrConflict):
-		http.Error(writer, "This invoice cannot be paid with this method. Check its payment status and your current plan. A gateway payment already in progress must finish before another purchase.", http.StatusConflict)
+		handler.billingProblem(writer, request, http.StatusConflict, "This invoice cannot be paid with this method. Check its payment status and your current plan. A gateway payment already in progress must finish before another purchase.")
 	case errors.Is(err, db.ErrInvalidCredit):
-		http.Error(writer, "Invalid invoice request. Reload the plans page.", http.StatusBadRequest)
+		handler.billingProblem(writer, request, http.StatusBadRequest, "Invalid invoice request. Reload the plans page to review the current purchase options.")
 	default:
-		handler.internalError(writer, request, "invoice operation", err)
+		handler.logger.Error("invoice operation", "error", err)
+		handler.billingProblem(writer, request, http.StatusInternalServerError, "We could not confirm the result of this billing request. Check your invoice status before trying again. If you already paid, keep the payment reference and contact the site administrator.")
 	}
 }
 
@@ -136,7 +177,8 @@ func (handler *Handler) Invoice(writer http.ResponseWriter, request *http.Reques
 		}
 	}
 	verificationRequired := invoice.Kind == "plan" && handler.verificationSettings().RequireForPurchases && identityUser(request).EmailVerifiedAt == nil
-	handler.render(writer, "invoice.html", invoicePageData{Version: config.GetVersion(), User: identityUser(request), CSRF: identityCSRF(request), Invoice: invoice, Gateways: gateways, VerificationRequired: verificationRequired, CanPay: !verificationRequired && invoice.Status == "pending" && invoice.ExpiresAt.After(time.Now().UTC())})
+	receiptEnabled := handler.config.Email != nil && handler.config.Email.Provider != "" && handler.config.Email.Provider != "none"
+	handler.render(writer, "invoice.html", invoicePageData{ReceiptEnabled: receiptEnabled, Version: config.GetVersion(), User: identityUser(request), CSRF: identityCSRF(request), Invoice: invoice, Gateways: gateways, VerificationRequired: verificationRequired, CanPay: !verificationRequired && invoice.Status == "pending" && invoice.ExpiresAt.After(time.Now().UTC())})
 }
 
 func (handler *Handler) InvoicePDF(writer http.ResponseWriter, request *http.Request) {
@@ -177,7 +219,7 @@ func (handler *Handler) PayInvoice(writer http.ResponseWriter, request *http.Req
 	}
 	gateway := handler.billingGateways[gatewayKey]
 	if gateway == nil || handler.config.Billing == nil {
-		http.Error(writer, "This payment gateway is unavailable.", 503)
+		handler.billingProblem(writer, request, http.StatusServiceUnavailable, "This payment gateway is unavailable. Return to the invoice to review the available payment methods, or contact the site administrator.")
 		return
 	}
 	payment, err := repo.ReserveInvoiceGateway(request.Context(), identityUser(request).ID, invoice.ID, gatewayKey, time.Now().UTC())
@@ -196,7 +238,8 @@ func (handler *Handler) PayInvoice(writer http.ResponseWriter, request *http.Req
 	}
 	result, err := gateway.TopUp(request.Context(), billingTopUpInput{TopUpID: payment.ID, UserID: invoice.UserID, Email: invoice.Email, Currency: invoice.Currency, Credits: invoice.Credits, AmountMinor: invoice.AmountMinor, Description: "Invoice " + invoice.ID + ": " + invoice.Name, SuccessURL: success, CancelURL: base + "/invoices/" + invoice.ID})
 	if err != nil {
-		handler.internalError(writer, request, "create invoice payment", err)
+		handler.logger.Error("create invoice payment", "error", err)
+		handler.billingProblem(writer, request, http.StatusInternalServerError, "The payment provider did not confirm checkout. A payment may still be in progress. Return to your invoice and check its status before trying again; contact the site administrator if it remains unresolved.")
 		return
 	}
 	if err = repo.BindInvoiceCheckout(request.Context(), invoice.UserID, invoice.ID, gatewayKey, result.GatewayReference, result.Location); err != nil {

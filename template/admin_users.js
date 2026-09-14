@@ -53,7 +53,9 @@
     if (!pendingDialogID) return;
     const dialogID = pendingDialogID;
     pendingDialogID = "";
-    openDialog(dialogID);
+    // Successful enhanced actions now refresh the directory in place. Only
+    // validation errors should reopen a management dialog for correction.
+    if (document.getElementById(dialogID)?.querySelector('[role="alert"]')) openDialog(dialogID);
   });
 
   document.addEventListener("htmx:responseError", () => {
