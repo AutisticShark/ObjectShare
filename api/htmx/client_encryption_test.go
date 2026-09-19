@@ -8,6 +8,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"os/exec"
 	"strings"
 	"testing"
@@ -17,6 +18,42 @@ import (
 	"github.com/AutisticShark/ObjectShare/db"
 	"github.com/google/uuid"
 )
+
+func TestUploadEncryptionChoiceAndNativeFallback(t *testing.T) {
+	parsed, err := parseTemplates(os.DirFS("../.."), config.BrandingConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, signedIn := range []bool{false, true} {
+		data := map[string]any{"CanUpload": true, "MaxFileSize": 1, "MaxFiles": 10}
+		if signedIn {
+			data["User"] = &db.User{ID: "user", Active: true}
+		}
+		var output bytes.Buffer
+		if err := parsed.ExecuteTemplate(&output, "index.html", data); err != nil {
+			t.Fatal(err)
+		}
+		page := output.String()
+		if strings.Contains(page, `id="encrypt-files"`) != signedIn {
+			t.Fatal("encryption choice must be available only to signed-in users")
+		}
+		if signedIn {
+			for _, id := range []string{"encrypt-files", "encryption-passphrase", "upload-button"} {
+				_, tag, found := strings.Cut(page, `id="`+id+`"`)
+				if !found {
+					t.Fatalf("missing %s", id)
+				}
+				tag, _, _ = strings.Cut(tag, ">")
+				if strings.Contains(tag, " checked") || strings.Contains(tag, " required") || strings.Contains(tag, " disabled") != (id != "upload-button") {
+					t.Fatalf("unsafe native form defaults for %s: %s", id, tag)
+				}
+				if id == "encryption-passphrase" && strings.Contains(tag, "name=") {
+					t.Fatal("passphrase must never be submitted as a form field")
+				}
+			}
+		}
+	}
+}
 
 type clientKeyMemoryRepository struct {
 	*authMemoryRepository
@@ -100,16 +137,23 @@ func TestClientKeyAuthorizationValidationAndImmutableCreation(t *testing.T) {
 
 func TestClientEncryptionUploadValidationAcrossPaths(t *testing.T) {
 	for _, path := range []string{"proxied", "proxied-batch", "direct", "direct-batch"} {
-		for _, kind := range []string{"valid", "missing", "wrong-key", "size", "unknown-version", "guest"} {
+		for _, kind := range []string{"valid", "plaintext", "keyless-plaintext", "keyless-encrypted", "wrong-key", "size", "unknown-version", "guest", "selected-without-metadata"} {
+			if kind == "selected-without-metadata" && !strings.HasPrefix(path, "proxied") {
+				continue
+			}
 			t.Run(path+"/"+kind, func(t *testing.T) {
 				h, authRepo, _, _, owner := sharingTestHandler(t)
 				// Remove the fixture's existing file so rejected uploads must leave an empty repository.
 				authRepo.files = map[string]*db.FileList{}
 				vault := testClientVault(owner.ID)
-				h.repository = &clientKeyMemoryRepository{authMemoryRepository: authRepo, vaults: map[string]*db.ClientKeyVault{owner.ID: vault}}
+				repo := &clientKeyMemoryRepository{authMemoryRepository: authRepo, vaults: map[string]*db.ClientKeyVault{owner.ID: vault}}
+				if strings.HasPrefix(kind, "keyless-") {
+					delete(repo.vaults, owner.ID)
+				}
+				h.repository = repo
 				metadata := clientMetadata(vault, 3)
 				switch kind {
-				case "missing":
+				case "plaintext", "keyless-plaintext", "selected-without-metadata":
 					metadata = ""
 				case "wrong-key":
 					metadata = strings.Replace(metadata, vault.KeyID, base64.RawURLEncoding.EncodeToString(make([]byte, 32)), 1)
@@ -126,8 +170,13 @@ func TestClientEncryptionUploadValidationAcrossPaths(t *testing.T) {
 				if strings.HasPrefix(path, "proxied") {
 					body := new(bytes.Buffer)
 					form := multipart.NewWriter(body)
+					if kind == "selected-without-metadata" {
+						_ = form.WriteField("encrypt_files", "on")
+					}
 					for range count {
-						_ = form.WriteField("client_encryption", metadata)
+						if metadata != "" {
+							_ = form.WriteField("client_encryption", metadata)
+						}
 						part, _ := form.CreateFormFile("file", "encrypted.bin")
 						_, _ = part.Write(make([]byte, 19))
 					}
@@ -157,7 +206,7 @@ func TestClientEncryptionUploadValidationAcrossPaths(t *testing.T) {
 				case "direct-batch":
 					h.BeginDirectUploadBatch(w, r)
 				}
-				if kind == "valid" {
+				if kind == "valid" || kind == "plaintext" || kind == "keyless-plaintext" {
 					if w.Code != 201 && w.Code != 303 {
 						t.Fatalf("valid upload: %d %s", w.Code, w.Body.String())
 					}

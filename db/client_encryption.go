@@ -34,8 +34,8 @@ func (repo *GormRepository) ClientKey(ctx context.Context, userID string) (*Clie
 }
 
 func (repo *GormRepository) CreateClientKey(ctx context.Context, vault *ClientKeyVault) error {
-	// Serializing against upload reservations ensures encryption cannot be
-	// enabled concurrently with a new plaintext reservation for this account.
+	// Keep account key creation serialized with other account updates. A vault
+	// enables encrypted uploads without requiring encryption for every upload.
 	return repo.connection.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if err := tx.Exec("SELECT id FROM users WHERE id = ? FOR UPDATE", vault.UserID).Error; err != nil {
 			return err

@@ -17,8 +17,13 @@
   const selectedMode = () => form.querySelector("input[name='upload_mode']:checked")?.value || "single";
   const selection = form.querySelector("#file-selection");
   const dropzone = form.querySelector("#upload-dropzone");
-  const encrypted = form.dataset.clientEncryption === "true";
+  const encryptionChoice = form.querySelector("#encrypt-files");
+  const passphrase = form.querySelector("#encryption-passphrase");
+  const encryptionFields = form.querySelector("#encryption-fields");
+  const encryptionSelected = () => encryptionChoice?.checked === true;
+  const encryptionAvailable = !!(globalThis.ObjectShareCrypto && globalThis.crypto?.subtle);
   const describeSelection = () => {
+    const encrypted = encryptionSelected();
     const files = Array.from(input.files || []);
     input.setCustomValidity("");
     if (selection) {
@@ -64,11 +69,26 @@
   });
   updateMode();
 
-  if (!encrypted && form.dataset.directUpload !== "true") return;
-  if (encrypted && (!globalThis.ObjectShareCrypto || !globalThis.crypto?.subtle)) {
-    status.textContent = "Client encryption requires HTTPS (or localhost), JavaScript, and Web Crypto support.";
-    status.classList.remove("d-none"); return;
+  const updateEncryption = () => {
+    const encrypted = encryptionSelected();
+    if (encryptionFields) encryptionFields.hidden = !encrypted;
+    if (passphrase) {
+      passphrase.required = encrypted;
+      passphrase.disabled = !encrypted;
+      if (!encrypted) passphrase.value = "";
+    }
+    describeSelection();
+  };
+  if (encryptionChoice) {
+    encryptionChoice.disabled = !encryptionAvailable;
+    encryptionChoice.addEventListener("change", updateEncryption);
+    updateEncryption();
+    if (!encryptionAvailable) {
+      status.textContent = "Client encryption requires HTTPS (or localhost) and Web Crypto support. You can upload without client-side encryption.";
+      status.classList.remove("d-none");
+    }
   }
+  if (!encryptionChoice && form.dataset.directUpload !== "true") return;
   button.disabled = false;
   const csrfInput = form.querySelector("input[name='csrf_token']");
   const csrfHeaders = csrfInput ? {"X-CSRF-Token": csrfInput.value} : {};
@@ -83,11 +103,13 @@
     error.status = response.status;
     return error;
   };
-  const controls = [input, ...modes, access, form.querySelector("#encryption-passphrase")].filter(Boolean);
+  const controls = [input, ...modes, access].filter(Boolean);
   const setBusy = (value) => {
     busy = value;
     button.disabled = value || attempt !== null;
     controls.forEach(control => { control.disabled = value || attempt !== null; });
+    if (encryptionChoice) encryptionChoice.disabled = value || attempt !== null || !encryptionAvailable;
+    if (passphrase) passphrase.disabled = value || attempt !== null || !encryptionSelected();
     if (retryButton) retryButton.disabled = value;
     form.setAttribute?.("aria-busy", String(value));
   };
@@ -162,6 +184,9 @@
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
     if (busy || attempt) return;
+    const encrypted = encryptionSelected();
+    if (encrypted && !encryptionAvailable) { showStatus("Client encryption is unavailable. Use HTTPS and a browser with Web Crypto support.", true); return; }
+    if (encrypted && !passphrase.value) { showStatus("Enter your encryption passphrase first.", true); return; }
     let files = Array.from(input.files || []);
     if (!files.length) { showStatus("Choose at least one file first.", true); return; }
     if (selectedMode() === "single" && files.length !== 1) { showStatus("Single-file mode accepts exactly one file.", true); return; }
@@ -194,9 +219,9 @@
         rawKey.fill(0); rawKey = null; files = ciphertexts;
       }
       if (body) {
-        showStatus(`Uploading ${files.length} encrypted file${files.length === 1 ? "" : "s"}…`);
+        showStatus(`Uploading ${files.length}${encrypted ? " encrypted" : ""} file${files.length === 1 ? "" : "s"}…`);
         body.delete("file");
-        files.forEach((file, index) => { body.append("file", file, file.name); body.append("client_encryption", metadata[index]); });
+        files.forEach((file, index) => { body.append("file", file, file.name); body.append("client_encryption", metadata[index] || ""); });
         proxiedRequestStarted = true;
         const response = await fetch(form.action, {method: "POST", headers: {...csrfHeaders, "HX-Request": "true"}, body});
         if (!response.ok) throw await responseError(response);

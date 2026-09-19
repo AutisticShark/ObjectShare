@@ -92,6 +92,12 @@ func (handler *Handler) ClientKey(writer http.ResponseWriter, request *http.Requ
 }
 
 func (handler *Handler) validateClientEncryption(request *http.Request, raw string, storedSize int64) error {
+	if raw == "" {
+		if request.MultipartForm != nil && len(request.MultipartForm.Value["encrypt_files"]) > 0 {
+			return fmt.Errorf("%w: encryption was selected but encrypted file metadata is missing", errInvalidUpload)
+		}
+		return nil
+	}
 	identity := currentIdentity(request)
 	var vault *db.ClientKeyVault
 	if identity != nil {
@@ -102,12 +108,6 @@ func (handler *Handler) validateClientEncryption(request *http.Request, raw stri
 				return err
 			}
 		}
-	}
-	if raw == "" {
-		if vault != nil {
-			return fmt.Errorf("%w: this account requires client-encrypted uploads", errInvalidUpload)
-		}
-		return nil
 	}
 	if identity == nil || vault == nil {
 		return fmt.Errorf("%w: set up your account encryption key first", errInvalidUpload)

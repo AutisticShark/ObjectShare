@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
   <title>My account · {{(branding).SiteName}}</title>{{template "tabler-head" .}}
-<script defer src="/assets/client-encryption.js?v=1"></script></head>
+<script defer src="/assets/client-encryption.js?v=2"></script></head>
 <body><div class="page">{{template "app-nav" .}}<div class="page-wrapper">
   <div class="page-header d-print-none"><div class="container-xl"><div class="row g-2 align-items-center"><div class="col"><div class="page-pretitle">Account</div><h2 class="page-title">My account</h2></div><div class="col-auto ms-auto"><a class="btn btn-primary" href="/">Upload a file</a></div></div></div></div>
   <div class="page-body"><div class="container-xl">
@@ -42,7 +42,7 @@
 	  </div></div></div>{{end}}
       <div class="col-12" id="client-encryption"><form id="encryption-setup" class="card" method="post">
         <div class="card-header"><h3 class="card-title">Client-side encryption</h3></div><div class="card-body">
-          <p>Generate a unique account key in your browser. After setup, new account uploads must be encrypted. Existing files keep their current format.</p>
+          <p>Client-side encryption is optional. Generate a unique account key in your browser to use it, then select <strong>Encrypt files in my browser</strong> on the <a href="/">upload page</a> for any upload or batch you want to encrypt. Leave it unchecked to upload without client-side encryption, even after key setup. Existing files keep their current format and encrypted files still need their key.</p>
           <div class="alert alert-warning">Choose a separate encryption passphrase and save it safely. ObjectShare cannot recover it. Resetting your login password will not unlock encrypted files. Keep the encrypted key backup together with a separately stored copy of your passphrase.</div>
           <div class="mb-3"><label class="form-label" for="encryption_passphrase">New encryption passphrase</label><input id="encryption_passphrase" type="password" class="form-control" minlength="16" maxlength="512" autocomplete="off" required></div>
           <div class="mb-3"><label class="form-label" for="encryption_confirm">Confirm encryption passphrase</label><input id="encryption_confirm" type="password" class="form-control" minlength="16" maxlength="512" autocomplete="off" required></div>

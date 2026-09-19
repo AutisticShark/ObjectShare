@@ -14,7 +14,7 @@ ObjectShare is a small self-hosted file sharing service written in Go. Files use
 - Filesystem, Cloudflare R2, AWS S3, Backblaze B2, Alibaba Cloud OSS, or Tencent Cloud COS object storage
 - Direct-to-object-storage uploads that avoid reverse-proxy request-body limits
 - PostgreSQL metadata with bounded connection pools
-- Per-user browser encryption and decryption with passphrase-protected account keys, encrypted backups, and per-file sharing keys
+- Optional per-upload browser encryption and decryption with passphrase-protected account keys, encrypted backups, and per-file sharing keys
 - Optional AES-256-GCM server-side encryption at rest
 - Owner-only rename and permanent deletion
 - Guest uploads, database-backed per-user storage quotas, and automatic guest/unpaid file retention
@@ -59,6 +59,7 @@ File links are unlisted by default; owners can restrict details and downloads to
 - [x] Hot configuration reload without a container restart
 - [x] In-place account theme switching that preserves the current workflow
 - [x] Invoice generation
+- [x] Optional client-side encryption for each upload or batch
 - [x] Paid storage, retention, and direct-link plans
 - [x] Redis caching and shared request rate limits
 - [x] Searchable, paginated account file workspace
@@ -158,15 +159,19 @@ that backup and the passphrase safely, preferably in separate places. The accoun
 key is independent of login credentials, including OAuth: login password changes,
 email edits, and administrator password resets leave it unchanged.
 
-Signed-in browser uploads require this setup and encrypt each file before it is sent.
-Enter the encryption passphrase on the uploader to unlock the key for that page.
-After a key has been created, all account upload endpoints reject requests without
-valid client-encryption metadata, including bearer API and native form submissions.
-For compatibility, existing files and guest uploads retain their current behavior;
-API accounts that have not set up a key retain their existing upload format. There
-is no automatic re-encryption of historical files. JavaScript and HTTPS (or localhost
-for development) are required. Encryption failure never falls back to a plaintext
-upload in the signed-in uploader.
+Client-side encryption is optional for every signed-in upload. On **Upload**, select
+**Encrypt files in my browser** to encrypt the selected file or every file in a batch,
+then enter your encryption passphrase to unlock the key for that page. The option is
+unchecked by default. Leave it unchecked to upload without client-side encryption;
+no key setup or passphrase is needed, even when the account already has a key.
+Creating a key does not require encryption on future uploads. Bearer API and native
+form uploads may also omit encryption metadata. Supplied metadata still requires a
+valid account key and matching ciphertext length. Server-side encryption, if enabled,
+applies independently. Existing files, keys, backups, and guest uploads retain their
+current behavior; there is no automatic re-encryption or decryption of existing files.
+Encrypted browser uploads require JavaScript and HTTPS (or localhost for development).
+Encryption failure never falls back to an unencrypted upload. Without JavaScript,
+the native form uploads without client-side encryption.
 
 On the file page, use **Decrypt & download**. Owners enter their encryption passphrase;
 the browser retrieves the wrapped account key, decrypts it locally, and derives the
@@ -219,7 +224,7 @@ key uses PBKDF2-HMAC-SHA-256 with 600,000 iterations and a random 16-byte salt. 
 account key is wrapped using AES-256-GCM with a random 12-byte IV and a 128-bit tag;
 AAD is UTF-8 `objectshare-vault-v1:<user_id>:<key_id>`.
 
-Each upload supplies `client_encryption` as a JSON **string** containing
+Each client-encrypted upload supplies `client_encryption` as a JSON **string** containing
 `{"version":1,"key_id":"...","salt":"...","size":123}`. `salt` is a new random 32-byte
 value for each file and `size` is the plaintext byte count. Multipart requests repeat
 that field once per file, in file order; direct single/batch JSON includes it in each

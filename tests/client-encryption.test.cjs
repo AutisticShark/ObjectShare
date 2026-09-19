@@ -53,18 +53,22 @@ test('tamper, truncation, append, wrong key, metadata substitution and reordered
   await assert.rejects(c.decryptFile(encrypted.file, JSON.stringify(meta), key), /Unsupported/);
 });
 
-test('uploader sends ciphertext through proxied/direct single/batch flows and never falls back on unlock failure', async () => {
+test('uploader honors optional encryption through proxied/direct single/batch flows without plaintext fallback', async () => {
   const account = await c.createVault('upload-user', passphrase);
-  for (const direct of [false, true]) for (const count of [1, 2]) for (const fail of [false, true]) {
+  for (const direct of [false, true]) for (const count of [1, 2]) for (const mode of ['plain', 'plain-no-crypto', 'encrypted', 'unlock-failure', 'crypto-failure']) {
+    const encrypted = !mode.startsWith('plain');
+    const fail = mode.endsWith('failure');
     const original = 'never send this plaintext';
-    const files = Array.from({length:count}, (_, i) => new File([original], `file-${i}.txt`));
+    const files = Array.from({length:count}, (_, i) => new File([original], `file-${i}.txt`, {type:'text/plain'}));
     let submit;
     let destination;
     const transfers = [], requests = [], metadata = [];
     const element = () => ({value:'', textContent:'', disabled:true, style:{}, classList:{remove(){},add(){}},setAttribute(){},addEventListener(){},setCustomValidity(){}});
     const status = element(), button = element(), input = {...element(),files};
     const fields = {'#file':input,'#upload-button':button,'#upload-status':status,'#upload-progress-wrap':element(),'#upload-progress':element(),'#encryption-passphrase':element(),"input[name='upload_mode']:checked":{value:count === 1 ? 'single':'multiple'}};
-    const form = {dataset:{directUpload:String(direct),clientEncryption:'true',maxFiles:'10',maxFileMib:'10'},action:'/api/v1/upload', elements:{share_mode:{value:'private'}},querySelector:selector=>fields[selector] || null,querySelectorAll:()=>[],addEventListener:(_event,callback)=>{submit=callback;}};
+    fields['#encrypt-files'] = {...element(),checked:encrypted};
+    fields['#encryption-passphrase'].value = encrypted ? passphrase : '';
+    const form = {dataset:{directUpload:String(direct),maxFiles:'10',maxFileMib:'10'},action:'/api/v1/upload', elements:{share_mode:{value:'private'}},querySelector:selector=>fields[selector] || null,querySelectorAll:()=>[],addEventListener:(_event,callback)=>{submit=callback;}};
     class TestFormData extends FormData { constructor() { super(); this.append('share_mode','private'); } }
     class XHR {
       constructor() {this.events={};this.upload={addEventListener(){}};this.status=200;}
@@ -81,12 +85,16 @@ test('uploader sends ciphertext through proxied/direct single/batch flows and ne
       }
       if (url.endsWith('/batch')) {
         const payload=JSON.parse(options.body); metadata.push(...payload.files.map(file=>file.client_encryption));
-        assert.ok(payload.files.every(file=>file.content_type === 'application/octet-stream' && file.file_size === original.length+16));
+        assert.ok(payload.files.every(file=>file.content_type === (encrypted ? 'application/octet-stream' : 'text/plain') && file.file_size === original.length+(encrypted ? 16 : 0)));
         return Response.json({uploads:files.map((_file,i)=>({file_id:String(i),token:'token',upload_url:`https://storage.test/${i}`,complete_url:`/complete/${i}`,abort_url:`/abort/${i}`}))});
       }
       return Response.json({location:'/file/result'});
     };
-    const sandbox = {document:{querySelector:()=>form},crypto:globalThis.crypto,ObjectShareCrypto:{...c,accountKey:async()=>{if(fail)throw new Error('unlock failed');return account.raw.slice();}},XMLHttpRequest:XHR,FormData:TestFormData,fetch:fetchMock,window:{location:{assign:url=>{destination=url;}}}};
+    const sandbox = {document:{querySelector:()=>form},crypto:globalThis.crypto,ObjectShareCrypto:{...c,
+      accountKey:async()=>{assert.ok(encrypted,'plain uploads must not unlock a key');if(mode==='unlock-failure')throw new Error('unlock failed');return account.raw.slice();},
+      encryptFile:async(...args)=>{if(mode==='crypto-failure')throw new Error('encryption failed');return c.encryptFile(...args);}
+    },XMLHttpRequest:XHR,FormData:TestFormData,fetch:fetchMock,window:{location:{assign:url=>{destination=url;}}}};
+    if (mode==='plain-no-crypto') { sandbox.crypto = undefined; sandbox.ObjectShareCrypto = undefined; }
     vm.runInNewContext(fs.readFileSync(path.join(__dirname,'../template/upload.js'),'utf8'),sandbox);
     assert.equal(button.disabled,false);
     await submit({preventDefault(){}});
@@ -95,9 +103,15 @@ test('uploader sends ciphertext through proxied/direct single/batch flows and ne
     } else {
       assert.equal(transfers.length,count); assert.ok(destination);
       for (let i=0;i<count;i++) {
-        assert.equal((await transfers[i].text()).includes(original),false);
-        const key=await c.fileKey(account.raw,metadata[i]);
-        assert.equal(await (await c.decryptFile(transfers[i],metadata[i],key)).text(),original);
+        if (encrypted) {
+          assert.equal((await transfers[i].text()).includes(original),false);
+          const key=await c.fileKey(account.raw,metadata[i]);
+          assert.equal(await (await c.decryptFile(transfers[i],metadata[i],key)).text(),original);
+        } else {
+          assert.equal(metadata[i],'');
+          assert.equal(await transfers[i].text(),original);
+          assert.equal(transfers[i].type,'text/plain');
+        }
       }
     }
   }

@@ -55,11 +55,16 @@ func TestPostgresClientKeyMigrationAndConcurrentCreation(t *testing.T) {
 	if _, err := repo.ClientKey(t.Context(), other.ID); !errors.Is(err, ErrNotFound) {
 		t.Fatal("vault crossed account boundary")
 	}
-	plaintext := &FileList{FileID: uuid.NewString(), FileOwner: &user.ID, FileName: "blocked.txt", FileSize: 3, StorageService: "filesystem", UploadStatus: "pending"}
-	if err := repo.ReserveUpload(t.Context(), plaintext); err == nil {
-		t.Fatal("plaintext reservation bypassed encryption requirement")
+	plaintext := &FileList{FileID: uuid.NewString(), FileOwner: &user.ID, FileName: "optional.txt", FileSize: 3, StorageService: "filesystem", UploadStatus: "pending"}
+	if err := repo.ReserveUpload(t.Context(), plaintext); err != nil {
+		t.Fatalf("plaintext upload with an existing vault: %v", err)
+	}
+	got, err = repo.Get(t.Context(), plaintext.FileID)
+	if err != nil || got.ClientEncryption != "" || got.FileOwner == nil || *got.FileOwner != user.ID {
+		t.Fatalf("plaintext upload metadata or ownership changed: %v %+v", err, got)
 	}
 	encrypted := *plaintext
+	encrypted.ID = 0
 	encrypted.FileID = uuid.NewString()
 	encrypted.ClientEncryption = `{"version":1}`
 	if err := repo.ReserveUpload(t.Context(), &encrypted); err != nil {

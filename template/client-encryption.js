@@ -107,7 +107,7 @@
     const status = setup.querySelector("[role='status']"), button = setup.querySelector("button[type='submit']");
     loadVault().then(state => {
       if (!state.vault) button.disabled = false;
-      if (state.vault) { button.disabled = true; status.textContent = "Encryption is enabled. Your passphrase unlocks your uploads on any device. Keep a backup of the encrypted key below."; }
+      if (state.vault) { button.disabled = true; status.textContent = "Your encryption key is ready. Choose whether to encrypt on each upload. Your passphrase unlocks encrypted files on any device. Keep a backup of the encrypted key below."; }
     }).catch(error => { status.textContent = error.message; });
     setup.addEventListener("submit", async event => {
       event.preventDefault(); button.disabled = true;
@@ -122,7 +122,7 @@
         const response = await fetch("/account/encryption", {method: "POST", headers: {"Content-Type": "application/json", "X-CSRF-Token": csrf()}, body: JSON.stringify(created.vault)});
         if (!response.ok) throw new Error((await response.text()).trim());
         saveBlob(new Blob([JSON.stringify(created.vault, null, 2)], {type: "application/json"}), "objectshare-encrypted-key.json");
-        setup.reset(); status.textContent = "Encryption enabled. Save the encrypted key backup and your passphrase safely. You can now upload encrypted files.";
+        setup.reset(); status.textContent = "Encryption key created. Save the encrypted key backup and your passphrase safely. Select Encrypt files in my browser on the upload page whenever you want to encrypt an upload.";
       } catch (error) { status.textContent = error.message; button.disabled = false; }
       finally { raw?.fill(0); }
     });

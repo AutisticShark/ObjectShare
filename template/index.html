@@ -7,7 +7,7 @@
   {{if not .User}}{{template "auto-theme" .}}{{end}}
   {{template "tabler-head" .}}
   <script defer src="/assets/client-encryption.js?v=1"></script>
-  <script defer src="/assets/upload.js?v=retry-v3"></script>
+  <script defer src="/assets/upload.js?v=optional-encryption-v4"></script>
   {{if .Captcha}}<script defer src="/assets/captcha.js"></script><script defer src="https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit&amp;onload=objectShareTurnstileReady"></script>{{end}}
 </head>
 <body>
@@ -41,12 +41,13 @@
                   <h3 class="card-title">Upload &amp; share</h3>
                 </div>
                 {{if .CanUpload}}<form id="upload-form" action="/api/v1/upload" method="post" enctype="multipart/form-data"
-                      data-max-file-mib="{{.MaxFileSize}}" data-max-files="{{.MaxFiles}}" {{if .User}}data-client-encryption="true"{{end}} {{if .DirectUpload}}data-direct-upload="true"{{else if not .User}}hx-post="/api/v1/upload" hx-encoding="multipart/form-data" hx-disabled-elt="#upload-button"{{end}}>
+                      data-max-file-mib="{{.MaxFileSize}}" data-max-files="{{.MaxFiles}}" {{if .DirectUpload}}data-direct-upload="true"{{else if not .User}}hx-post="/api/v1/upload" hx-encoding="multipart/form-data" hx-disabled-elt="#upload-button"{{end}}>
                   {{if .User}}<input type="hidden" name="csrf_token" value="{{.CSRF}}">{{end}}
                   <div class="card-body">
-                    {{if .User}}<div class="alert alert-info">Your browser encrypts account uploads before sending them. <a href="/account#client-encryption">Set up your encryption key in My account</a> first. Keep your encryption passphrase safe; a login password reset cannot recover encrypted files.</div>
-                    <div class="mb-3"><label class="form-label" for="encryption-passphrase">Encryption passphrase</label><input class="form-control" id="encryption-passphrase" type="password" autocomplete="off" required><div class="form-hint">Used only in this page to unlock your account key. Never sent to the server.</div></div>
-                    <noscript><div class="alert alert-warning">JavaScript and HTTPS are required for encrypted account uploads.</div></noscript>{{end}}
+                    {{if .User}}<div class="mb-3"><label class="form-check"><input class="form-check-input" id="encrypt-files" name="encrypt_files" type="checkbox" disabled aria-controls="encryption-fields" aria-describedby="encryption-choice-help"><span class="form-check-label">Encrypt files in my browser</span></label><div id="encryption-choice-help" class="form-hint">Optional for each upload or batch, even if you already have an encryption key. Leave unchecked to upload without client-side encryption. Server-side encryption, if enabled, still applies.</div></div>
+                    <div id="encryption-fields" hidden><div class="alert alert-info"><a href="/account#client-encryption">Set up your encryption key in My account</a> before uploading encrypted files. Keep your encryption passphrase safe; a login password reset cannot recover encrypted files.</div>
+                    <div class="mb-3"><label class="form-label" for="encryption-passphrase">Encryption passphrase</label><input class="form-control" id="encryption-passphrase" type="password" autocomplete="off" disabled><div class="form-hint">Used only in this page to unlock your account key. Never sent to the server.</div></div></div>
+                    <noscript><div class="alert alert-warning">Client-side encryption requires JavaScript and HTTPS. This form uploads without client-side encryption.</div></noscript>{{end}}
                     <p class="text-secondary">
                       Choose who can view and download your files. {{if .User}}Uploads are saved to your account so you can manage them later.{{else}}This browser receives an owner token that permits sharing changes, rename, and deletion.{{end}}
                     </p>
@@ -73,7 +74,7 @@
                     {{template "captcha-widget" .Captcha}}
                   </div>
                   <div class="card-footer text-end">
-                    <button id="upload-button" class="btn btn-primary" type="submit"{{if .User}} disabled{{end}}>3. Upload files</button>
+                    <button id="upload-button" class="btn btn-primary" type="submit">3. Upload files</button>
                   </div>
                 </form>{{else}}<div class="card-body"><div class="alert alert-info mb-0" role="status">{{if .User}}<a href="/account">Verify your email from My account</a> before uploading files.{{else}}Guest uploads are disabled. <a href="/login">Log in</a>{{if .SignupEnabled}} or <a href="/signup">create an account</a>{{end}} to upload files.{{end}}</div></div>{{end}}
               </div>
