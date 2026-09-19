@@ -54,6 +54,7 @@ func LoadBootstrap(path string) (*ServiceConfig, error) {
 	bootstrap.IdleTimeout, bootstrap.ShutdownTimeout = cfg.IdleTimeout, cfg.ShutdownTimeout
 	bootstrap.ConfigReload = cfg.ConfigReload
 	bootstrap.Db, bootstrap.SettingsKey = cfg.Db, cfg.SettingsKey
+	bootstrap.Redis = cfg.Redis
 	bootstrap.Auth.JWTSecret, bootstrap.Auth.TokenLifetime = cfg.Auth.JWTSecret, cfg.Auth.TokenLifetime
 	if err := bootstrap.Validate(); err != nil {
 		return nil, err
@@ -63,6 +64,7 @@ func LoadBootstrap(path string) (*ServiceConfig, error) {
 	cfg.IdleTimeout, cfg.ShutdownTimeout = bootstrap.IdleTimeout, bootstrap.ShutdownTimeout
 	cfg.ConfigReload = bootstrap.ConfigReload
 	cfg.Db, cfg.SettingsKey = bootstrap.Db, bootstrap.SettingsKey
+	cfg.Redis = bootstrap.Redis
 	cfg.Auth.JWTSecret, cfg.Auth.TokenLifetime = bootstrap.Auth.JWTSecret, bootstrap.Auth.TokenLifetime
 	return cfg, nil
 }
@@ -98,6 +100,7 @@ func bootstrapEnvironmentProblems(err error) error {
 	bootstrapNames := []string{
 		"OBJECTSHARE_PORT", "OBJECTSHARE_READ_TIMEOUT", "OBJECTSHARE_WRITE_TIMEOUT", "OBJECTSHARE_IDLE_TIMEOUT", "OBJECTSHARE_SHUTDOWN_TIMEOUT",
 		"OBJECTSHARE_CONFIG_RELOAD_INTERVAL", "OBJECTSHARE_JWT_LIFETIME", "OBJECTSHARE_DB_PORT", "OBJECTSHARE_DB_MAX_OPEN_CONNS", "OBJECTSHARE_DB_MAX_IDLE_CONNS", "OBJECTSHARE_DB_CONN_MAX_LIFETIME",
+		"OBJECTSHARE_REDIS_TIMEOUT", "OBJECTSHARE_REDIS_PUBLIC_PLANS_TTL",
 	}
 	var selected []error
 	var visit func(error)
@@ -129,6 +132,7 @@ func defaults() *ServiceConfig {
 		IdleTimeout:     Duration(60 * time.Second),
 		ShutdownTimeout: Duration(15 * time.Second),
 		ConfigReload:    Duration(30 * time.Second),
+		Redis:           defaultRedisConfig(),
 		MaxFileSize:     100,
 		Upload:          &UploadConfig{GuestEnabled: true, MaxFilesPerBatch: 10},
 		Retention:       &RetentionConfig{},
@@ -296,6 +300,11 @@ func applyEnvironment(cfg *ServiceConfig) error {
 	if cfg.Db == nil {
 		cfg.Db = &DatabaseConfig{}
 	}
+	setString("OBJECTSHARE_REDIS_URL", &cfg.Redis.URL)
+	setString("OBJECTSHARE_REDIS_PASSWORD", &cfg.Redis.Password)
+	setString("OBJECTSHARE_REDIS_KEY_PREFIX", &cfg.Redis.KeyPrefix)
+	problems = append(problems, setDuration("OBJECTSHARE_REDIS_TIMEOUT", &cfg.Redis.Timeout))
+	problems = append(problems, setDuration("OBJECTSHARE_REDIS_PUBLIC_PLANS_TTL", &cfg.Redis.PublicPlansTTL))
 	setString("OBJECTSHARE_DB_HOST", &cfg.Db.Host)
 	problems = append(problems, setInt("OBJECTSHARE_DB_PORT", &cfg.Db.Port))
 	setString("OBJECTSHARE_DB_USER", &cfg.Db.User)
@@ -359,6 +368,12 @@ func applyS3Environment(prefix string, settings *S3CompatibleConfig, problems *[
 }
 
 func (cfg *ServiceConfig) Validate() error {
+	if cfg.Redis == (RedisConfig{}) {
+		cfg.Redis = defaultRedisConfig()
+	}
+	if err := cfg.Redis.Validate(); err != nil {
+		return err
+	}
 	if err := cfg.Branding.Validate(); err != nil {
 		return err
 	}

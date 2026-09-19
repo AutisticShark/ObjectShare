@@ -69,6 +69,10 @@ func run() error {
 	if *createAdmin {
 		return createInitialAdmin(startupContext, repository, *adminEmail, *adminName, *adminPasswordFile, *adminPasswordStdin)
 	}
+	if err := repository.EnableRedis(startupContext, cfg.Redis); err != nil {
+		return err
+	}
+	logger.Info("request state backend configured", "redis_enabled", cfg.Redis.URL != "")
 	runContext, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	reloader := newConfigReloader(runContext, cfg, repository, templateFiles, logger)
 	defer func() {

@@ -59,6 +59,7 @@ type ServiceConfig struct {
 	StoragePath     string             `json:"storage_path"`
 	UploadCache     *UploadCacheConfig `json:"upload_cache,omitempty"`
 	Db              *DatabaseConfig    `json:"db"`
+	Redis           RedisConfig        `json:"redis"`
 	Encryption      *EncryptionConfig  `json:"encryption"`
 	R2              *R2Config          `json:"r2,omitempty"`
 	S3              *S3Config          `json:"s3,omitempty"`

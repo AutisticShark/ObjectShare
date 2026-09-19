@@ -22,7 +22,8 @@ ObjectShare is a small self-hosted file sharing service written in Go. Files use
 - Prepaid account-credit top-ups and credit-funded fixed-duration plans
 - Password, Google, GitHub, and Discord login with separate user and administrator management interfaces
 - Account bans and shadowbans with administrator controls and file-access enforcement
-- Optional server-verified Turnstile protection and shared PostgreSQL request rate limits
+- Optional server-verified Turnstile protection and shared Redis or PostgreSQL request rate limits
+- Optional Redis public plan catalog cache with PostgreSQL fallback
 - Encrypted PostgreSQL-backed configuration with a dedicated administrator dashboard
 - Modular outgoing email through SMTP, Alibaba Cloud Direct Mail, or AWS SES, with an administrator test-email action
 - Plan and credit-top-up invoices, account-credit or gateway payment, private invoice pages, PDF exports, and queued payment confirmation emails with PDF attachments
@@ -59,6 +60,7 @@ File links are unlisted by default; owners can restrict details and downloads to
 - [x] In-place account theme switching that preserves the current workflow
 - [x] Invoice generation
 - [x] Paid storage, retention, and direct-link plans
+- [x] Redis caching and shared request rate limits
 - [x] Searchable, paginated account file workspace
 - [x] Server-side encryption & decryption
 - [x] Single-file and multiple-file upload modes
@@ -347,7 +349,10 @@ creating the first administrator. Existing `.env` files keep their current port
 binding; a bare value such as `8080` publishes on all host interfaces. Complete
 administrator setup before intentionally exposing the application.
 
-Compose uses PostgreSQL 18 and a persistent local object volume. Stop it with
+Compose uses PostgreSQL 18, Redis, and persistent local object, database, and
+Redis volumes. Set `OBJECTSHARE_REDIS_PASSWORD` to a long random secret in `.env`;
+old `.env` files still start with the development default `objectshare-dev`.
+Redis is private to the Compose network and has no published host port. Stop it with
 `docker compose down`; add `--volumes` only when you intentionally want to delete
 all stored data. `.dockerignore` excludes `.env` and `.env.*` files at every
 directory depth from the build context, while retaining the root `.env.example`.
@@ -382,13 +387,14 @@ go run . -config config.json
 
 ObjectShare now keeps operational configuration in PostgreSQL. On the first start after this upgrade, it imports the existing JSON/environment values into one encrypted `application_settings` revision. Later starts load that database revision, so changing a legacy operational environment variable does not overwrite an administrator's dashboard changes. This one-time import preserves existing deployments; after it succeeds, manage application policy, OAuth, CAPTCHA, rate limits, storage providers, and object encryption at `/admin/settings`.
 
-Only bootstrap settings remain file/environment-owned because they are needed before PostgreSQL configuration can be opened:
+Bootstrap infrastructure and secrets remain file/environment-owned:
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `OBJECTSHARE_ADDRESS` | `:8080` | HTTP listen address |
 | `OBJECTSHARE_READ_TIMEOUT`, `OBJECTSHARE_WRITE_TIMEOUT`, `OBJECTSHARE_IDLE_TIMEOUT`, `OBJECTSHARE_SHUTDOWN_TIMEOUT` | varies | HTTP server lifecycle timeouts |
 | `OBJECTSHARE_DB_*` | varies | PostgreSQL connection and pool settings |
+| `OBJECTSHARE_REDIS_*` | see below | Optional Redis connection, namespace, timeouts, and public plan cache; bootstrap settings requiring a restart |
 | `OBJECTSHARE_JWT_SECRET` | none (required) | JWT HMAC signing secret, at least 32 random bytes |
 | `OBJECTSHARE_JWT_LIFETIME` | `12h` | JWT lifetime (`5m` to `24h`) |
 | `OBJECTSHARE_CONFIG_RELOAD_INTERVAL` | `30s` | How often a replica checks PostgreSQL for a newer configuration revision and activates it without a restart; `0` disables polling and `1s` to `24h` are accepted |
@@ -693,6 +699,58 @@ Their `config.json` equivalent is the top-level `retention` object with `guest_d
 
 Each replica performs a sweep at startup and then hourly; a full backlog batch schedules another sweep after one minute. PostgreSQL claims bounded batches with row locking and `SKIP LOCKED`, so replicas cooperate without intentionally processing the same live record. The object is deleted before its metadata; a storage failure releases the claim and keeps the share record for retry, while an interrupted or database-failed deletion is reclaimed later. Once deletion succeeds, the share URL and owner controls stop working. Back up data before enabling a shorter policy because automatic deletion is permanent.
 
+### Redis caching and request state
+
+PostgreSQL remains the durable source of truth. Redis is optional when running
+the binary directly and enabled by default in Compose. Existing `config.json`
+files need no migration: without `redis.url`, the app keeps using PostgreSQL for
+request limits and reads the plan catalog directly.
+
+| Data | With Redis configured | Correctness and outage behavior |
+| --- | --- | --- |
+| Request rate-limit buckets | Atomic Lua decisions and expiring counters shared across replicas; no per-request PostgreSQL transaction | Uses Redis server time and hashed identities. Redis errors reject limited requests with HTTP 500; they never grant access or switch to independent PostgreSQL counters. |
+| Public plan catalog | Cache on read, 30-second TTL by default; successful plan creation/edit invalidates it across replicas | Cache misses, malformed entries, and Redis failures read PostgreSQL. Fill tokens prevent an older query from resurrecting an invalidated entry. Checkout/invoice creation always reads current PostgreSQL prices and availability. |
+| Accounts, permissions, moderation, JWT revocation, login lockouts, verification tokens, upload quotas/reservations, entitlements, invoices, payments, and configuration | PostgreSQL remains authoritative | No cache delay is introduced into these security or transaction boundaries. Configuration already has a per-process snapshot and revision polling. |
+
+Redis options belong in the **top-level `redis` object** of `config.json`, or in
+these environment variables. They are bootstrap settings read on every start,
+not first-import runtime settings and not editable at `/admin/settings`.
+
+| Environment variable | JSON field under `redis` | Default | Meaning |
+| --- | --- | --- | --- |
+| `OBJECTSHARE_REDIS_URL` | `url` | Empty for the binary; `redis://redis:6379/0` in Compose | Empty disables Redis. Supports `redis://` and TLS `rediss://`, with optional URL credentials and database index. |
+| `OBJECTSHARE_REDIS_PASSWORD` | `password` | Empty for the binary; development fallback in Compose | When nonempty, overrides a password in the URL. Compose uses the same value to protect its Redis service. |
+| `OBJECTSHARE_REDIS_KEY_PREFIX` | `key_prefix` | `objectshare:` | Unique namespace per installation; all replicas of that installation must share it. 1-128 characters, without spaces, tabs, newlines, or braces. |
+| `OBJECTSHARE_REDIS_TIMEOUT` | `timeout` | `1s` | Per-operation timeout, from `1ms` to `30s`; mutating commands are not automatically retried. |
+| `OBJECTSHARE_REDIS_PUBLIC_PLANS_TTL` | `public_plans_ttl` | `30s` | Catalog display lifetime, from `1ms` to `5m`; `0` disables catalog caching while retaining Redis rate limiting. |
+
+Use a dedicated Redis instance or database and a different key prefix for each
+ObjectShare installation. Use `rediss://` for external Redis over untrusted
+networks. The configured Redis endpoint is checked at startup and by
+`/health/ready`; `/health/live` remains independent of backend availability.
+
+Compose gives Redis an AOF volume, `appendfsync everysec`, a 128 MiB memory limit,
+and `noeviction`, so memory pressure fails requests instead of silently deleting
+active counters. Catalog entries and rate buckets expire automatically. Monitor
+memory and increase the Redis `--maxmemory` value for a busy deployment. A crash
+can lose approximately the last second of AOF writes; deleting the Redis volume
+resets all counters. Redis is not a replacement for durable account lockouts.
+
+If invalidation fails or a plan is changed directly in SQL, its displayed catalog
+entry can stay stale until the existing TTL expires. The TTL starts before the
+database read and is not extended by a slow cache fill. Financial operations use
+the database regardless. To disable Redis in Compose, set
+`OBJECTSHARE_REDIS_URL=` explicitly; the bundled Redis service still starts but
+the app does not use it. To change backends or namespaces, stop all app replicas
+and restart them together with the same settings. Counters are not migrated, so
+the change starts a fresh rate-limit window; do not mix PostgreSQL and Redis
+backends during a rolling deployment.
+
+The Go suite exercises Redis Lua scripts against an in-process Redis test server,
+including competing replicas, expiry, invalidation races, and outages. With
+`OBJECTSHARE_TEST_POSTGRES_DSN` set, it also verifies real database fallback,
+catalog invalidation, and authoritative invoice pricing despite a stale cache.
+
 ### CAPTCHA and request rate limiting
 
 ObjectShare supports Cloudflare Turnstile on password and OAuth login, public sign-up, proxied and direct uploads, and downloads. CAPTCHA is disabled by default so an existing configuration continues to start without site-specific credentials. To protect every supported boundary, create a Turnstile widget for the public ObjectShare hostname and configure its provider, site key, write-only secret, exact hostname, and all four route switches in the administrator dashboard. The legacy first-import environment equivalents are:
@@ -714,7 +772,7 @@ When download protection is on, the file page submits a `POST` after the challen
 
 Non-browser clients supply `captcha_token` in the JSON API-login or direct-upload authorization body. Multipart upload and form download clients may supply the standard `cf-turnstile-response` field or `X-Captcha-Token` header; CAPTCHA-protected downloads use `POST /api/v1/download/{id}`. A fresh token is required for every protected request.
 
-Rate limiting is enabled by default and uses a PostgreSQL fixed-window bucket shared by every application replica. Authenticated requests are keyed to a SHA-256 hash of the user ID; unauthenticated requests use a hash of the direct client IP. Raw client identities are not stored in the rate-limit table. Defaults are 120 requests per minute across `/api/v1`, plus route-specific limits of 10 login starts, 5 sign-ups, 20 upload starts, and 60 downloads per minute. Change these values in the dashboard. The legacy first-import variables are:
+Rate limiting is enabled by default and uses a fixed-window bucket shared by every application replica: Redis when configured, otherwise PostgreSQL. Authenticated requests are keyed to a SHA-256 hash of the user ID; unauthenticated requests use a hash of the direct client IP. Raw client identities are not stored in rate-limit keys or rows. Defaults are 120 requests per minute across `/api/v1`, plus route-specific limits of 10 login starts, 5 sign-ups, 20 upload starts, and 60 downloads per minute. Change these values in the dashboard. The legacy first-import variables are:
 
 ```dotenv
 OBJECTSHARE_RATE_LIMIT_ENABLED=true

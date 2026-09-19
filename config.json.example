@@ -6,6 +6,13 @@
   "shutdown_timeout": "15s",
   "config_reload_interval": "30s",
   "settings_key": "replace-with-a-different-32-byte-random-secret",
+  "redis": {
+    "url": "",
+    "password": "",
+    "key_prefix": "objectshare:",
+    "timeout": "1s",
+    "public_plans_ttl": "30s"
+  },
   "branding": {
     "site_name": "ObjectShare",
     "tagline": "",

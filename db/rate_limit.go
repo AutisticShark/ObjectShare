@@ -10,12 +10,15 @@ import (
 )
 
 // ConsumeRateLimit atomically consumes one request from a fixed-window bucket.
-// PostgreSQL's transaction advisory lock makes the decision consistent across
-// concurrent processes, while the database stores only the caller's SHA-256
-// identity hash rather than a raw IP address or user identifier.
+// Redis handles expiring counters when configured; otherwise PostgreSQL's
+// transaction advisory lock makes the decision consistent across processes.
+// Both backends store hashes rather than raw IP addresses or user identifiers.
 func (repo *GormRepository) ConsumeRateLimit(ctx context.Context, scope, keyHash string, limit int, window time.Duration, now time.Time) (bool, time.Time, error) {
 	if limit <= 0 {
 		return true, time.Time{}, nil
+	}
+	if repo.redis != nil {
+		return repo.redis.consume(ctx, scope, keyHash, limit, window)
 	}
 	// Cleanup is outside the per-key advisory-lock transaction to avoid lock
 	// ordering between unrelated client buckets. Running it occasionally keeps

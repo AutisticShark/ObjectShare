@@ -116,6 +116,7 @@ type RateLimitRepository interface {
 
 type GormRepository struct {
 	connection     *gorm.DB
+	redis          *redisStore
 	rateLimitCalls atomic.Uint64
 }
 
@@ -294,11 +295,15 @@ func postgresConfig(cfg *config.DatabaseConfig) (*pgx.ConnConfig, *time.Location
 }
 
 func (repo *GormRepository) Close() error {
+	var redisErr error
+	if repo.redis != nil {
+		redisErr = repo.redis.client.Close()
+	}
 	sqlDB, err := repo.connection.DB()
 	if err != nil {
 		return err
 	}
-	return sqlDB.Close()
+	return errors.Join(redisErr, sqlDB.Close())
 }
 
 func (repo *GormRepository) Create(ctx context.Context, file *FileList) error {
@@ -602,6 +607,11 @@ func (repo *GormRepository) ReleaseRetentionClaim(ctx context.Context, fileID st
 }
 
 func (repo *GormRepository) Ping(ctx context.Context) error {
+	if repo.redis != nil {
+		if err := repo.redis.ping(ctx); err != nil {
+			return err
+		}
+	}
 	sqlDB, err := repo.connection.DB()
 	if err != nil {
 		return err

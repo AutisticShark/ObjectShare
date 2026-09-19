@@ -338,8 +338,20 @@ func (repo *GormRepository) PlanByGatewayID(ctx context.Context, gateway, planID
 }
 
 func (repo *GormRepository) PublicPlans(ctx context.Context) ([]PaidPlan, error) {
+	var token string
+	if repo.redis != nil {
+		var cached []PaidPlan
+		var hit bool
+		cached, token, hit = repo.redis.readPlans(ctx)
+		if hit {
+			return cached, nil
+		}
+	}
 	var plans []PaidPlan
 	err := repo.connection.WithContext(ctx).Where("active = ? AND credit_price > 0 AND credit_duration_days > 0", true).Order("sort_order ASC, name ASC").Find(&plans).Error
+	if err == nil && repo.redis != nil {
+		repo.redis.fillPlans(ctx, token, plans)
+	}
 	return plans, err
 }
 
@@ -372,14 +384,18 @@ func (repo *GormRepository) CreatePlan(ctx context.Context, plan *PaidPlan) erro
 	}
 	// Local identifiers satisfy the legacy unique index without linking to a provider.
 	plan.Gateway, plan.GatewayPlanID, plan.LegacyPriceLabel = BillingGatewayCredit, plan.ID, ""
-	return repo.connection.WithContext(ctx).Create(plan).Error
+	err := repo.connection.WithContext(ctx).Create(plan).Error
+	if err == nil {
+		repo.invalidatePublicPlans(ctx)
+	}
+	return err
 }
 
 func (repo *GormRepository) UpdatePlan(ctx context.Context, plan *PaidPlan) error {
 	if !validLocalPlan(plan) {
 		return ErrInvalidCredit
 	}
-	return repo.connection.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	err := repo.connection.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var existing PaidPlan
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ?", plan.ID).First(&existing).Error; errors.Is(err, gorm.ErrRecordNotFound) {
 			return ErrNotFound
@@ -393,6 +409,10 @@ func (repo *GormRepository) UpdatePlan(ctx context.Context, plan *PaidPlan) erro
 			"active": plan.Active, "sort_order": plan.SortOrder,
 		}).Error
 	})
+	if err == nil {
+		repo.invalidatePublicPlans(ctx)
+	}
+	return err
 }
 
 func subscriptionActive(status string, periodEnd, now time.Time) bool {
