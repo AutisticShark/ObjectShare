@@ -9,7 +9,7 @@ you can lose and how long recovery may take, then measure both during restore dr
 
 | Component | What it restores |
 | --- | --- |
-| Complete PostgreSQL application database | Accounts, roles and moderation, sharing permissions, file metadata, browser-encrypted key vaults, plans, frozen invoice terms, credit ledger, payment deduplication records, token revocations, and encrypted runtime configuration. |
+| Complete PostgreSQL application database | Accounts, MFA enrollment and recovery-code hashes, roles and moderation, sharing permissions, file metadata, browser-encrypted key vaults, plans, frozen invoice terms, credit ledger, payment deduplication records, token revocations, and encrypted runtime configuration. |
 | Filesystem object directory or private object-store snapshot | The bytes identified by each file's object key. Preserve keys and bytes exactly, including ciphertext. The default Compose filesystem volume is `object-data`, mounted at `/var/lib/objectshare`; confirm the active storage configuration before backing up. |
 | Bootstrap configuration and deployment secrets | Database connection settings, `OBJECTSHARE_SETTINGS_KEY`, JWT configuration, and any externally managed credentials. Save the effective deployment inputs, including secret-manager references and versions. |
 | Encryption keys and metadata | The settings key opens stored operational settings, including configured server-side encryption keys. Client-encrypted files additionally require their database metadata, the owner's wrapped key or encrypted key backup, and the owner's separate encryption passphrase. Operators should not collect users' passphrases. |
@@ -17,7 +17,12 @@ you can lose and how long recovery may take, then measure both during restore dr
 
 Dashboard changes are stored in PostgreSQL. Copying an old `config.json` or `.env`
 does not capture the current operational configuration. Keep an independent
-settings key stable: replacing it makes the stored configuration unreadable.
+settings key stable: replacing it makes the stored configuration and MFA seeds
+unreadable and invalidates MFA recovery-code hashes. Users retain their own
+authenticator or recovery codes; operators should not collect them. A database
+restore can restore previously consumed recovery codes and older token versions:
+rotate the JWT signing secret after recovery to invalidate pre-restore access and
+challenge JWTs, and have users regenerate MFA recovery codes after signing in.
 If an older installation uses the JWT secret as its settings-key fallback, retain
 that original value explicitly as the settings key before rotating the JWT secret.
 Password reset cannot recover a lost client-encryption passphrase.

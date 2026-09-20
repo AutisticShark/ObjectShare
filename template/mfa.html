@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en"{{if .User}}{{if .User.DarkMode}} data-bs-theme="dark"{{end}}{{end}}>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Multi-factor authentication · {{(branding).SiteName}}</title>{{if not .User}}{{template "auto-theme" .}}{{end}}{{template "tabler-head" .}}</head>
+<body><div class="page page-center"><div class="container container-tight py-4">
+  <div class="text-center mb-4"><a href="/" class="navbar-brand justify-content-center">{{template "brand" .}}</a></div>
+  <div class="card card-md"><div class="card-body">
+    <h1 class="h2">Multi-factor authentication</h1>
+    {{if .Error}}<div class="alert alert-danger" role="alert">{{.Error}}</div>{{end}}
+    {{if .Message}}<div class="alert alert-info" role="status">{{.Message}}</div>{{end}}
+    {{if .Codes}}
+      <h2 class="h3">Save your recovery codes</h2><p>Store these somewhere safe, separate from your password and authenticator. Each code can replace your second factor once. Generating new codes invalidates all previous recovery codes.</p>
+      <div class="border rounded p-3 mb-3 text-break">{{range .Codes}}<div><code>{{.}}</code></div>{{end}}</div>
+      <p class="text-secondary">If you lose your second factor and every recovery code, you cannot sign in. A password reset does not remove MFA.</p><a href="/account" class="btn btn-primary">I saved my codes — return to account</a>
+    {{else if .Action}}
+      {{if eq .Action "disable"}}<p>Confirm your current second factor to disable MFA and sign out other sessions.</p>{{else if eq .Action "recovery"}}<p>Confirm your current second factor to replace all recovery codes and sign out other sessions.</p>{{else if eq .Action "login"}}<p>Complete verification to finish signing in.</p>{{else}}<p>Confirm a code before MFA is enabled. Enabling MFA signs out other sessions.</p>{{end}}
+      {{if .Secret}}<h2 class="h3">Set up your authenticator</h2><p>In Google Authenticator or a compatible app, choose <strong>Enter a setup key</strong>. Name it ObjectShare, select <strong>Time based</strong>, and enter this key:</p><div class="border rounded p-3 mb-3 text-break"><code>{{.Secret}}</code></div><p class="text-secondary">Use six digits, SHA-1, and a 30-second period. Keep this key private. Enter the app's current code below.</p>{{end}}
+      <form action="/login/mfa" method="post" hx-post="/login/mfa" hx-select=".page" hx-target=".page" hx-swap="outerHTML" hx-disabled-elt="button" autocomplete="off">
+        <input type="hidden" name="csrf_token" value="{{.CSRF}}">
+        <label for="mfa-code" class="form-label">{{if eq .Method "email"}}Email verification code{{else}}Authenticator code{{end}}{{if or (eq .Action "login") (eq .Action "disable") (eq .Action "recovery")}} or recovery code{{end}}</label>
+        <input class="form-control mb-3" id="mfa-code" name="code" autocomplete="one-time-code" maxlength="64" required autofocus>
+        <button class="btn btn-primary w-100" type="submit">Verify</button>
+      </form>
+      {{if eq .Method "email"}}<form class="mt-3" action="/login/mfa/resend" method="post" hx-post="/login/mfa/resend" hx-select=".page" hx-target=".page" hx-swap="outerHTML" hx-disabled-elt="button"><input type="hidden" name="csrf_token" value="{{.CSRF}}"><button class="btn w-100" type="submit">Resend email code</button></form>{{end}}
+      <p class="text-secondary mt-3">Verification expires after five minutes. Wait one minute between email sends. After five failed codes, wait 15 minutes before starting again. Resending replaces the email code without extending this verification.</p>
+      <a href="{{if eq .Action "login"}}/login{{else}}/account/mfa{{end}}">Start again</a>
+    {{else if .User}}
+      {{if .User.MFA.Method}}<p>MFA is enabled using <strong>{{if eq .User.MFA.Method "totp"}}an authenticator app{{else}}email codes{{end}}</strong>. Password and OAuth sign-ins require a second factor.</p><p>{{len .User.MFA.Recovery}} recovery codes remain.</p>
+        <form action="/account/mfa" method="post" hx-post="/account/mfa" hx-select=".page" hx-target=".page" hx-swap="outerHTML" hx-disabled-elt="button"><input type="hidden" name="csrf_token" value="{{.CSRF}}"><div class="d-grid gap-2"><button class="btn" name="action" value="recovery" type="submit">Generate new recovery codes</button><button class="btn btn-outline-danger" name="action" value="disable" type="submit">Disable MFA</button></div></form>
+        <p class="text-secondary mt-3">To change methods, disable the current method using a code, then enroll again. Email MFA must be disabled before changing your email address.</p>
+      {{else}}<p>Add a second step to sign-ins. Choose an authenticator app or email verification codes.</p><p class="text-secondary">An authenticator app works offline. Email codes depend on mailbox security and delivery. Both methods include recovery codes.</p>
+        <form action="/account/mfa" method="post" hx-post="/account/mfa" hx-select=".page" hx-target=".page" hx-swap="outerHTML" hx-disabled-elt="button">
+          <input type="hidden" name="csrf_token" value="{{.CSRF}}">
+          {{if .User.PasswordHash}}<label class="form-label" for="mfa-password">Current password</label><input class="form-control mb-3" id="mfa-password" name="current_password" type="password" autocomplete="current-password" maxlength="512" required>{{else}}<p>For an OAuth-only account, sign in again and start setup within five minutes.</p>{{end}}
+          <div class="d-grid gap-2"><button class="btn btn-primary" type="submit" name="action" value="setup-totp">Set up authenticator app</button>
+          {{if and .EmailAvailable .User.EmailVerifiedAt}}<button class="btn" type="submit" name="action" value="setup-email">Set up email codes</button>{{else}}<p class="text-secondary">Email codes require a verified account email address and an email provider configured by your administrator.</p>{{end}}</div>
+        </form>
+      {{end}}<a class="d-inline-block mt-3" href="/account">Back to account</a>
+    {{else}}<a class="btn btn-primary" href="/login">Return to sign in</a>{{end}}
+  </div></div>
+</div></div>{{template "footer" .}}</body></html>

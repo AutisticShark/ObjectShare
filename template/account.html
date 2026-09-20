@@ -14,6 +14,7 @@
       <p class="mt-2">Verify your address using the link in your email. Changing your email requires verification again.{{if .VerificationPurchases}} Verification is required before purchasing a plan.{{end}}{{if .VerificationUploads}} Verification is required before uploading files to your account.{{end}}</p>
       {{if .VerificationEnabled}}<form action="/account/email/resend" method="post" hx-post="/account/email/resend" hx-disabled-elt="button"><input type="hidden" name="csrf_token" value="{{.CSRF}}"><button class="btn btn-primary" type="submit">Send verification email</button><div class="form-hint mt-2">Links expire after 24 hours. Wait one minute between requests; a new link replaces the previous one.</div></form>{{else}}<p class="text-secondary mb-0">Email verification is not configured. Contact the administrator if you need to verify your account.</p>{{end}}{{end}}
     </div></div>
+    <div class="card mb-3"><div class="card-body"><h3 class="card-title">Multi-factor authentication</h3><p>{{if .User.MFA.Method}}Enabled with {{if eq .User.MFA.Method "totp"}}an authenticator app{{else}}email codes{{end}}.{{else}}Add a second verification step to password and OAuth sign-ins using email codes or an authenticator app.{{end}}</p><a class="btn btn-primary" href="/account/mfa">Manage multi-factor authentication</a></div></div>
     <div class="row row-cards">
       {{template "billing-summary" .}}
       <div class="col-12 col-lg-6"><form class="card" action="/account/profile" method="post" hx-post="/account/profile" hx-disabled-elt="button">

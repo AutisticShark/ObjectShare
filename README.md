@@ -59,6 +59,7 @@ File links are unlisted by default; owners can restrict details and downloads to
 - [x] Hot configuration reload without a container restart
 - [x] In-place account theme switching that preserves the current workflow
 - [x] Invoice generation
+- [x] Multi-factor authentication with email codes, authenticator apps, and recovery codes
 - [x] Optional client-side encryption for each upload or batch
 - [x] Paid storage, retention, and direct-link plans
 - [x] Redis caching and shared request rate limits
@@ -466,6 +467,97 @@ HTTPS. First-import environment equivalents are
 exists, use `/admin/settings`; environment or seed JSON changes do not overwrite it.
 
 Public signup is changed from the configuration dashboard. `auth.jwt_secret` and `auth.token_lifetime` remain bootstrap JSON settings and are intentionally not editable from the browser.
+
+#### Multi-factor authentication (MFA)
+
+Open **My account → Manage multi-factor authentication** (`/account/mfa`) to
+enable an optional second step for password and Google/GitHub/Discord OAuth
+sign-ins. Choose one method per account:
+
+- **Authenticator app:** Google Authenticator or another RFC 6238-compatible app.
+  Choose **Enter a setup key** in the app, name the entry ObjectShare, select
+  **Time based**, and enter the displayed key. The settings are SHA-1, six digits,
+  and a 30-second period. Setup uses a manual key; it does not send secrets to an
+  external QR-code service. Confirm the current code before enrollment completes.
+- **Email codes:** requires a verified account email address and a working provider
+  in **Administration → Settings → Email** (the existing top-level `email`
+  configuration). Enable signup email verification under
+  `auth.email_verification` when users need a way to verify their address.
+  Email MFA uses that existing mail provider without additional configuration.
+  An authenticator app avoids dependence on email delivery and mailbox security.
+
+Initial enrollment requires the current password. OAuth-only accounts must sign
+in again and begin enrollment within five minutes. MFA becomes active only after
+the new factor is confirmed. Ten random, single-use recovery codes appear once;
+store them separately from the login password and authenticator. A recovery code
+can replace the second factor after the password or OAuth step. If both the
+factor and every recovery code are lost, the account cannot sign in; resetting
+its password does not disable MFA.
+
+Disabling MFA or generating new recovery codes requires a current second-factor
+code or an unused recovery code. Each of these changes, including enrollment,
+increments the account token version and invalidates earlier JWTs. The current
+browser receives a replacement JWT. To switch methods, disable the current
+method and enroll again. Email MFA must be disabled before changing the account
+email, then re-enabled after the new address is verified; profile-only edits
+continue to work.
+
+Challenges expire after five minutes, with one active challenge per account.
+Starting another challenge or sending another email has a one-minute account
+cooldown. Resending replaces the email code without extending the challenge or
+resetting failed attempts. Five failed codes lock verification for 15 minutes,
+including across new challenges and application replicas. These database limits
+remain active when configurable request rate limiting is disabled. When request
+rate limiting is enabled, MFA verification and management additionally allow
+10 requests, and resend allows 5 requests, per configured rate-limit window.
+Email delivery errors preserve the cooldown because provider acceptance can be
+ambiguous. Existing MFA accounts can use recovery codes during an email outage.
+
+Pending verification uses a purpose-restricted, signed JWT with a separate
+audience and derived signing key that cannot authorize account or API requests.
+Full access JWTs are issued only after the second step. Upgrade every replica
+before offering MFA enrollment; older application versions do not enforce MFA.
+Browser challenges use `HttpOnly`, `SameSite=Strict` cookies, with `Secure` and
+`__Host-` naming when secure cookies are configured, plus CSRF and same-origin
+checks on mutations. PostgreSQL row locks serialize code consumption and attempt
+accounting; account status, email, and token version are rechecked at completion.
+Authenticator codes permit one 30-second step of clock drift in either direction;
+an accepted time step cannot be reused. Keep the server and authenticator clocks
+synchronized.
+
+Authenticator seeds are stored as AES-GCM ciphertext bound to the account.
+Email and recovery codes are stored as context-bound HMAC hashes. This uses the
+existing **`OBJECTSHARE_SETTINGS_KEY`** (top-level `settings_key` in bootstrap
+`config.json`), with domain separation from runtime configuration encryption.
+Keep this key stable, identical on every replica, and with database backups.
+Losing or changing it also makes existing authenticator secrets and recovery-code
+hashes unusable. The normal startup migration adds private MFA state without
+enabling MFA or changing existing account data. No new configuration options or
+dependencies are required.
+
+For API clients, `POST /api/v1/auth/login` retains its existing response for
+accounts without MFA. With MFA enabled, successful credentials return HTTP **202**:
+
+```json
+{"mfa_required":true,"challenge_token":"<signed challenge JWT>","method":"totp","expires_in":300,"message":""}
+```
+
+Complete the second step using a code from the chosen method or a recovery code:
+
+```http
+POST /api/v1/auth/mfa
+Content-Type: application/json
+
+{"challenge_token":"<signed challenge JWT>","code":"123456"}
+```
+
+Success returns the usual `access_token`, `token_type`, and `expires_in` JSON.
+Do not use `challenge_token` as an access token. Email clients may request a new
+code with `POST /api/v1/auth/mfa/resend` and
+`{"challenge_token":"<signed challenge JWT>"}`. These API flows do not set login
+cookies. Invalid, expired, replayed, or locked verification returns HTTP 401;
+cooldown and request-rate-limit rejections return HTTP 429. MFA enrollment and
+management are available through the account web interface.
 
 ### User bans and shadowbans
 

@@ -155,6 +155,7 @@ func (repo *GormRepository) StorageUsageByUser(ctx context.Context) (map[string]
 
 func (repo *GormRepository) UpdateProfile(ctx context.Context, id, email, displayName string) error {
 	result := repo.connection.WithContext(ctx).Model(&User{}).Where("id = ?", id).
+		Where("email = ? OR COALESCE(mfa->>'method', '') <> 'email'", email).
 		Updates(map[string]any{"email": email, "display_name": displayName,
 			"email_verified_at":             gorm.Expr("CASE WHEN email = ? THEN email_verified_at ELSE NULL END", email),
 			"email_verification_hash":       gorm.Expr("CASE WHEN email = ? THEN email_verification_hash ELSE '' END", email),
@@ -164,7 +165,10 @@ func (repo *GormRepository) UpdateProfile(ctx context.Context, id, email, displa
 		return translateConflict(result.Error)
 	}
 	if result.RowsAffected == 0 {
-		return ErrNotFound
+		if _, err := repo.UserByID(ctx, id); err != nil {
+			return err
+		}
+		return ErrMFAEmailChange
 	}
 	return nil
 }

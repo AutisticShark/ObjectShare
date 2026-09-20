@@ -315,6 +315,10 @@ func (handler *Handler) Login(writer http.ResponseWriter, request *http.Request)
 		}
 		return
 	}
+	if user.MFA.Method != "" {
+		handler.beginMFA(writer, request, user, "login", next, transportCookie)
+		return
+	}
 	if err := handler.startJWT(writer, request, user, true); err != nil {
 		handler.internalError(writer, request, "issue login JWT", err)
 		return
@@ -358,6 +362,10 @@ func (handler *Handler) APILogin(writer http.ResponseWriter, request *http.Reque
 	}
 	if user == nil {
 		http.Error(writer, "Email or password is incorrect.", http.StatusUnauthorized)
+		return
+	}
+	if user.MFA.Method != "" {
+		handler.beginMFA(writer, request, user, "login", "", transportBearer)
 		return
 	}
 	token, claims, err := handler.issueJWT(request, user, true)
@@ -606,6 +614,10 @@ func (handler *Handler) UpdateProfile(writer http.ResponseWriter, request *http.
 		return
 	}
 	err = handler.users.UpdateProfile(request.Context(), identity.User.ID, email, displayName)
+	if errors.Is(err, db.ErrMFAEmailChange) {
+		handler.renderAccount(writer, request, identity, "Disable email MFA using a current code or recovery code before changing your email address. You can enable it again after verifying the new address.", "")
+		return
+	}
 	if errors.Is(err, db.ErrConflict) {
 		handler.renderAccount(writer, request, identity, "That email address is already registered.", "")
 		return

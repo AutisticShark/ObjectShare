@@ -242,6 +242,10 @@ func (handler *Handler) finishOAuthLogin(writer http.ResponseWriter, request *ht
 		handler.renderOAuthError(writer, request, "This ObjectShare account is disabled.", false)
 		return
 	}
+	if user.MFA.Method != "" {
+		handler.beginMFA(writer, request, user, "login", flow.Next, transportCookie)
+		return
+	}
 	if err := handler.startJWT(writer, request, user, true); err != nil {
 		handler.internalError(writer, request, "issue OAuth login JWT", err)
 		return

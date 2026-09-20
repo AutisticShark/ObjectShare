@@ -9,7 +9,7 @@
   <div class="page page-center">
     <div class="container container-tight py-4">
       <div class="text-center mb-4"><a href="/" class="navbar-brand navbar-brand-autodark justify-content-center">{{template "brand" .}}</a></div>
-      <form class="card card-md" action="/login" method="post" hx-post="/login" hx-disabled-elt="button">
+      <form class="card card-md" action="/login" method="post" hx-post="/login" hx-select=".page" hx-target=".page" hx-swap="outerHTML" hx-disabled-elt="button">
         <input type="hidden" name="csrf_token" value="{{.CSRF}}"><input type="hidden" name="next" value="{{.Next}}">
         <div class="card-body">
           <h2 class="h2 text-center mb-4">Log in to your account</h2>

@@ -38,6 +38,7 @@ const (
 )
 
 type User struct {
+	MFA                        MFAState   `gorm:"column:mfa;type:jsonb;serializer:json;not null;default:'{}'" json:"-"`
 	ModerationStatus           string     `gorm:"column:moderation_status;type:varchar(16);not null;default:'';check:chk_users_moderation_status,moderation_status IN ('','banned','shadowbanned')" json:"-"`
 	EmailVerifiedAt            *time.Time `gorm:"column:email_verified_at"`
 	EmailVerificationHash      string     `gorm:"column:email_verification_hash;type:varchar(64);not null;default:''" json:"-"`
