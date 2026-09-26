@@ -268,11 +268,13 @@ func (handler *Handler) CompleteDirectUpload(writer http.ResponseWriter, request
 	if !handler.directUploadVerificationAllowed(writer, request, file) {
 		return
 	}
-	// A response can be lost after the database commit. The same owner token
-	// may retrieve completion again, including the guest owner cookie. Never
+	// A response can be lost after the database commit. The owner may retrieve
+	// completion again, including the guest owner cookie. Never
 	// re-upload, revalidate storage, or mutate a completed record on this path.
 	if file.UploadStatus == "complete" {
-		http.SetCookie(writer, ownerCookie(file.FileID, token, handler.config.SecureCookies, 30*24*time.Hour))
+		if file.FileOwner == nil {
+			http.SetCookie(writer, ownerCookie(file.FileID, token, handler.config.SecureCookies, 30*24*time.Hour))
+		}
 		writeJSON(writer, http.StatusOK, map[string]string{"location": "/file/" + file.FileID})
 		return
 	}
@@ -297,7 +299,9 @@ func (handler *Handler) CompleteDirectUpload(writer http.ResponseWriter, request
 		handler.internalError(writer, request, "complete direct upload", err)
 		return
 	}
-	http.SetCookie(writer, ownerCookie(file.FileID, token, handler.config.SecureCookies, 30*24*time.Hour))
+	if file.FileOwner == nil {
+		http.SetCookie(writer, ownerCookie(file.FileID, token, handler.config.SecureCookies, 30*24*time.Hour))
+	}
 	writeJSON(writer, http.StatusOK, map[string]string{"location": "/file/" + file.FileID})
 }
 
@@ -355,6 +359,10 @@ func (handler *Handler) directUploadIntentState(writer http.ResponseWriter, requ
 	moderation := handler.fileModeration(request, file)
 	if moderation != db.ModerationNone && (moderation != db.ModerationShadowbanned || !signedInFileOwner(request, file)) {
 		http.NotFound(writer, request)
+		return nil, "", false
+	}
+	if file.FileOwner != nil && !signedInFileOwner(request, file) {
+		http.Error(writer, "Authentication as the upload owner is required.", http.StatusForbidden)
 		return nil, "", false
 	}
 	if file.UploadStatus == "complete" {

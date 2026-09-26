@@ -487,7 +487,9 @@ func (handler *Handler) Upload(writer http.ResponseWriter, request *http.Request
 		return
 	}
 	reservationActive = false
-	http.SetCookie(writer, ownerCookie(fileID, token, handler.config.SecureCookies, 30*24*time.Hour))
+	if record.FileOwner == nil {
+		http.SetCookie(writer, ownerCookie(fileID, token, handler.config.SecureCookies, 30*24*time.Hour))
+	}
 	handler.redirect(writer, request, "/file/"+fileID)
 }
 
@@ -516,7 +518,9 @@ func (handler *Handler) uploadMultiple(writer http.ResponseWriter, request *http
 	}
 	ids := make([]string, 0, len(results))
 	for index, result := range results {
-		http.SetCookie(writer, ownerCookie(result.ID, tokens[index], handler.config.SecureCookies, 30*24*time.Hour))
+		if currentIdentity(request) == nil {
+			http.SetCookie(writer, ownerCookie(result.ID, tokens[index], handler.config.SecureCookies, 30*24*time.Hour))
+		}
 		ids = append(ids, result.ID)
 	}
 	handler.redirect(writer, request, "/uploads/complete?ids="+strings.Join(ids, ","))
@@ -912,8 +916,8 @@ func (handler *Handler) isOwner(request *http.Request, file *db.FileList) bool {
 	default:
 		return false
 	}
-	if identity := currentIdentity(request); identity != nil && file.FileOwner != nil && *file.FileOwner == identity.User.ID {
-		return true
+	if file.FileOwner != nil {
+		return signedInFileOwner(request, file)
 	}
 	cookie, err := request.Cookie(ownerCookieName(file.FileID))
 	if err != nil {

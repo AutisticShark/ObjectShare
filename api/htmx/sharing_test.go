@@ -226,6 +226,39 @@ func TestSharingCSRFAndGuestOwnership(t *testing.T) {
 	}
 }
 
+func TestAccountOwnerCookieCannotBypassJWT(t *testing.T) {
+	h, _, storage, file, owner := sharingTestHandler(t)
+	file.ShareMode = db.SharePrivate
+	token, hash, err := newOwnerToken()
+	if err != nil {
+		t.Fatal(err)
+	}
+	file.AnonymousSessionToken = hash
+	other := &db.User{ID: uuid.NewString(), Active: true}
+	for _, actor := range []*db.User{nil, other, {ID: owner.ID, Active: false}} {
+		request := sharingRequest("GET", file.FileID, "", actor)
+		request.AddCookie(ownerCookie(file.FileID, token, false, time.Hour))
+		if h.isOwner(request, file) || h.canReadFile(request, file) {
+			t.Fatal("account-owned private file accepted an owner cookie without an active owner JWT")
+		}
+		for _, endpoint := range []struct {
+			method string
+			serve  http.HandlerFunc
+		}{{"GET", h.FileView}, {"GET", h.Download}, {"GET", h.SharingPage}, {"POST", h.Update}, {"POST", h.Delete}} {
+			request := sharingRequest(endpoint.method, file.FileID, "name=changed.txt", actor)
+			request.AddCookie(ownerCookie(file.FileID, token, false, time.Hour))
+			response := httptest.NewRecorder()
+			endpoint.serve(response, request)
+			if response.Code != http.StatusNotFound && response.Code != http.StatusForbidden {
+				t.Fatalf("owner cookie bypassed %s: %d", endpoint.method, response.Code)
+			}
+		}
+	}
+	if file.FileName != "secret.txt" || string(storage.objects[file.FileID]) != "secret" {
+		t.Fatal("owner cookie changed an account-owned file")
+	}
+}
+
 type sharingPresignStorage struct {
 	*memoryStorage
 	calls int

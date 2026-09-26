@@ -83,6 +83,8 @@ These instructions apply to every change in this repository.
 
 - Review `git diff` and `git status` before and after edits. Keep unrelated user
   changes intact.
+- Use a `fix:`, `feat:`, or `chore:` prefix for each commit message. Choose the
+  prefix that matches the change; security and bug fixes use `fix:`.
 - For dependency or security upgrades, research current primary documentation,
   preserve behavior, and explain any unavoidable breaking change before making it.
 - A syntax check alone is insufficient for configuration-heavy changes. Exercise

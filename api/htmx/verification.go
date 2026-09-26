@@ -179,8 +179,8 @@ func (handler *Handler) purchaseAllowed(writer http.ResponseWriter, request *htt
 }
 
 func (handler *Handler) directUploadVerificationAllowed(writer http.ResponseWriter, request *http.Request, file *db.FileList) bool {
-	// Intents can be finalized using the owner token without the original JWT.
-	// Recheck the persisted owner, not just the current browser identity.
+	// Guest intents can be finalized using their owner token. Account intents
+	// also require the current owner's JWT at the completion boundary.
 	if file.FileOwner == nil {
 		return handler.uploadAllowed(writer, request)
 	}

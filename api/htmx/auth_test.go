@@ -822,6 +822,9 @@ func TestAuthenticatedUploadIsOwnedByAccount(t *testing.T) {
 	if response.Code != http.StatusSeeOther || len(repository.files) != 1 {
 		t.Fatalf("upload status=%d files=%d", response.Code, len(repository.files))
 	}
+	if len(response.Result().Cookies()) != 0 {
+		t.Fatal("account upload issued a guest owner cookie")
+	}
 	for _, file := range repository.files {
 		if file.FileOwner == nil || *file.FileOwner != user.ID || file.IsAnonymousUpload || !handler.isOwner(request, file) {
 			t.Fatalf("authenticated upload ownership is wrong: %#v", file)

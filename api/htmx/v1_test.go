@@ -304,7 +304,7 @@ func TestFailedProxiedUploadReleasesReservation(t *testing.T) {
 }
 
 func TestDirectUploadReservationConsumesAndReleasesQuota(t *testing.T) {
-	user := &db.User{ID: "quota-user", UploadQuotaBytes: mebibyte}
+	user := &db.User{ID: "quota-user", Active: true, UploadQuotaBytes: mebibyte}
 	repository := &memoryRepository{files: make(map[string]*db.FileList), quotaBytes: map[string]int64{user.ID: user.UploadQuotaBytes}}
 	storage := &directMemoryStorage{&memoryStorage{objects: make(map[string][]byte)}}
 	cfg := &config.ServiceConfig{MaxFileSize: 1, StorageService: "r2", Upload: &config.UploadConfig{GuestEnabled: true}, Encryption: &config.EncryptionConfig{}}

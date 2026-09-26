@@ -285,7 +285,7 @@ func (repo *GormRepository) DeleteUser(ctx context.Context, id string) error {
 			return ErrModeratedUser
 		}
 		if err := transaction.Model(&FileList{}).Where("file_owner = ?", id).
-			Updates(map[string]any{"file_owner": nil, "is_anonymous_upload": true}).Error; err != nil {
+			Updates(map[string]any{"file_owner": nil, "is_anonymous_upload": true, "anonymous_session_token": ""}).Error; err != nil {
 			return err
 		}
 		return transaction.Delete(&user).Error
