@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io/fs"
 	"log/slog"
@@ -56,8 +57,14 @@ type configReloader struct {
 	logger     *slog.Logger
 	current    atomic.Pointer[configSnapshot]
 	mu         sync.Mutex
-	workers    sync.WaitGroup
+	// closed is set by Stop under mu. Once it is set no Reload may start
+	// workers, so workers.Add can never race with workers.Wait.
+	closed  bool
+	workers sync.WaitGroup
 }
+
+// errReloaderStopped is returned by Reload after Stop.
+var errReloaderStopped = errors.New("configuration reloader is stopped")
 
 // newConfigReloader keeps the bootstrap configuration as the pristine base for
 // every snapshot. Listener, database, and JWT bootstrap settings are not part
@@ -81,6 +88,9 @@ func (reloader *configReloader) ServeHTTP(writer http.ResponseWriter, request *h
 func (reloader *configReloader) Reload(ctx context.Context) error {
 	reloader.mu.Lock()
 	defer reloader.mu.Unlock()
+	if reloader.closed {
+		return errReloaderStopped
+	}
 	setting, err := reloader.repository.ApplicationSettings(ctx)
 	if err != nil {
 		return fmt.Errorf("load database configuration: %w", err)
@@ -149,7 +159,7 @@ func (reloader *configReloader) Watch(ctx context.Context, interval time.Duratio
 		reloadContext, cancel := context.WithTimeout(ctx, reloadTimeout)
 		err := reloader.Reload(reloadContext)
 		cancel()
-		if err != nil && ctx.Err() == nil {
+		if err != nil && ctx.Err() == nil && !errors.Is(err, errReloaderStopped) {
 			reloader.logger.Error("activate saved configuration failed", "error", err)
 		}
 	}
@@ -158,8 +168,13 @@ func (reloader *configReloader) Watch(ctx context.Context, interval time.Duratio
 // Stop ends the active snapshot's background workers and waits for every
 // worker this process started, including those of replaced snapshots.
 func (reloader *configReloader) Stop() {
+	// Taking mu waits for any Reload in progress and, with closed, guarantees
+	// none can add workers afterwards; only then is Wait safe.
+	reloader.mu.Lock()
+	reloader.closed = true
 	if snapshot := reloader.current.Load(); snapshot != nil {
 		snapshot.cancel()
 	}
+	reloader.mu.Unlock()
 	reloader.workers.Wait()
 }

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -203,4 +204,57 @@ func TestConfigurationWatchActivatesRevisionsSavedByAnotherReplica(t *testing.T)
 	case <-time.After(10 * time.Second):
 		t.Fatal("the configuration watcher did not stop with its context")
 	}
+}
+
+func TestStopAndReloadCannotRaceOnTheWorkerGroup(t *testing.T) {
+	t.Setenv("OBJECTSHARE_JWT_SECRET", "stop-test-jwt-secret-with-at-least-32-bytes")
+	t.Setenv("OBJECTSHARE_SETTINGS_KEY", "stop-test-settings-key-with-at-least-32-bytes")
+	base, err := config.Load("config.json.example")
+	if err != nil {
+		t.Fatal(err)
+	}
+	base.RateLimit.Enabled = false
+	base.StorageService, base.StoragePath = "filesystem", t.TempDir()
+	repository := &memoryApplicationRepository{}
+	runtime := config.RuntimeFromService(base)
+	repository.store(t, base, runtime)
+	reloader := newConfigReloader(t.Context(), base, repository, templateFiles, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err := reloader.Reload(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+
+	// Hammer Reload with fresh revisions while Stop runs. Run under -race, a
+	// WaitGroup.Add concurrent with Wait is reported; here every reload after
+	// Stop must also be refused rather than starting workers nobody waits for.
+	var wg sync.WaitGroup
+	for worker := 0; worker < 4; worker++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for attempt := 0; attempt < 20; attempt++ {
+				candidate := runtime
+				candidate.MaxFileSize = int64(50 + worker*20 + attempt)
+				repository.store(t, base, candidate)
+				if err := reloader.Reload(t.Context()); err != nil && !errors.Is(err, errReloaderStopped) {
+					t.Errorf("reload: %v", err)
+					return
+				}
+			}
+		}()
+	}
+	time.Sleep(5 * time.Millisecond)
+	reloader.Stop()
+	wg.Wait()
+
+	stoppedAt := reloader.current.Load()
+	candidate := runtime
+	candidate.MaxFileSize = 99
+	repository.store(t, base, candidate)
+	if err := reloader.Reload(t.Context()); !errors.Is(err, errReloaderStopped) {
+		t.Fatalf("Reload after Stop = %v, want errReloaderStopped", err)
+	}
+	if reloader.current.Load() != stoppedAt {
+		t.Fatal("a snapshot was activated after Stop")
+	}
+	reloader.workers.Wait() // returns at once: no worker was added after Stop
 }
