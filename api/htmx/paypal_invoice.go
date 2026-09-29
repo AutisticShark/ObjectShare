@@ -36,12 +36,24 @@ func (handler *Handler) paypalPaidInvoice(writer http.ResponseWriter, request *h
 		http.Error(writer, "Cannot verify PayPal subscription period.", 502)
 		return
 	}
+	// PayPal updates the subscription's last payment and next billing time
+	// shortly after it sends the sale webhook. Only a receipt that is genuinely
+	// older than the subscription's last payment may be recorded without
+	// extending access; a subscription that has not caught up with this sale yet
+	// must be retried, otherwise the invoice would be recorded as paid while the
+	// customer's access silently stays unextended.
 	periodEnd := paidAt.Add(time.Second)
 	lastPaid, lastErr := time.Parse(time.RFC3339, details.BillingInfo.LastPayment.Time)
-	if lastErr == nil && lastPaid.Sub(paidAt).Abs() < time.Minute {
+	switch {
+	case lastErr != nil || lastPaid.Before(paidAt.Add(-time.Minute)):
+		writer.Header().Set("Retry-After", "60")
+		http.Error(writer, "PayPal has not yet updated the subscription for this payment. Retry shortly.", http.StatusServiceUnavailable)
+		return
+	case lastPaid.Sub(paidAt).Abs() < time.Minute:
 		periodEnd, err = time.Parse(time.RFC3339, details.BillingInfo.NextBillingTime)
 		if err != nil {
-			http.Error(writer, "Missing paid PayPal subscription period.", 422)
+			writer.Header().Set("Retry-After", "60")
+			http.Error(writer, "PayPal has not yet published the next billing time for this payment. Retry shortly.", http.StatusServiceUnavailable)
 			return
 		}
 	}
@@ -54,9 +66,9 @@ func (handler *Handler) paypalPaidInvoice(writer http.ResponseWriter, request *h
 		handler.invoiceFailure(writer, request, err)
 		return
 	}
-	err = repo.ApplyLegacyInvoicePayment(request.Context(), db.LegacyInvoicePayment{Gateway: db.BillingGatewayPayPal, PlanID: plan.ID, PaymentID: sale.Resource.ID, SubscriptionID: sale.Resource.AgreementID, Currency: sale.Resource.Amount.Currency, AmountMinor: amount, PeriodStart: paidAt, PeriodEnd: periodEnd, PaidAt: paidAt}, time.Now().UTC())
-	if err != nil {
-		handler.internalError(writer, request, "apply paid PayPal subscription invoice", err)
+	receipt := db.LegacyInvoicePayment{Gateway: db.BillingGatewayPayPal, PlanID: plan.ID, PaymentID: sale.Resource.ID, SubscriptionID: sale.Resource.AgreementID, Currency: sale.Resource.Amount.Currency, AmountMinor: amount, PeriodStart: paidAt, PeriodEnd: periodEnd, PaidAt: paidAt}
+	if err = repo.ApplyLegacyInvoicePayment(request.Context(), receipt, time.Now().UTC()); err != nil {
+		handler.legacyReceiptFailure(writer, request, receipt, err)
 		return
 	}
 	writer.WriteHeader(204)

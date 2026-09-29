@@ -93,6 +93,21 @@ func (handler *Handler) invoiceFailure(writer http.ResponseWriter, request *http
 	}
 }
 
+// legacyReceiptFailure answers a provider webhook whose recurring receipt could
+// not be applied. Failures that will never succeed on retry (no matching
+// subscription, a disabled account, mismatched terms) get a 422 with a log and
+// a reconciliation record instead of a permanent 500 the provider retries
+// forever; anything else stays a retryable 500.
+func (handler *Handler) legacyReceiptFailure(writer http.ResponseWriter, request *http.Request, payment db.LegacyInvoicePayment, err error) {
+	if errors.Is(err, db.ErrNotFound) || errors.Is(err, db.ErrConflict) || errors.Is(err, db.ErrInvalidCredit) {
+		handler.recordUnappliedPayment(request, db.CreditPayment{Gateway: payment.Gateway, GatewayPaymentID: payment.PaymentID,
+			TopUpID: "subscription:" + payment.SubscriptionID, Currency: payment.Currency, AmountMinor: payment.AmountMinor}, err)
+		http.Error(writer, "The subscription receipt could not be matched to an active subscription.", http.StatusUnprocessableEntity)
+		return
+	}
+	handler.internalError(writer, request, "apply subscription receipt", err)
+}
+
 func (handler *Handler) CreateInvoice(writer http.ResponseWriter, request *http.Request) {
 	if !handler.parseAuthForm(writer, request) || !handler.verifyAuthenticatedMutationCSRF(writer, request) {
 		return

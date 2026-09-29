@@ -7,6 +7,8 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -27,11 +29,12 @@ type invoiceTestRepository struct {
 	invoice       db.Invoice
 	created, paid bool
 	legacy        *db.LegacyInvoicePayment
+	legacyErr     error
 }
 
 func (repo *invoiceTestRepository) ApplyLegacyInvoicePayment(_ context.Context, payment db.LegacyInvoicePayment, _ time.Time) error {
 	repo.legacy = &payment
-	return nil
+	return repo.legacyErr
 }
 
 func TestPaidLegacyReceiptsPassVerifiedAmountsToInvoices(t *testing.T) {
@@ -207,5 +210,76 @@ func TestInvoiceCreateReadPDFAndPaymentBoundaries(t *testing.T) {
 	response = call("POST", "/invoices/"+id+"/pay", owner, "gateway=credit&csrf_token=expected")
 	if response.Code != http.StatusPaymentRequired {
 		t.Fatalf("insufficient credit: %d", response.Code)
+	}
+}
+
+func paypalSaleHandler(t *testing.T, sale time.Time, lastPayment, nextBilling string) (*Handler, *invoiceTestRepository, string) {
+	t.Helper()
+	repo := &invoiceTestRepository{entitlementRepository: &entitlementRepository{memoryRepository: &memoryRepository{files: make(map[string]*db.FileList)}, plan: &db.PaidPlan{ID: "mapped-plan"}}}
+	handler := newTestHandler(t, repo, &memoryStorage{objects: make(map[string][]byte)})
+	handler.logger = slog.New(slog.NewTextHandler(io.Discard, nil))
+	gateway := &paypalGatewayStub{verified: true, details: paypalSubscription{ID: "I-1", PlanID: "P-1"}}
+	gateway.details.BillingInfo.LastPayment.Time = lastPayment
+	gateway.details.BillingInfo.NextBillingTime = nextBilling
+	handler.billingGateways = map[string]billingGateway{db.BillingGatewayPayPal: gateway}
+	payload := fmt.Sprintf(`{"id":"WH-paid","event_type":"PAYMENT.SALE.COMPLETED","create_time":%q,"resource":{"id":"sale-1","state":"completed","billing_agreement_id":"I-1","create_time":%q,"amount":{"total":"12.34","currency":"USD"}}}`, sale.Format(time.RFC3339), sale.Format(time.RFC3339))
+	return handler, repo, payload
+}
+
+func TestPayPalRenewalIsRetriedUntilPayPalHasUpdatedTheSubscription(t *testing.T) {
+	sale := time.Now().UTC().Truncate(time.Second)
+	next := sale.AddDate(0, 0, 30).Format(time.RFC3339)
+	for name, test := range map[string]struct {
+		lastPayment string
+		wantStatus  int
+		wantRecord  bool
+		wantEnd     func(time.Time) bool
+	}{
+		"subscription not yet updated (older last payment)":  {sale.AddDate(0, -1, 0).Format(time.RFC3339), http.StatusServiceUnavailable, false, nil},
+		"no last payment published yet":                      {"", http.StatusServiceUnavailable, false, nil},
+		"caught up: access follows next billing time":        {sale.Format(time.RFC3339), http.StatusNoContent, true, func(end time.Time) bool { return end.Equal(sale.AddDate(0, 0, 30)) }},
+		"genuinely older sale is recorded without extending": {sale.AddDate(0, 0, 30).Format(time.RFC3339), http.StatusNoContent, true, func(end time.Time) bool { return end.Equal(sale.Add(time.Second)) }},
+	} {
+		t.Run(name, func(t *testing.T) {
+			handler, repo, payload := paypalSaleHandler(t, sale, test.lastPayment, next)
+			response := httptest.NewRecorder()
+			handler.PayPalWebhook(response, httptest.NewRequest(http.MethodPost, "/api/v1/billing/paypal/webhook", strings.NewReader(payload)))
+			if response.Code != test.wantStatus || (repo.legacy != nil) != test.wantRecord {
+				t.Fatalf("status=%d recorded=%v body=%q", response.Code, repo.legacy != nil, response.Body.String())
+			}
+			if test.wantStatus == http.StatusServiceUnavailable && response.Header().Get("Retry-After") == "" {
+				t.Fatal("a retryable response must say when to retry")
+			}
+			if test.wantEnd != nil && !test.wantEnd(repo.legacy.PeriodEnd) {
+				t.Fatalf("period end = %v", repo.legacy.PeriodEnd)
+			}
+		})
+	}
+}
+
+func TestLegacyReceiptFailuresThatCannotSucceedAreNotPermanentServerErrors(t *testing.T) {
+	sale := time.Now().UTC().Truncate(time.Second)
+	for name, test := range map[string]struct {
+		err        error
+		wantStatus int
+		wantRecord bool
+	}{
+		"no matching subscription": {db.ErrNotFound, http.StatusUnprocessableEntity, true},
+		"mismatched terms":         {db.ErrConflict, http.StatusUnprocessableEntity, true},
+		"invalid receipt":          {db.ErrInvalidCredit, http.StatusUnprocessableEntity, true},
+		"transient failure":        {errors.New("database unavailable"), http.StatusInternalServerError, false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			handler, repo, payload := paypalSaleHandler(t, sale, sale.Format(time.RFC3339), sale.AddDate(0, 0, 30).Format(time.RFC3339))
+			repo.legacyErr = test.err
+			response := httptest.NewRecorder()
+			handler.PayPalWebhook(response, httptest.NewRequest(http.MethodPost, "/api/v1/billing/paypal/webhook", strings.NewReader(payload)))
+			if response.Code != test.wantStatus || (len(repo.reconciled) == 1) != test.wantRecord {
+				t.Fatalf("status=%d reconciled=%#v", response.Code, repo.reconciled)
+			}
+			if test.wantRecord && (repo.reconciled[0].GatewayPaymentID != "sale-1" || repo.reconciled[0].TopUpID != "subscription:I-1") {
+				t.Fatalf("record = %#v", repo.reconciled[0])
+			}
+		})
 	}
 }

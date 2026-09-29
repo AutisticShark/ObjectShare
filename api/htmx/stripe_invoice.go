@@ -58,10 +58,10 @@ func (handler *Handler) stripePaidInvoice(writer http.ResponseWriter, request *h
 		handler.invoiceFailure(writer, request, err)
 		return
 	}
-	err = repo.ApplyLegacyInvoicePayment(request.Context(), db.LegacyInvoicePayment{Gateway: db.BillingGatewayStripe, PlanID: plan.ID, PaymentID: paid.ID, SubscriptionID: paid.Subscription, Currency: paid.Currency, AmountMinor: paid.AmountPaid,
-		PeriodStart: time.Unix(line.Period.Start, 0).UTC(), PeriodEnd: time.Unix(line.Period.End, 0).UTC(), PaidAt: time.Unix(paid.StatusTransitions.PaidAt, 0).UTC()}, time.Now().UTC())
-	if err != nil {
-		handler.internalError(writer, request, "apply paid subscription invoice", err)
+	receipt := db.LegacyInvoicePayment{Gateway: db.BillingGatewayStripe, PlanID: plan.ID, PaymentID: paid.ID, SubscriptionID: paid.Subscription, Currency: paid.Currency, AmountMinor: paid.AmountPaid,
+		PeriodStart: time.Unix(line.Period.Start, 0).UTC(), PeriodEnd: time.Unix(line.Period.End, 0).UTC(), PaidAt: time.Unix(paid.StatusTransitions.PaidAt, 0).UTC()}
+	if err = repo.ApplyLegacyInvoicePayment(request.Context(), receipt, time.Now().UTC()); err != nil {
+		handler.legacyReceiptFailure(writer, request, receipt, err)
 		return
 	}
 	writer.WriteHeader(204)
