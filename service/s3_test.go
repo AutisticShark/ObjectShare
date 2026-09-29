@@ -2,6 +2,8 @@ package service
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"strings"
 	"testing"
@@ -87,5 +89,40 @@ func TestS3CustomEndpointSupportsPathStyle(t *testing.T) {
 	wantSource := "https://storage.example.com:8443"
 	if sources := store.DirectUploadPolicy().ConnectSources; len(sources) != 1 || sources[0] != wantSource {
 		t.Fatalf("connect sources = %#v, want %q", sources, wantSource)
+	}
+}
+
+func TestCopySourceEscapesSegmentsAndKeepsSeparators(t *testing.T) {
+	for _, test := range []struct{ bucket, key, want string }{
+		{"bucket", "pending/0f8fad5b-d9cb-469f-a165-70867728950e", "bucket/pending/0f8fad5b-d9cb-469f-a165-70867728950e"},
+		{"bucket", "plain", "bucket/plain"},
+		{"my bucket", "a b/c?d", "my%20bucket/a%20b/c%3Fd"},
+	} {
+		if got := copySource(test.bucket, test.key); got != test.want {
+			t.Errorf("copySource(%q, %q) = %q, want %q", test.bucket, test.key, got, test.want)
+		}
+	}
+}
+
+func TestS3CopyPublishesAStagedObjectServerSide(t *testing.T) {
+	var method, path, source string
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		method, path, source = request.Method, request.URL.Path, request.Header.Get("X-Amz-Copy-Source")
+		writer.Header().Set("Content-Type", "application/xml")
+		_, _ = writer.Write([]byte(`<?xml version="1.0" encoding="UTF-8"?><CopyObjectResult><ETag>"abc"</ETag></CopyObjectResult>`))
+	}))
+	defer server.Close()
+	store, err := NewS3(&config.S3Config{UsePathStyle: true, S3CompatibleConfig: config.S3CompatibleConfig{
+		BucketName: "objectshare-test", Region: "us-east-1", Endpoint: server.URL, AccessKeyID: "access-key", SecretAccessKey: "secret-key",
+		PresignLinkTimeout: config.Duration(time.Minute), PresignUploadTimeout: config.Duration(time.Hour),
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = store.Copy(context.Background(), PendingUploadKey("file-id"), "file-id"); err != nil {
+		t.Fatal(err)
+	}
+	if method != http.MethodPut || path != "/objectshare-test/file-id" || source != "objectshare-test/pending/file-id" {
+		t.Fatalf("copy request = %s %s source %q", method, path, source)
 	}
 }

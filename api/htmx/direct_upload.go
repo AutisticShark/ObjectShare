@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/AutisticShark/ObjectShare/db"
+	"github.com/AutisticShark/ObjectShare/service"
 	"github.com/google/uuid"
 )
 
@@ -104,7 +105,7 @@ func (handler *Handler) reserveDirectUpload(request *http.Request, input directU
 	if err := handler.repository.ReserveUpload(request.Context(), record); err != nil {
 		return directUploadAuthorization{}, err
 	}
-	uploadURL, err := handler.direct.PresignPut(request.Context(), record.FileID, record.FileSize, record.ContentType)
+	uploadURL, err := handler.direct.PresignPut(request.Context(), service.PendingUploadKey(record.FileID), record.FileSize, record.ContentType)
 	if err != nil {
 		handler.discardUpload(request, record.FileID, false)
 		return directUploadAuthorization{}, fmt.Errorf("presign direct upload: %w", err)
@@ -228,7 +229,16 @@ func (handler *Handler) CompleteDirectUpload(writer http.ResponseWriter, request
 		writeJSON(writer, http.StatusOK, map[string]string{"location": "/file/" + file.FileID})
 		return
 	}
-	info, err := handler.direct.Stat(request.Context(), file.FileID)
+	// The presigned URL targets a staging key, so a repeated PUT after this
+	// point can never replace the finished file. Uploads authorised before that
+	// change were presigned for the final key; accept those when nothing is staged.
+	pendingKey := service.PendingUploadKey(file.FileID)
+	staged := true
+	info, err := handler.direct.Stat(request.Context(), pendingKey)
+	if err != nil {
+		staged = false
+		info, err = handler.direct.Stat(request.Context(), file.FileID)
+	}
 	if err != nil {
 		handler.logger.Warn("direct upload is not available yet", "file_id", file.FileID, "error", err)
 		http.Error(writer, "The uploaded object is not available yet.", http.StatusConflict)
@@ -240,6 +250,13 @@ func (handler *Handler) CompleteDirectUpload(writer http.ResponseWriter, request
 		}
 		http.Error(writer, "The uploaded object does not match the authorized upload.", http.StatusUnprocessableEntity)
 		return
+	}
+	if staged {
+		if err := handler.publishStagedUpload(request.Context(), file, pendingKey); err != nil {
+			handler.logger.Warn("publish staged direct upload", "file_id", file.FileID, "error", err)
+			http.Error(writer, "The uploaded object could not be finalized yet. Retry completion.", http.StatusConflict)
+			return
+		}
 	}
 	if err := handler.repository.CompleteUpload(request.Context(), file.FileID); err != nil {
 		if errors.Is(err, db.ErrNotFound) {
@@ -341,12 +358,37 @@ func (handler *Handler) cleanupExpiredUploads(request *http.Request) {
 	}
 }
 
+// publishStagedUpload copies the verified staging object to the file's real key,
+// re-checks its size there, and removes the staging copy.
+func (handler *Handler) publishStagedUpload(ctx context.Context, file *db.FileList, pendingKey string) error {
+	if err := handler.direct.Copy(ctx, pendingKey, file.FileID); err != nil {
+		return err
+	}
+	published, err := handler.direct.Stat(ctx, file.FileID)
+	if err != nil {
+		return err
+	}
+	if published.Size != file.FileSize {
+		_ = handler.storage.Delete(ctx, file.FileID)
+		return fmt.Errorf("published object is %d bytes, authorised %d", published.Size, file.FileSize)
+	}
+	if err := handler.storage.Delete(ctx, pendingKey); err != nil {
+		handler.logger.Warn("delete staged direct upload", "file_id", file.FileID, "error", err)
+	}
+	return nil
+}
+
 func (handler *Handler) deletePendingUpload(ctx context.Context, fileID string) error {
 	if err := handler.repository.ClaimPendingUploadDeletion(ctx, fileID); err != nil {
 		return err
 	}
 	if err := handler.storage.Delete(ctx, fileID); err != nil {
 		return err
+	}
+	if handler.direct != nil {
+		if err := handler.storage.Delete(ctx, service.PendingUploadKey(fileID)); err != nil {
+			return err
+		}
 	}
 	if err := handler.repository.Delete(ctx, fileID); err != nil && !errors.Is(err, db.ErrNotFound) {
 		return err

@@ -29,8 +29,17 @@ type ObjectInfo struct {
 type DirectUploader interface {
 	PresignPut(context.Context, string, int64, string) (string, error)
 	Stat(context.Context, string) (*ObjectInfo, error)
+	// Copy duplicates an object server-side, preserving its content type. The
+	// finalize step uses it to publish a staged upload under its final key.
+	Copy(ctx context.Context, sourceKey, destinationKey string) error
 	DirectUploadPolicy() DirectUploadPolicy
 }
+
+// PendingUploadKey is the staging key a presigned direct upload writes to. A
+// presigned PUT stays valid until it expires, so it must never target the key a
+// finished file is served from: the finalize step verifies the staged object,
+// copies it to the file's real key, and deletes the staged copy.
+func PendingUploadKey(fileID string) string { return "pending/" + fileID }
 
 type DirectUploadPolicy struct {
 	Expires        time.Duration

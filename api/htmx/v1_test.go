@@ -151,7 +151,10 @@ func (repository *memoryRepository) Delete(_ context.Context, id string) error {
 }
 func (*memoryRepository) Ping(context.Context) error { return nil }
 
-type memoryStorage struct{ objects map[string][]byte }
+type memoryStorage struct {
+	objects   map[string][]byte
+	presigned []string // keys handed to PresignPut, in order
+}
 
 func (storage *memoryStorage) Put(_ context.Context, key string, reader io.Reader, _ int64, _ string) error {
 	data, err := io.ReadAll(reader)
@@ -183,8 +186,17 @@ func (*failingPutStorage) Put(context.Context, string, io.Reader, int64, string)
 	return io.ErrUnexpectedEOF
 }
 
-func (*directMemoryStorage) PresignPut(context.Context, string, int64, string) (string, error) {
+func (storage *directMemoryStorage) PresignPut(_ context.Context, key string, _ int64, _ string) (string, error) {
+	storage.presigned = append(storage.presigned, key)
 	return "https://example.r2.cloudflarestorage.com/upload", nil
+}
+func (storage *directMemoryStorage) Copy(_ context.Context, sourceKey, destinationKey string) error {
+	data, ok := storage.objects[sourceKey]
+	if !ok {
+		return fs.ErrNotExist
+	}
+	storage.objects[destinationKey] = append([]byte(nil), data...)
+	return nil
 }
 func (*directMemoryStorage) DirectUploadPolicy() service.DirectUploadPolicy {
 	return service.DirectUploadPolicy{Expires: time.Hour, MaxSize: service.MaxSinglePartUploadSize, ConnectSources: []string{"https://example.r2.cloudflarestorage.com"}}

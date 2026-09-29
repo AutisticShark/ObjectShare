@@ -12,6 +12,7 @@ import (
 	appauth "github.com/AutisticShark/ObjectShare/auth"
 	"github.com/AutisticShark/ObjectShare/config"
 	"github.com/AutisticShark/ObjectShare/db"
+	"github.com/AutisticShark/ObjectShare/service"
 )
 
 func TestCompletedDirectUploadCanRestoreLostResponseWithoutMutatingObject(t *testing.T) {
@@ -157,5 +158,90 @@ func TestSameMediaTypeIgnoresProviderNormalisation(t *testing.T) {
 		if got := sameMediaType(test.stored, test.authorized); got != test.want {
 			t.Errorf("sameMediaType(%q, %q) = %v, want %v", test.stored, test.authorized, got, test.want)
 		}
+	}
+}
+
+func TestDirectUploadIsStagedAndCannotBeOverwrittenAfterFinalize(t *testing.T) {
+	repository := &memoryRepository{files: make(map[string]*db.FileList)}
+	direct := &directMemoryStorage{&memoryStorage{objects: make(map[string][]byte)}}
+	handler := newTestHandler(t, repository, direct)
+	begin := func() (fileID, token string) {
+		response := httptest.NewRecorder()
+		handler.BeginDirectUpload(response, httptest.NewRequest(http.MethodPost, "/api/v1/uploads/direct", strings.NewReader(`{"file_name":"a.txt","file_size":5,"content_type":"text/plain"}`)))
+		if response.Code != http.StatusCreated {
+			t.Fatalf("begin: %d %s", response.Code, response.Body.String())
+		}
+		var payload struct{ FileID, Token string }
+		var raw map[string]any
+		if err := json.Unmarshal(response.Body.Bytes(), &raw); err != nil {
+			t.Fatal(err)
+		}
+		payload.FileID, payload.Token = raw["file_id"].(string), raw["token"].(string)
+		return payload.FileID, payload.Token
+	}
+	call := func(handle func(http.ResponseWriter, *http.Request), fileID, token string) *httptest.ResponseRecorder {
+		body, _ := json.Marshal(map[string]string{"token": token})
+		response := httptest.NewRecorder()
+		handle(response, sharingRequest("POST", fileID, string(body), nil))
+		return response
+	}
+
+	fileID, token := begin()
+	pending := service.PendingUploadKey(fileID)
+	if len(direct.presigned) != 1 || direct.presigned[0] != pending {
+		t.Fatalf("presigned key = %v, want the staging key %q", direct.presigned, pending)
+	}
+	if response := call(handler.CompleteDirectUpload, fileID, token); response.Code != http.StatusConflict {
+		t.Fatalf("completion before the browser upload = %d, want 409", response.Code)
+	}
+	direct.objects[pending] = []byte("hello") // the browser's PUT
+	if response := call(handler.CompleteDirectUpload, fileID, token); response.Code != http.StatusOK {
+		t.Fatalf("complete: %d %s", response.Code, response.Body.String())
+	}
+	if string(direct.objects[fileID]) != "hello" {
+		t.Fatalf("published object = %q", direct.objects[fileID])
+	}
+	if _, staged := direct.objects[pending]; staged {
+		t.Fatal("the staged copy survived finalization")
+	}
+
+	// The still-valid presigned URL is replayed with different content: it can
+	// only write the staging key and never the finished file.
+	direct.objects[pending] = []byte("HACKD")
+	if response := call(handler.CompleteDirectUpload, fileID, token); response.Code != http.StatusOK {
+		t.Fatalf("completion replay: %d", response.Code)
+	}
+	if string(direct.objects[fileID]) != "hello" {
+		t.Fatalf("a replayed PUT overwrote the finalized file: %q", direct.objects[fileID])
+	}
+
+	// Aborting removes every object the authorisation could have created.
+	abortID, abortToken := begin()
+	direct.objects[service.PendingUploadKey(abortID)] = []byte("hello")
+	if response := call(handler.AbortDirectUpload, abortID, abortToken); response.Code != http.StatusNoContent {
+		t.Fatalf("abort: %d %s", response.Code, response.Body.String())
+	}
+	if _, left := direct.objects[service.PendingUploadKey(abortID)]; left {
+		t.Fatal("abort left the staged object behind")
+	}
+}
+
+func TestLegacyDirectUploadToTheFinalKeyStillCompletes(t *testing.T) {
+	repository := &memoryRepository{files: make(map[string]*db.FileList)}
+	direct := &directMemoryStorage{&memoryStorage{objects: make(map[string][]byte)}}
+	handler := newTestHandler(t, repository, direct)
+	response := httptest.NewRecorder()
+	handler.BeginDirectUpload(response, httptest.NewRequest(http.MethodPost, "/api/v1/uploads/direct", strings.NewReader(`{"file_name":"a.txt","file_size":5,"content_type":"text/plain"}`)))
+	var raw map[string]any
+	if err := json.Unmarshal(response.Body.Bytes(), &raw); err != nil {
+		t.Fatal(err)
+	}
+	fileID, token := raw["file_id"].(string), raw["token"].(string)
+	direct.objects[fileID] = []byte("hello") // presigned for the final key before the staging change
+	body, _ := json.Marshal(map[string]string{"token": token})
+	done := httptest.NewRecorder()
+	handler.CompleteDirectUpload(done, sharingRequest("POST", fileID, string(body), nil))
+	if done.Code != http.StatusOK || string(direct.objects[fileID]) != "hello" {
+		t.Fatalf("legacy in-flight upload: %d %s", done.Code, done.Body.String())
 	}
 }

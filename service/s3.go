@@ -158,6 +158,27 @@ func (store *S3Compatible) Stat(ctx context.Context, key string) (*ObjectInfo, e
 	return &ObjectInfo{Size: aws.ToInt64(output.ContentLength), ContentType: aws.ToString(output.ContentType)}, nil
 }
 
+func (store *S3Compatible) Copy(ctx context.Context, sourceKey, destinationKey string) error {
+	_, err := store.client.CopyObject(ctx, &s3.CopyObjectInput{
+		Bucket: aws.String(store.bucket), Key: aws.String(destinationKey),
+		CopySource: aws.String(copySource(store.bucket, sourceKey)),
+	})
+	if err != nil {
+		return fmt.Errorf("copy %s object: %w", store.provider, err)
+	}
+	return nil
+}
+
+// copySource builds the URL-encoded "bucket/key" value CopyObject expects,
+// escaping each path segment but keeping the separators.
+func copySource(bucket, key string) string {
+	segments := strings.Split(key, "/")
+	for index, segment := range segments {
+		segments[index] = url.PathEscape(segment)
+	}
+	return url.PathEscape(bucket) + "/" + strings.Join(segments, "/")
+}
+
 func (store *S3Compatible) DirectUploadPolicy() DirectUploadPolicy {
 	return DirectUploadPolicy{Expires: store.uploadTimeout.Duration(), MaxSize: MaxSinglePartUploadSize, ConnectSources: store.connectSources}
 }
