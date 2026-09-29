@@ -349,17 +349,57 @@ func (handler *Handler) directUploadIntentState(writer http.ResponseWriter, requ
 	return file, input.Token, true
 }
 
-func (handler *Handler) cleanupExpiredUploads(request *http.Request) {
-	files, err := handler.repository.ExpiredUploads(request.Context(), time.Now().UTC(), 25)
-	if err != nil {
-		handler.logger.Warn("list expired direct uploads", "error", err)
+// expiredUploadCleanupInterval is the minimum gap between cleanup passes started
+// by upload requests on one handler.
+const expiredUploadCleanupInterval = 30 * time.Second
+
+// cleanupExpiredUploads asks for a pass over expired upload reservations without
+// making the request wait for it: object-storage deletes can be slow and the
+// caller only needs its own upload to proceed. At most one pass runs at a time
+// and passes are spaced by expiredUploadCleanupInterval, however many uploads
+// arrive.
+func (handler *Handler) cleanupExpiredUploads(_ *http.Request) {
+	handler.cleanupMu.Lock()
+	if handler.cleanupRunning || time.Since(handler.lastCleanup) < expiredUploadCleanupInterval {
+		handler.cleanupMu.Unlock()
 		return
 	}
-	for _, file := range files {
-		if err := handler.deletePendingUpload(request.Context(), file.FileID); err != nil && !errors.Is(err, db.ErrNotFound) {
-			handler.logger.Warn("delete unfinished upload", "file_id", file.FileID, "error", err)
-		}
+	handler.cleanupRunning, handler.lastCleanup = true, time.Now()
+	handler.cleanupMu.Unlock()
+	go func() {
+		defer func() {
+			handler.cleanupMu.Lock()
+			handler.cleanupRunning = false
+			handler.cleanupMu.Unlock()
+		}()
+		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+		defer cancel()
+		handler.sweepExpiredUploads(ctx)
+	}()
+}
+
+// sweepExpiredUploads deletes up to 25 expired or aborting reservations, logs
+// what it did and returns how many it removed.
+func (handler *Handler) sweepExpiredUploads(ctx context.Context) int {
+	files, err := handler.repository.ExpiredUploads(ctx, time.Now().UTC(), 25)
+	if err != nil {
+		handler.logger.Warn("list expired direct uploads", "error", err)
+		return 0
 	}
+	removed := 0
+	for _, file := range files {
+		if err := handler.deletePendingUpload(ctx, file.FileID); err != nil {
+			if !errors.Is(err, db.ErrNotFound) {
+				handler.logger.Warn("delete unfinished upload", "file_id", file.FileID, "error", err)
+			}
+			continue
+		}
+		removed++
+	}
+	if len(files) != 0 {
+		handler.logger.Info("cleaned up expired upload reservations", "found", len(files), "removed", removed)
+	}
+	return removed
 }
 
 // publishStagedUpload copies the verified staging object to the file's real key,

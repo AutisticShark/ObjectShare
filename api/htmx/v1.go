@@ -20,6 +20,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -72,6 +73,10 @@ type Handler struct {
 	// adminsExistUntil is the Unix-nanosecond deadline until which SetupComplete
 	// may skip its AdminCount query after seeing an administrator.
 	adminsExistUntil atomic.Int64
+	// cleanupMu guards the background pass over expired upload reservations.
+	cleanupMu      sync.Mutex
+	cleanupRunning bool
+	lastCleanup    time.Time
 }
 
 // InheritProcessState carries state that belongs to the process rather than to
