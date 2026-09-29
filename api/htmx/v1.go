@@ -409,6 +409,7 @@ func (handler *Handler) Download(writer http.ResponseWriter, request *http.Reque
 		return
 	}
 	defer body.Close()
+	writer = handler.withDownloadProgress(writer)
 	writer.Header().Set("Content-Type", file.ContentType)
 	downloadName := file.FileName
 	if file.ClientEncryption != "" {

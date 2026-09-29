@@ -31,6 +31,7 @@ func (handler *Handler) Upload(writer http.ResponseWriter, request *http.Request
 	if maxFiles <= 0 {
 		maxFiles = 10
 	}
+	handler.withUploadProgress(writer, request)
 	request.Body = http.MaxBytesReader(writer, request.Body, maxBytes*int64(maxFiles)+int64(maxFiles)*mebibyte)
 	defer func() {
 		if request.MultipartForm != nil {
