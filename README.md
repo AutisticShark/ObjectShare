@@ -1086,7 +1086,7 @@ and reconcile billing and authentication state before returning a restored site 
 
 Pushes to `main` publish the `dev` tag to GHCR only. For releases and manual runs, if any Docker Hub setting is absent, that login and image target are skipped and the workflow publishes to GHCR only. GHCR uses the workflow-scoped `GITHUB_TOKEN`; no additional secret is needed. Published images include BuildKit provenance and an SBOM. Package visibility is managed from the repository's Packages settings.
 
-`.github/workflows/workflow_runs_clean_up.yml` runs daily (or manually), deletes runs older than seven days, and always retains the newest run for each workflow.
+`.github/workflows/workflow-runs-clean-up.yml` runs daily (or manually), deletes runs older than seven days, and always retains the newest run for each workflow.
 
 ## Development
 
