@@ -15,6 +15,7 @@ import (
 func Router(handler *htmx.Handler, logger *slog.Logger) http.Handler {
 	router := chi.NewRouter()
 	router.Use(middleware.RequestID)
+	router.Use(requestIDHeader)
 	router.Use(accessLog(logger))
 	router.Use(middleware.Recoverer)
 	router.Use(securityHeaders(handler.CaptchaCSPEnabled(), handler.BrandingImageSources(), handler.DirectUploadConnectSources()...))
@@ -115,6 +116,17 @@ func Router(handler *htmx.Handler, logger *slog.Logger) http.Handler {
 		})
 	})
 	return router
+}
+
+// requestIDHeader echoes the request ID that access and error logs record, so a
+// user or proxy can quote it when reporting a failure.
+func requestIDHeader(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if id := middleware.GetReqID(request.Context()); id != "" {
+			writer.Header().Set("X-Request-Id", id)
+		}
+		next.ServeHTTP(writer, request)
+	})
 }
 
 func accessLog(logger *slog.Logger) func(http.Handler) http.Handler {

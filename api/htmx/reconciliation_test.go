@@ -17,6 +17,7 @@ import (
 
 	"github.com/AutisticShark/ObjectShare/config"
 	"github.com/AutisticShark/ObjectShare/db"
+	"github.com/go-chi/chi/v5/middleware"
 )
 
 func capturedPaymentHandler(t *testing.T, repository *entitlementRepository, gateways map[string]billingGateway) (*Handler, *bytes.Buffer) {
@@ -120,5 +121,26 @@ func TestStreamErrorsAreLoggedUnlessTheClientLeft(t *testing.T) {
 	handler.logStreamError(httptest.NewRequest(http.MethodGet, "/file", nil), "file-3", "stream download", func() error { return nil })
 	if logs.Len() != 0 {
 		t.Fatalf("routine disconnects or successful copies were logged: %q", logs.String())
+	}
+}
+
+func TestInternalErrorLogsTheRequestIDFromContext(t *testing.T) {
+	logs := new(bytes.Buffer)
+	handler := &Handler{logger: slog.New(slog.NewTextHandler(logs, nil))}
+	var response *httptest.ResponseRecorder
+	chain := middleware.RequestID(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		handler.internalError(writer, request, "load thing", errors.New("boom"))
+	}))
+	request := httptest.NewRequest(http.MethodGet, "/", nil)
+	request.Header.Set("X-Request-Id", "req-from-proxy-7")
+	response = httptest.NewRecorder()
+	chain.ServeHTTP(response, request)
+	if response.Code != http.StatusInternalServerError || !strings.Contains(logs.String(), "request_id=req-from-proxy-7") {
+		t.Fatalf("status=%d log=%q", response.Code, logs.String())
+	}
+	generated := httptest.NewRecorder()
+	chain.ServeHTTP(generated, httptest.NewRequest(http.MethodGet, "/", nil))
+	if strings.Contains(logs.String(), "request_id= ") || strings.Contains(logs.String(), `request_id=""`) {
+		t.Fatalf("a generated request id was not logged: %q", logs.String())
 	}
 }

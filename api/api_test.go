@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/AutisticShark/ObjectShare/config"
+	"github.com/go-chi/chi/v5/middleware"
 )
 
 func TestSecurityHeaders(t *testing.T) {
@@ -78,5 +79,27 @@ func TestSameOriginRejectsCrossSiteRequest(t *testing.T) {
 	handler.ServeHTTP(response, request)
 	if response.Code != http.StatusForbidden {
 		t.Fatalf("status = %d", response.Code)
+	}
+}
+
+func TestRequestIDIsEchoedAndRecordedByErrorLogs(t *testing.T) {
+	chain := middleware.RequestID(requestIDHeader(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if middleware.GetReqID(request.Context()) == "" {
+			t.Error("no request id in the context")
+		}
+		writer.WriteHeader(http.StatusNoContent)
+	})))
+	response := httptest.NewRecorder()
+	chain.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/", nil))
+	generated := response.Header().Get("X-Request-Id")
+	if generated == "" {
+		t.Fatal("responses do not carry X-Request-Id")
+	}
+	request := httptest.NewRequest(http.MethodGet, "/", nil)
+	request.Header.Set("X-Request-Id", "proxy-assigned-42")
+	response = httptest.NewRecorder()
+	chain.ServeHTTP(response, request)
+	if response.Header().Get("X-Request-Id") != "proxy-assigned-42" {
+		t.Fatalf("an upstream request id was not preserved: %q", response.Header().Get("X-Request-Id"))
 	}
 }

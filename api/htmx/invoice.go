@@ -226,7 +226,10 @@ func (handler *Handler) PayInvoice(writer http.ResponseWriter, request *http.Req
 	if invoice.Kind == "plan" && !handler.purchaseAllowed(writer, request) {
 		return
 	}
-	repo := handler.billing.(db.InvoiceRepository)
+	repo := handler.invoiceRepo(writer)
+	if repo == nil {
+		return
+	}
 	gatewayKey := request.FormValue("gateway")
 	if gatewayKey == db.BillingGatewayCredit {
 		if err := repo.PayInvoiceCredit(request.Context(), identityUser(request).ID, invoice.ID, time.Now().UTC()); err != nil {

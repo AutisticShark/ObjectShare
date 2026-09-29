@@ -31,6 +31,7 @@ import (
 	appcrypto "github.com/AutisticShark/ObjectShare/encryption"
 	"github.com/AutisticShark/ObjectShare/service"
 	"github.com/go-chi/chi/v5"
+	"github.com/go-chi/chi/v5/middleware"
 	"github.com/google/uuid"
 )
 
@@ -650,7 +651,7 @@ func (handler *Handler) internalError(writer http.ResponseWriter, request *http.
 	if err == nil {
 		err = errors.New("unexpected empty error")
 	}
-	handler.logger.Error(operation, "request_id", request.Header.Get("X-Request-Id"), "error", err)
+	handler.logger.Error(operation, "request_id", middleware.GetReqID(request.Context()), "error", err)
 	http.Error(writer, "Internal server error.", http.StatusInternalServerError)
 }
 
