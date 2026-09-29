@@ -349,8 +349,11 @@ docker compose up --build -d
 ```
 
 Open <http://localhost:8080> on the Docker host. The copied example sets
-`OBJECTSHARE_PORT=127.0.0.1:8080`, keeping first-time setup on the host's loopback
-interface. For a remote server, reach that address through an SSH tunnel while
+`OBJECTSHARE_HOST_PORT=127.0.0.1:8080`, keeping first-time setup on the host's loopback
+interface. (Earlier releases used `OBJECTSHARE_PORT` for this; that still works in
+Compose as a fallback, but outside Compose the application reads
+`OBJECTSHARE_PORT` as its integer listen port, so an `IP:port` value there would
+be rejected.) For a remote server, reach that address through an SSH tunnel while
 creating the first administrator. Existing `.env` files keep their current port
 binding; a bare value such as `8080` publishes on all host interfaces. Complete
 administrator setup before intentionally exposing the application.

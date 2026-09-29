@@ -712,3 +712,32 @@ func TestEmptyCredentialEnvironmentVariablesDoNotEraseConfiguredValues(t *testin
 		t.Fatalf("a non-empty credential variable must still override: %q %v", cfg.SettingsKey, err)
 	}
 }
+
+// Every OBJECTSHARE_* value in .env.example must be accepted by the parser, so
+// the file can be exported for a non-container run without startup errors.
+func TestEnvExampleValuesParse(t *testing.T) {
+	content, err := os.ReadFile("../.env.example")
+	if err != nil {
+		t.Fatal(err)
+	}
+	seen := 0
+	for _, line := range strings.Split(string(content), "\n") {
+		line = strings.TrimSpace(line)
+		name, value, found := strings.Cut(line, "=")
+		if line == "" || strings.HasPrefix(line, "#") || !found || !strings.HasPrefix(name, "OBJECTSHARE_") {
+			continue
+		}
+		if name == "OBJECTSHARE_HOST_PORT" {
+			continue // Compose-only host binding, never read by the application
+		}
+		t.Setenv(name, value)
+		seen++
+	}
+	if seen < 20 {
+		t.Fatalf("only %d variables found in .env.example", seen)
+	}
+	cfg := testDefaults()
+	if err := applyEnvironment(cfg); err != nil {
+		t.Fatalf(".env.example values are not accepted by the parser: %v", err)
+	}
+}
