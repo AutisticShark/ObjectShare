@@ -1125,79 +1125,47 @@ func (handler *Handler) loginThrottleKey(request *http.Request, email string) st
 	return appauth.TokenHash(strings.ToLower(strings.TrimSpace(email)) + "|" + handler.clientIP(request))
 }
 
+// loginDestinations is the single allow-list of pages a login may return to.
+// key is the `next` query value, path the page it maps to.
+var loginDestinations = []struct{ key, path string }{
+	{loginDestinationAdminUsers, "/admin/users"},
+	{loginDestinationAdminSettings, "/admin/settings"},
+	{"files", "/files"},
+	{"billing", "/billing"},
+	{"plans", "/plans"},
+	{"invoices", "/invoices"},
+	{"admin", "/admin"},
+	{"admin-invoices", "/admin/invoices"},
+	{"admin-plans", "/admin/plans"},
+}
+
 func safeLoginDestination(value string) string {
-	switch value {
-	case loginDestinationAdminUsers:
-		return loginDestinationAdminUsers
-	case loginDestinationAdminSettings:
-		return loginDestinationAdminSettings
-	case "files":
-		return "files"
-	case "billing":
-		return "billing"
-	case "plans":
-		return "plans"
-	case "invoices":
-		return "invoices"
-	case "admin":
-		return "admin"
-	case "admin-invoices":
-		return "admin-invoices"
-	case "admin-plans":
-		return "admin-plans"
-	default:
-		return ""
+	for _, destination := range loginDestinations {
+		if value == destination.key {
+			return destination.key
+		}
 	}
+	return ""
 }
 
 func (handler *Handler) redirectToLogin(writer http.ResponseWriter, request *http.Request) {
-	switch request.URL.Path {
-	case "/admin/users":
-		handler.redirect(writer, request, "/login?next="+loginDestinationAdminUsers)
-	case "/admin/settings":
-		handler.redirect(writer, request, "/login?next="+loginDestinationAdminSettings)
-	case "/files":
-		handler.redirect(writer, request, "/login?next=files")
-	case "/billing":
-		handler.redirect(writer, request, "/login?next=billing")
-	case "/plans":
-		handler.redirect(writer, request, "/login?next=plans")
-	case "/invoices":
-		handler.redirect(writer, request, "/login?next=invoices")
-	case "/admin":
-		handler.redirect(writer, request, "/login?next=admin")
-	case "/admin/invoices":
-		handler.redirect(writer, request, "/login?next=admin-invoices")
-	case "/admin/plans":
-		handler.redirect(writer, request, "/login?next=admin-plans")
-	default:
-		handler.redirect(writer, request, "/login")
+	for _, destination := range loginDestinations {
+		if request.URL.Path == destination.path {
+			handler.redirect(writer, request, "/login?next="+destination.key)
+			return
+		}
 	}
+	handler.redirect(writer, request, "/login")
 }
 
 func (handler *Handler) redirectAfterLogin(writer http.ResponseWriter, request *http.Request, destination string) {
-	switch destination {
-	case loginDestinationAdminUsers:
-		handler.redirect(writer, request, "/admin/users")
-	case loginDestinationAdminSettings:
-		handler.redirect(writer, request, "/admin/settings")
-	case "files":
-		handler.redirect(writer, request, "/files")
-	case "billing":
-		handler.redirect(writer, request, "/billing")
-	case "plans":
-		handler.redirect(writer, request, "/plans")
-	case "invoices":
-		handler.redirect(writer, request, "/invoices")
-	case "admin":
-		handler.redirect(writer, request, "/admin")
-	case "admin-invoices":
-		handler.redirect(writer, request, "/admin/invoices")
-	case "admin-plans":
-		handler.redirect(writer, request, "/admin/plans")
-	default:
-		handler.redirect(writer, request, "/account")
+	for _, candidate := range loginDestinations {
+		if destination == candidate.key {
+			handler.redirect(writer, request, candidate.path)
+			return
+		}
 	}
+	handler.redirect(writer, request, "/account")
 }
 
 func accountMessage(value string) string {

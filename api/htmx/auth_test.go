@@ -1110,3 +1110,28 @@ var _ db.AuthRepository = (*authMemoryRepository)(nil)
 var _ db.Repository = (*authMemoryRepository)(nil)
 var _ db.SettingsRepository = (*authMemoryRepository)(nil)
 var _ service.ObjectStore = (*memoryStorage)(nil)
+
+func TestLoginDestinationsRoundTripForEveryProtectedPage(t *testing.T) {
+	handler := &Handler{}
+	seen := map[string]bool{}
+	for _, destination := range loginDestinations {
+		if seen[destination.key] || seen[destination.path] {
+			t.Fatalf("duplicate login destination %+v", destination)
+		}
+		seen[destination.key], seen[destination.path] = true, true
+
+		toLogin := httptest.NewRecorder()
+		handler.redirectToLogin(toLogin, httptest.NewRequest(http.MethodGet, destination.path, nil))
+		if got, want := toLogin.Header().Get("Location"), "/login?next="+destination.key; got != want {
+			t.Errorf("%s redirected to %q, want %q", destination.path, got, want)
+		}
+		if got := safeLoginDestination(destination.key); got != destination.key {
+			t.Errorf("safeLoginDestination(%q) = %q", destination.key, got)
+		}
+		afterLogin := httptest.NewRecorder()
+		handler.redirectAfterLogin(afterLogin, httptest.NewRequest(http.MethodPost, "/login", nil), destination.key)
+		if got := afterLogin.Header().Get("Location"); got != destination.path {
+			t.Errorf("destination %q redirected to %q, want %q", destination.key, got, destination.path)
+		}
+	}
+}
