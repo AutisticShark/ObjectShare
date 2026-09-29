@@ -90,3 +90,45 @@ func TestPostgresClaimUnverifiedAccountRemovesTheSquattersAccess(t *testing.T) {
 		t.Fatalf("second claim = %v, want ErrConflict", err)
 	}
 }
+
+func TestPostgresReserveGuestUploadEnforcesTheGlobalPendingCap(t *testing.T) {
+	repo := creditTestRepository(t)
+	const limit = int64(1000)
+	reserve := func(size int64) error {
+		id := uuid.NewString()
+		now := time.Now().UTC()
+		expires := now.Add(time.Hour)
+		return repo.ReserveGuestUpload(t.Context(), &FileList{FileID: id, AnonymousSessionToken: "token", FileName: "g.bin", FileSize: size, ContentType: "application/octet-stream",
+			IsAnonymousUpload: true, StorageService: "r2", UploadStatus: "pending", ChecksumStatus: "unavailable", UploadExpiresAt: &expires, CreatedAt: now, UpdatedAt: now}, limit)
+	}
+	// Other tests share the database, so measure against whatever is already pending.
+	var already int64
+	if err := repo.connection.Model(&FileList{}).Select("COALESCE(SUM(file_size), 0)").Where("file_owner IS NULL AND upload_status = ?", "pending").Scan(&already).Error; err != nil {
+		t.Fatal(err)
+	}
+	if already != 0 {
+		t.Skip("unfinished guest uploads already exist in this database")
+	}
+	var wg sync.WaitGroup
+	results := make(chan error, 10)
+	for range 10 {
+		wg.Add(1)
+		go func() { defer wg.Done(); results <- reserve(300) }()
+	}
+	wg.Wait()
+	close(results)
+	granted := 0
+	for err := range results {
+		var quotaError *UploadQuotaError
+		switch {
+		case err == nil:
+			granted++
+		case errors.As(err, &quotaError) && quotaError.Scope == GuestUploadScope:
+		default:
+			t.Fatal(err)
+		}
+	}
+	if granted != 3 {
+		t.Fatalf("%d parallel 300-byte reservations were granted under a 1000-byte cap, want 3", granted)
+	}
+}

@@ -73,7 +73,14 @@ type ServiceConfig struct {
 type UploadConfig struct {
 	GuestEnabled     bool `json:"guest_enabled"`
 	MaxFilesPerBatch int  `json:"max_files_per_batch"`
+	// MaxPendingGuestMiB caps the total size of guest direct uploads that have
+	// been authorised but not finalised, so unauthenticated clients cannot
+	// reserve unbounded object-storage space. Zero selects the default.
+	MaxPendingGuestMiB int64 `json:"max_pending_guest_mb"`
 }
+
+// DefaultMaxPendingGuestMiB is used when max_pending_guest_mb is not set.
+const DefaultMaxPendingGuestMiB int64 = 10240
 
 // RetentionConfig controls age-based deletion for guests and accounts without
 // an active plan or manual exemption. Zero disables that category.

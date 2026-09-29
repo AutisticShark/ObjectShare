@@ -245,3 +245,55 @@ func TestLegacyDirectUploadToTheFinalKeyStillCompletes(t *testing.T) {
 		t.Fatalf("legacy in-flight upload: %d %s", done.Code, done.Body.String())
 	}
 }
+
+// guestLimitedRepository adds the atomic guest-pending cap that PostgreSQL provides.
+type guestLimitedRepository struct{ *memoryRepository }
+
+func (repository *guestLimitedRepository) ReserveGuestUpload(ctx context.Context, file *db.FileList, maxPendingBytes int64) error {
+	repository.mu.Lock()
+	var pending int64
+	for _, existing := range repository.files {
+		if existing.FileOwner == nil && existing.UploadStatus == "pending" {
+			pending += existing.FileSize
+		}
+	}
+	repository.mu.Unlock()
+	if pending+file.FileSize > maxPendingBytes {
+		return &db.UploadQuotaError{Scope: db.GuestUploadScope, Used: pending, Limit: maxPendingBytes, Requested: file.FileSize}
+	}
+	return repository.memoryRepository.ReserveUpload(ctx, file)
+}
+
+func TestGuestDirectUploadsShareAGlobalPendingCap(t *testing.T) {
+	repository := &guestLimitedRepository{&memoryRepository{files: make(map[string]*db.FileList)}}
+	cfg := &config.ServiceConfig{MaxFileSize: 2, StorageService: "r2", Upload: &config.UploadConfig{GuestEnabled: true, MaxPendingGuestMiB: 1}, Encryption: &config.EncryptionConfig{}}
+	handler := newTestHandlerConfig(t, cfg, repository, &directMemoryStorage{&memoryStorage{objects: make(map[string][]byte)}})
+	begin := func(size int) *httptest.ResponseRecorder {
+		response := httptest.NewRecorder()
+		handler.BeginDirectUpload(response, httptest.NewRequest(http.MethodPost, "/api/v1/uploads/direct", strings.NewReader(fmt.Sprintf(`{"file_name":"g.bin","file_size":%d,"content_type":"application/octet-stream"}`, size))))
+		return response
+	}
+	if response := begin(600 * 1024); response.Code != http.StatusCreated {
+		t.Fatalf("first guest upload: %d %s", response.Code, response.Body.String())
+	}
+	full := begin(600 * 1024)
+	if full.Code != http.StatusTooManyRequests || full.Header().Get("Retry-After") == "" || full.Header().Get("X-Upload-Quota-Scope") != db.GuestUploadScope {
+		t.Fatalf("second guest upload past the cap: %d headers=%v body=%q", full.Code, full.Header(), full.Body.String())
+	}
+	if len(repository.files) != 1 {
+		t.Fatalf("a refused reservation was stored: %d files", len(repository.files))
+	}
+	if small := begin(300 * 1024); small.Code != http.StatusCreated {
+		t.Fatalf("an upload that fits under the cap was refused: %d %s", small.Code, small.Body.String())
+	}
+
+	// Signed-in uploads are governed by account quotas, not the guest cap.
+	user := &db.User{ID: "5a7b8c9d-1111-4222-8333-444455556666", Active: true}
+	signedIn := httptest.NewRequest(http.MethodPost, "/api/v1/uploads/direct", strings.NewReader(`{"file_name":"u.bin","file_size":614400,"content_type":"application/octet-stream"}`))
+	signedIn = signedIn.WithContext(context.WithValue(signedIn.Context(), identityContextKey{}, &identity{User: user, Transport: transportBearer}))
+	response := httptest.NewRecorder()
+	handler.BeginDirectUpload(response, signedIn)
+	if response.Code != http.StatusCreated {
+		t.Fatalf("signed-in upload was limited by the guest cap: %d %s", response.Code, response.Body.String())
+	}
+}

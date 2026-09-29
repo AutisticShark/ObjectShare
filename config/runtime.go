@@ -56,6 +56,7 @@ func RuntimeFromService(cfg *ServiceConfig) RuntimeConfig {
 	} else {
 		runtime.Upload.GuestEnabled = true
 		runtime.Upload.MaxFilesPerBatch = 10
+		runtime.Upload.MaxPendingGuestMiB = DefaultMaxPendingGuestMiB
 	}
 	if cfg.Retention != nil {
 		runtime.Retention = *cfg.Retention

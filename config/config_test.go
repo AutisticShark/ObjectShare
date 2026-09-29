@@ -649,3 +649,31 @@ func TestDatabaseMigrationTimeoutDefaultsEnvironmentAndValidation(t *testing.T) 
 		t.Fatalf("config.json.example migration timeout = %v, err %v", example, err)
 	}
 }
+
+func TestGuestPendingUploadCapDefaultsEnvironmentAndValidation(t *testing.T) {
+	cfg := testDefaults()
+	if err := cfg.Validate(); err != nil || cfg.Upload.MaxPendingGuestMiB != DefaultMaxPendingGuestMiB {
+		t.Fatalf("default guest pending cap = %d, err %v", cfg.Upload.MaxPendingGuestMiB, err)
+	}
+	cfg = testDefaults()
+	cfg.Upload.MaxPendingGuestMiB = 0
+	if err := cfg.Validate(); err != nil || cfg.Upload.MaxPendingGuestMiB != DefaultMaxPendingGuestMiB {
+		t.Fatalf("unset cap must fall back to the default: %d %v", cfg.Upload.MaxPendingGuestMiB, err)
+	}
+	t.Setenv("OBJECTSHARE_MAX_PENDING_GUEST_UPLOAD_MB", "2048")
+	cfg = testDefaults()
+	if err := applyEnvironment(cfg); err != nil || cfg.Upload.MaxPendingGuestMiB != 2048 {
+		t.Fatalf("environment cap = %d, err %v", cfg.Upload.MaxPendingGuestMiB, err)
+	}
+	for _, value := range []int64{-1, 1024*1024 + 1} {
+		cfg = testDefaults()
+		cfg.Upload.MaxPendingGuestMiB = value
+		if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "max_pending_guest_mb") {
+			t.Fatalf("cap %d accepted: %v", value, err)
+		}
+	}
+	example, err := Load("../config.json.example")
+	if err == nil && example.Upload.MaxPendingGuestMiB != DefaultMaxPendingGuestMiB {
+		t.Fatalf("config.json.example cap = %d", example.Upload.MaxPendingGuestMiB)
+	}
+}

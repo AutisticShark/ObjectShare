@@ -102,7 +102,7 @@ func (handler *Handler) reserveDirectUpload(request *http.Request, input directU
 	if err != nil {
 		return directUploadAuthorization{}, err
 	}
-	if err := handler.repository.ReserveUpload(request.Context(), record); err != nil {
+	if err := handler.reserveRecord(request.Context(), record); err != nil {
 		return directUploadAuthorization{}, err
 	}
 	uploadURL, err := handler.direct.PresignPut(request.Context(), service.PendingUploadKey(record.FileID), record.FileSize, record.ContentType)
@@ -122,6 +122,10 @@ func (handler *Handler) writeUploadError(writer http.ResponseWriter, request *ht
 	switch {
 	case errors.As(err, &rejection):
 		http.Error(writer, rejection.message, rejection.status)
+	case errors.As(err, &quotaError) && quotaError.Scope == db.GuestUploadScope:
+		writer.Header().Set("X-Upload-Quota-Scope", quotaError.Scope)
+		writer.Header().Set("Retry-After", "60")
+		http.Error(writer, "Guest uploads are busy right now. Try again in a minute, or sign in to upload.", http.StatusTooManyRequests)
 	case errors.As(err, &quotaError):
 		writer.Header().Set("X-Upload-Quota-Scope", quotaError.Scope)
 		http.Error(writer, "This upload would exceed your account storage quota.", http.StatusRequestEntityTooLarge)

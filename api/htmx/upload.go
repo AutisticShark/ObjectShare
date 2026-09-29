@@ -206,7 +206,9 @@ func (handler *Handler) uploadMultiple(writer http.ResponseWriter, request *http
 				handler.discardUpload(request, completed.ID, true)
 			}
 			var quotaError *db.UploadQuotaError
-			if errors.As(err, &quotaError) {
+			if errors.As(err, &quotaError) && quotaError.Scope == db.GuestUploadScope {
+				handler.writeUploadError(writer, request, "store upload batch", err)
+			} else if errors.As(err, &quotaError) {
 				http.Error(writer, "This upload batch would exceed your account storage quota.", http.StatusRequestEntityTooLarge)
 			} else if errors.Is(err, errInvalidUpload) {
 				http.Error(writer, err.Error(), http.StatusBadRequest)
@@ -268,7 +270,7 @@ func (handler *Handler) storeProxiedHeader(request *http.Request, header *multip
 		record.ContentType = contentType
 	}
 	record.ShareMode, _ = uploadShareMode(request.FormValue("share_mode"))
-	if err := handler.repository.ReserveUpload(request.Context(), record); err != nil {
+	if err := handler.reserveRecord(request.Context(), record); err != nil {
 		return uploadedFileResult{}, "", err
 	}
 	objectMayExist, success := false, false
@@ -349,8 +351,19 @@ func (handler *Handler) uploadAllowed(writer http.ResponseWriter, request *http.
 	return true
 }
 
+// reserveRecord reserves file's quota. Guest reservations also count against the
+// global cap on unfinished guest uploads when the repository supports it.
+func (handler *Handler) reserveRecord(ctx context.Context, file *db.FileList) error {
+	if file.FileOwner == nil {
+		if limiter, ok := handler.repository.(db.GuestUploadLimiter); ok {
+			return limiter.ReserveGuestUpload(ctx, file, handler.uploadSettings().MaxPendingGuestMiB*mebibyte)
+		}
+	}
+	return handler.repository.ReserveUpload(ctx, file)
+}
+
 func (handler *Handler) reserveUpload(writer http.ResponseWriter, request *http.Request, file *db.FileList) bool {
-	err := handler.repository.ReserveUpload(request.Context(), file)
+	err := handler.reserveRecord(request.Context(), file)
 	if err == nil {
 		return true
 	}

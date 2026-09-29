@@ -134,7 +134,7 @@ func defaults() *ServiceConfig {
 		ConfigReload:    Duration(30 * time.Second),
 		Redis:           defaultRedisConfig(),
 		MaxFileSize:     100,
-		Upload:          &UploadConfig{GuestEnabled: true, MaxFilesPerBatch: 10},
+		Upload:          &UploadConfig{GuestEnabled: true, MaxFilesPerBatch: 10, MaxPendingGuestMiB: DefaultMaxPendingGuestMiB},
 		Retention:       &RetentionConfig{},
 		Billing:         &BillingConfig{CreditCurrency: "USD", MinTopUpCredits: 5, MaxTopUpCredits: 1000, PayPal: PayPalBillingConfig{Environment: "sandbox"}},
 		Auth: &AuthConfig{
@@ -215,10 +215,11 @@ func applyEnvironment(cfg *ServiceConfig) error {
 	problems = append(problems, setBool("OBJECTSHARE_SECURE_COOKIES", &cfg.SecureCookies))
 	setString("OBJECTSHARE_SETTINGS_KEY", &cfg.SettingsKey)
 	if cfg.Upload == nil {
-		cfg.Upload = &UploadConfig{GuestEnabled: true, MaxFilesPerBatch: 10}
+		cfg.Upload = &UploadConfig{GuestEnabled: true, MaxFilesPerBatch: 10, MaxPendingGuestMiB: DefaultMaxPendingGuestMiB}
 	}
 	problems = append(problems, setBool("OBJECTSHARE_GUEST_UPLOAD_ENABLED", &cfg.Upload.GuestEnabled))
 	problems = append(problems, setInt("OBJECTSHARE_MAX_FILES_PER_BATCH", &cfg.Upload.MaxFilesPerBatch))
+	problems = append(problems, setInt64("OBJECTSHARE_MAX_PENDING_GUEST_UPLOAD_MB", &cfg.Upload.MaxPendingGuestMiB))
 	if cfg.Retention == nil {
 		cfg.Retention = &RetentionConfig{}
 	}
@@ -395,6 +396,12 @@ func (cfg *ServiceConfig) Validate() error {
 	}
 	if cfg.Upload == nil {
 		cfg.Upload = &UploadConfig{GuestEnabled: true, MaxFilesPerBatch: 10}
+	}
+	if cfg.Upload.MaxPendingGuestMiB == 0 {
+		cfg.Upload.MaxPendingGuestMiB = DefaultMaxPendingGuestMiB
+	}
+	if cfg.Upload.MaxPendingGuestMiB < 1 || cfg.Upload.MaxPendingGuestMiB > 1024*1024 {
+		return errors.New("upload max_pending_guest_mb must be between 1 and 1048576 MiB")
 	}
 	if cfg.Upload.MaxFilesPerBatch == 0 {
 		cfg.Upload.MaxFilesPerBatch = 10

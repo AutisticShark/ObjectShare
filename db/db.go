@@ -51,6 +51,16 @@ func (err *UploadQuotaError) Error() string {
 
 func (err *UploadQuotaError) Unwrap() error { return ErrUploadQuota }
 
+// GuestUploadScope is the UploadQuotaError scope reported when the global cap
+// on unfinished guest uploads is full.
+const GuestUploadScope = "guests"
+
+// GuestUploadLimiter is implemented by repositories that can reserve a guest
+// upload while enforcing a cap on all unfinished guest reservations atomically.
+type GuestUploadLimiter interface {
+	ReserveGuestUpload(ctx context.Context, file *FileList, maxPendingBytes int64) error
+}
+
 type Repository interface {
 	Create(context.Context, *FileList) error
 	ReserveUpload(context.Context, *FileList) error
@@ -339,6 +349,30 @@ func (repo *GormRepository) ReserveUpload(ctx context.Context, file *FileList) e
 			if exceedsQuota(used, file.FileSize, quota) {
 				return &UploadQuotaError{Scope: "user", Used: used, Limit: quota, Requested: file.FileSize}
 			}
+		}
+		return transaction.Create(file).Error
+	})
+}
+
+// ReserveGuestUpload creates an anonymous reservation unless the bytes already
+// reserved by unfinished guest uploads plus this file would exceed
+// maxPendingBytes. The check and insert share one advisory-locked transaction so
+// concurrent guests cannot each pass the check.
+func (repo *GormRepository) ReserveGuestUpload(ctx context.Context, file *FileList, maxPendingBytes int64) error {
+	if file.FileOwner != nil || maxPendingBytes <= 0 {
+		return repo.ReserveUpload(ctx, file)
+	}
+	return repo.connection.WithContext(ctx).Transaction(func(transaction *gorm.DB) error {
+		if err := transaction.Exec("SELECT pg_advisory_xact_lock(hashtextextended('objectshare-guest-pending-uploads', 0))").Error; err != nil {
+			return err
+		}
+		var pending int64
+		if err := transaction.Model(&FileList{}).Select("COALESCE(SUM(file_size), 0)").
+			Where("file_owner IS NULL AND upload_status = ?", "pending").Scan(&pending).Error; err != nil {
+			return err
+		}
+		if exceedsQuota(pending, file.FileSize, maxPendingBytes) {
+			return &UploadQuotaError{Scope: GuestUploadScope, Used: pending, Limit: maxPendingBytes, Requested: file.FileSize}
 		}
 		return transaction.Create(file).Error
 	})

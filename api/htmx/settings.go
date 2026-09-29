@@ -205,6 +205,9 @@ func updateRuntimeFromForm(runtime *config.RuntimeConfig, request *http.Request)
 	if request.FormValue("max_files_per_batch") != "" {
 		problems = append(problems, formInt(request, "max_files_per_batch", &runtime.Upload.MaxFilesPerBatch))
 	}
+	if request.FormValue("max_pending_guest_mb") != "" {
+		problems = append(problems, formInt64(request, "max_pending_guest_mb", &runtime.Upload.MaxPendingGuestMiB))
+	}
 	problems = append(problems, formInt(request, "guest_retention_days", &runtime.Retention.GuestDays))
 	problems = append(problems, formInt(request, "unpaid_retention_days", &runtime.Retention.UnpaidDays))
 	runtime.Auth.SignupEnabled = checked(request, "signup_enabled")

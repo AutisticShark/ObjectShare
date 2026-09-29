@@ -174,6 +174,11 @@ func New(cfg *config.ServiceConfig, repository db.Repository, storage service.Ob
 		settings: settings, billing: billing, billingGateways: billingGateways,
 		localRateLimits: newLocalRateLimiter(), trustedProxies: trustedProxies,
 	}
+	if cfg.Upload == nil || cfg.Upload.GuestEnabled {
+		if cfg.RateLimit == nil || !cfg.RateLimit.Enabled {
+			logger.Warn("guest uploads are enabled while API rate limiting is disabled; unauthenticated clients can create upload authorizations without a request limit")
+		}
+	}
 	handler.emailSender, err = email.New(context.Background(), cfg.Email)
 	if err != nil {
 		return nil, fmt.Errorf("configure email: %w", err)
@@ -642,11 +647,14 @@ func identityCSRF(request *http.Request) string {
 
 func (handler *Handler) uploadSettings() config.UploadConfig {
 	if handler.config.Upload == nil {
-		return config.UploadConfig{GuestEnabled: true, MaxFilesPerBatch: 10}
+		return config.UploadConfig{GuestEnabled: true, MaxFilesPerBatch: 10, MaxPendingGuestMiB: config.DefaultMaxPendingGuestMiB}
 	}
 	settings := *handler.config.Upload
 	if settings.MaxFilesPerBatch == 0 {
 		settings.MaxFilesPerBatch = 10
+	}
+	if settings.MaxPendingGuestMiB == 0 {
+		settings.MaxPendingGuestMiB = config.DefaultMaxPendingGuestMiB
 	}
 	return settings
 }

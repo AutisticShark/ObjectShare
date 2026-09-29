@@ -25,7 +25,8 @@
   },
   "upload": {
     "guest_enabled": true,
-    "max_files_per_batch": 10
+    "max_files_per_batch": 10,
+    "max_pending_guest_mb": 10240
   },
   "retention": {
     "guest_days": 0,
