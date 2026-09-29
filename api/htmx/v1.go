@@ -77,6 +77,10 @@ type Handler struct {
 	// cleanupMu guards the background pass over expired upload reservations.
 	cleanupMu      sync.Mutex
 	cleanupRunning bool
+	// inlineCleanup makes cleanupExpiredUploads finish before it returns. It is
+	// off in production (cleanup runs in the background) and on in tests that
+	// inspect repository and storage state right after a request.
+	inlineCleanup bool
 	lastCleanup    time.Time
 }
 

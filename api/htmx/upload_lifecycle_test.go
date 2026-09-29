@@ -1,7 +1,6 @@
 package htmx
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -140,8 +139,9 @@ func TestExpiredReservationCleanupRunsOffTheRequestPathAndIsSingleFlight(t *test
 	repository.files["2e8b6bd5-3ff0-4700-851f-95864db4f8a9"] = &db.FileList{FileID: "2e8b6bd5-3ff0-4700-851f-95864db4f8a9", UploadStatus: "pending", UploadExpiresAt: &expired, FileSize: 1}
 	storage := &slowDeleteStorage{memoryStorage: &memoryStorage{objects: make(map[string][]byte)}, started: make(chan struct{}), release: make(chan struct{})}
 	handler := newTestHandler(t, repository, storage)
-	logs := new(bytes.Buffer)
+	logs := new(lockedBuffer)
 	handler.logger = slog.New(slog.NewTextHandler(logs, nil))
+	handler.inlineCleanup = false // this test is about the background pass
 
 	returned := make(chan struct{})
 	go func() {

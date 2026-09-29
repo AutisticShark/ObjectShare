@@ -1129,6 +1129,7 @@ func newAuthTestHandler(t *testing.T, repository *authMemoryRepository, secure b
 	if err != nil {
 		t.Fatal(err)
 	}
+	handler.inlineCleanup = true // see newTestHandlerConfig
 	return handler
 }
 

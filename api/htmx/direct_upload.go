@@ -358,7 +358,11 @@ const expiredUploadCleanupInterval = 30 * time.Second
 // caller only needs its own upload to proceed. At most one pass runs at a time
 // and passes are spaced by expiredUploadCleanupInterval, however many uploads
 // arrive.
-func (handler *Handler) cleanupExpiredUploads(_ *http.Request) {
+func (handler *Handler) cleanupExpiredUploads(request *http.Request) {
+	if handler.inlineCleanup {
+		handler.sweepExpiredUploads(request.Context())
+		return
+	}
 	handler.cleanupMu.Lock()
 	if handler.cleanupRunning || time.Since(handler.lastCleanup) < expiredUploadCleanupInterval {
 		handler.cleanupMu.Unlock()

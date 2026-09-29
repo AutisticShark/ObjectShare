@@ -830,7 +830,30 @@ func newTestHandlerConfig(t *testing.T, cfg *config.ServiceConfig, repository db
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Tests read the fake repository directly after a request; a background
+	// cleanup goroutine would race those reads. The one test that exercises the
+	// background behaviour turns this off.
+	handler.inlineCleanup = true
 	return handler
+}
+
+// lockedBuffer is a log sink that a background goroutine can write while the
+// test goroutine reads it.
+type lockedBuffer struct {
+	mu   sync.Mutex
+	data bytes.Buffer
+}
+
+func (buffer *lockedBuffer) Write(data []byte) (int, error) {
+	buffer.mu.Lock()
+	defer buffer.mu.Unlock()
+	return buffer.data.Write(data)
+}
+
+func (buffer *lockedBuffer) String() string {
+	buffer.mu.Lock()
+	defer buffer.mu.Unlock()
+	return buffer.data.String()
 }
 
 var _ db.Repository = (*memoryRepository)(nil)
