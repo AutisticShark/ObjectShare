@@ -126,3 +126,28 @@ func TestS3CopyPublishesAStagedObjectServerSide(t *testing.T) {
 		t.Fatalf("copy request = %s %s source %q", method, path, source)
 	}
 }
+
+func TestPresignedDownloadsForceAttachmentAndNeutralContentType(t *testing.T) {
+	store, err := NewS3(&config.S3Config{S3CompatibleConfig: config.S3CompatibleConfig{
+		BucketName: "bucket", Region: "us-east-1", AccessKeyID: "access-key", SecretAccessKey: "secret-key",
+		PresignLinkTimeout: config.Duration(10 * time.Minute), PresignUploadTimeout: config.Duration(time.Hour),
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	value, err := store.PresignGet(context.Background(), "object-id", "report.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsed, err := url.Parse(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	query := parsed.Query()
+	if got := query.Get("response-content-type"); got != "application/octet-stream" {
+		t.Fatalf("response-content-type = %q, want application/octet-stream", got)
+	}
+	if got := query.Get("response-content-disposition"); !strings.HasPrefix(got, "attachment") {
+		t.Fatalf("response-content-disposition = %q, want an attachment", got)
+	}
+}

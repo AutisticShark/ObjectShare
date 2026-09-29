@@ -133,6 +133,10 @@ func (store *S3Compatible) PresignGet(ctx context.Context, key, fileName string)
 	disposition := mime.FormatMediaType("attachment", map[string]string{"filename": fileName})
 	result, err := store.presign.PresignGetObject(ctx, &s3.GetObjectInput{
 		Bucket: aws.String(store.bucket), Key: aws.String(key), ResponseContentDisposition: aws.String(disposition),
+		// Direct uploads store whatever Content-Type the browser declared, and
+		// object storage cannot add X-Content-Type-Options: nosniff, so never let
+		// a stored type (for example text/html) decide how the download renders.
+		ResponseContentType: aws.String("application/octet-stream"),
 	}, func(options *s3.PresignOptions) { options.Expires = store.downloadTimeout.Duration() })
 	if err != nil {
 		return "", fmt.Errorf("presign %s object: %w", store.provider, err)
