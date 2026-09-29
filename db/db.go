@@ -530,76 +530,109 @@ func (repo *GormRepository) ClaimFilesForRetention(ctx context.Context, now, sta
 	var claimed []FileList
 	err := repo.connection.WithContext(ctx).Transaction(func(transaction *gorm.DB) error {
 		args := append(eligibilityArgs, staleBefore)
-		var candidates []FileList
-		if err := transaction.Table("file_lists AS f").
-			Clauses(clause.Locking{Strength: "UPDATE", Options: "SKIP LOCKED"}).
-			Where("(f.upload_status = 'complete' AND ("+eligibleSQL+")) OR (f.upload_status = 'deleting' AND f.retention_claimed_at <= ?)", args...).
-			Order("COALESCE(f.retention_claimed_at, f.created_at), f.id").Limit(limit).Find(&candidates).Error; err != nil {
-			return err
-		}
-
-		// Re-read each candidate's entitlement under a shared row lock. A
-		// concurrent paid-status update must therefore commit before this
-		// check or wait until the deletion claim commits.
-		userIDs := make([]string, 0, len(candidates))
-		seenUsers := make(map[string]bool)
-		for _, file := range candidates {
-			if file.UploadStatus == "complete" && file.FileOwner != nil && !seenUsers[*file.FileOwner] {
-				seenUsers[*file.FileOwner] = true
-				userIDs = append(userIDs, *file.FileOwner)
+		claimed = nil
+		var claimedIDs, rejectedIDs []uint
+		// The SQL pre-filter is an approximation of the entitlement check done in
+		// Go below, so it can select rows Go then rejects. Rejected rows stay in
+		// place, and re-selecting them on every run would starve eligible rows
+		// behind them; page past them instead, a bounded number of times.
+		for pass := 0; pass < maxRetentionClaimPasses && len(claimedIDs) < limit; pass++ {
+			want := limit - len(claimedIDs)
+			query := transaction.Table("file_lists AS f").
+				Clauses(clause.Locking{Strength: "UPDATE", Options: "SKIP LOCKED"}).
+				Where("(f.upload_status = 'complete' AND ("+eligibleSQL+")) OR (f.upload_status = 'deleting' AND f.retention_claimed_at <= ?)", args...)
+			// Rows already accepted are only marked at the end, so exclude them too.
+			if seen := append(append([]uint(nil), rejectedIDs...), claimedIDs...); len(seen) != 0 {
+				query = query.Where("f.id NOT IN ?", seen)
 			}
-		}
-		usersByID := make(map[string]User, len(userIDs))
-		if len(userIDs) != 0 {
-			var users []User
-			if err := transaction.Clauses(clause.Locking{Strength: "SHARE"}).
-				Select("id", "is_paid").Where("id IN ?", userIDs).Order("id").Find(&users).Error; err != nil {
+			var candidates []FileList
+			if err := query.Order("COALESCE(f.retention_claimed_at, f.created_at), f.id").Limit(want).Find(&candidates).Error; err != nil {
 				return err
 			}
-			for _, user := range users {
-				usersByID[user.ID] = user
-			}
-		}
-		entitlementsByID := make(map[string]Entitlements, len(userIDs))
-		for _, userID := range userIDs {
-			entitlements, err := entitlementsWithDB(transaction, userID, now)
+			accepted, rejected, err := retentionEligibleCandidates(transaction, candidates, now, unpaidBefore)
 			if err != nil {
 				return err
 			}
-			entitlementsByID[userID] = entitlements
-		}
-
-		claimed = candidates[:0]
-		ids := make([]uint, 0, len(candidates))
-		for _, file := range candidates {
-			eligible := file.UploadStatus == "deleting" || file.FileOwner == nil
-			if file.UploadStatus == "complete" && file.FileOwner != nil {
-				user, userExists := usersByID[*file.FileOwner]
-				eligible = false
-				if userExists && !user.IsPaid {
-					entitlements := entitlementsByID[user.ID]
-					if entitlements.Active {
-						eligible = entitlements.RetentionDays > 0 && !file.CreatedAt.After(now.AddDate(0, 0, -entitlements.RetentionDays))
-					} else if unpaidBefore != nil {
-						eligible = !file.CreatedAt.After(*unpaidBefore)
-					}
-				}
-			}
-			if eligible {
+			for _, file := range accepted {
 				claimed = append(claimed, file)
-				ids = append(ids, file.ID)
+				claimedIDs = append(claimedIDs, file.ID)
+			}
+			rejectedIDs = append(rejectedIDs, rejected...)
+			if len(candidates) < want {
+				break // nothing further matches
 			}
 		}
-		if len(ids) == 0 {
+		if len(claimedIDs) == 0 {
 			return nil
 		}
-		return transaction.Model(&FileList{}).Where("id IN ?", ids).
+		return transaction.Model(&FileList{}).Where("id IN ?", claimedIDs).
 			Updates(map[string]any{"upload_status": "deleting", "retention_claimed_at": now, "updated_at": now}).Error
 	})
 	if err != nil {
 		return nil, err
 	}
 	return claimed, nil
+}
+
+// maxRetentionClaimPasses bounds how many candidate pages one claim examines
+// while skipping rows that the entitlement check rejects.
+const maxRetentionClaimPasses = 10
+
+// retentionEligibleCandidates applies the authoritative entitlement check to a
+// page of SQL candidates and reports which rows to claim and which (by primary
+// key) to skip.
+func retentionEligibleCandidates(transaction *gorm.DB, candidates []FileList, now time.Time, unpaidBefore *time.Time) (accepted []FileList, rejected []uint, err error) {
+	// Re-read each candidate's entitlement under a shared row lock. A
+	// concurrent paid-status update must therefore commit before this
+	// check or wait until the deletion claim commits.
+	userIDs := make([]string, 0, len(candidates))
+	seenUsers := make(map[string]bool)
+	for _, file := range candidates {
+		if file.UploadStatus == "complete" && file.FileOwner != nil && !seenUsers[*file.FileOwner] {
+			seenUsers[*file.FileOwner] = true
+			userIDs = append(userIDs, *file.FileOwner)
+		}
+	}
+	usersByID := make(map[string]User, len(userIDs))
+	if len(userIDs) != 0 {
+		var users []User
+		if err := transaction.Clauses(clause.Locking{Strength: "SHARE"}).
+			Select("id", "is_paid").Where("id IN ?", userIDs).Order("id").Find(&users).Error; err != nil {
+			return nil, nil, err
+		}
+		for _, user := range users {
+			usersByID[user.ID] = user
+		}
+	}
+	entitlementsByID := make(map[string]Entitlements, len(userIDs))
+	for _, userID := range userIDs {
+		entitlements, err := entitlementsWithDB(transaction, userID, now)
+		if err != nil {
+			return nil, nil, err
+		}
+		entitlementsByID[userID] = entitlements
+	}
+	for _, file := range candidates {
+		eligible := file.UploadStatus == "deleting" || file.FileOwner == nil
+		if file.UploadStatus == "complete" && file.FileOwner != nil {
+			user, userExists := usersByID[*file.FileOwner]
+			eligible = false
+			if userExists && !user.IsPaid {
+				entitlements := entitlementsByID[user.ID]
+				if entitlements.Active {
+					eligible = entitlements.RetentionDays > 0 && !file.CreatedAt.After(now.AddDate(0, 0, -entitlements.RetentionDays))
+				} else if unpaidBefore != nil {
+					eligible = !file.CreatedAt.After(*unpaidBefore)
+				}
+			}
+		}
+		if eligible {
+			accepted = append(accepted, file)
+		} else {
+			rejected = append(rejected, file.ID)
+		}
+	}
+	return accepted, rejected, nil
 }
 
 func retentionEligibilitySQLAt(now time.Time, guestBefore, unpaidBefore *time.Time) (string, []any) {
