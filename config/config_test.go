@@ -1,6 +1,7 @@
 package config
 
 import (
+	"bytes"
 	"encoding/json"
 	"os"
 	"strings"
@@ -545,5 +546,63 @@ func TestConfigReloadIntervalRejectsInvalidBootstrapValue(t *testing.T) {
 	t.Setenv("OBJECTSHARE_CONFIG_RELOAD_INTERVAL", "half an hour")
 	if _, err := LoadBootstrap("../config.json.example"); err == nil || !strings.Contains(err.Error(), "OBJECTSHARE_CONFIG_RELOAD_INTERVAL") {
 		t.Fatalf("an unparsable bootstrap reload interval was accepted: %v", err)
+	}
+}
+
+func TestR2ValidationSharesEndpointAndPresignRules(t *testing.T) {
+	valid := func() *R2Config {
+		return &R2Config{BucketName: "bucket", AccountID: "account", AccessKeyID: "key", SecretAccessKey: "secret",
+			PresignLinkTimeout: Duration(time.Minute), PresignUploadTimeout: Duration(time.Minute)}
+	}
+	for _, test := range []struct {
+		name     string
+		mutate   func(*R2Config)
+		contains string
+	}{
+		{"insecure endpoint", func(r2 *R2Config) { r2.Endpoint = "http://storage.example.com" }, "r2 endpoint must be an absolute HTTPS URL"},
+		{"short link timeout", func(r2 *R2Config) { r2.PresignLinkTimeout = Duration(time.Millisecond) }, "r2 presign timeout"},
+		{"long upload timeout", func(r2 *R2Config) { r2.PresignUploadTimeout = Duration(8 * 24 * time.Hour) }, "r2 upload presign timeout"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			cfg := testDefaults()
+			cfg.StorageService = "r2"
+			cfg.R2 = valid()
+			test.mutate(cfg.R2)
+			if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), test.contains) {
+				t.Fatalf("error = %v, want text %q", err, test.contains)
+			}
+		})
+	}
+	cfg := testDefaults()
+	cfg.StorageService = "r2"
+	cfg.R2 = valid()
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("valid R2 configuration rejected: %v", err)
+	}
+}
+
+func TestEncryptionKeyAcceptsBase64AndHex(t *testing.T) {
+	want := bytes.Repeat([]byte{0xab}, 32)
+	for name, value := range map[string]string{
+		"base64":    "q6urq6urq6urq6urq6urq6urq6urq6urq6urq6urq6s=",
+		"hex":       strings.Repeat("ab", 32),
+		"upper hex": strings.Repeat("AB", 32),
+	} {
+		key, err := DecodeEncryptionKey(value)
+		if err != nil || !bytes.Equal(key, want) {
+			t.Fatalf("%s key decoded to %x, %v", name, key, err)
+		}
+	}
+	// 64 hex characters are also valid base64; the hex reading must win, and a
+	// hex-encoded key must pass configuration validation.
+	cfg := testDefaults()
+	cfg.Encryption.Enabled = true
+	cfg.Encryption.Method = "aes-256-gcm"
+	cfg.Encryption.Key = strings.Repeat("0123456789abcdef", 4)
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("hex encryption key rejected: %v", err)
+	}
+	if _, err := DecodeEncryptionKey(""); err == nil {
+		t.Fatal("empty key was accepted")
 	}
 }

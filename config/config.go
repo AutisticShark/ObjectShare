@@ -538,17 +538,11 @@ func (cfg *ServiceConfig) Validate() error {
 		if cfg.R2.BucketName == "" || (cfg.R2.AccountID == "" && cfg.R2.Endpoint == "") || cfg.R2.AccessKeyID == "" || cfg.R2.SecretAccessKey == "" {
 			return errors.New("r2 bucket_name, account_id (or endpoint), access_key_id, and secret_access_key are required")
 		}
-		if cfg.R2.Endpoint != "" {
-			endpoint, err := url.Parse(cfg.R2.Endpoint)
-			if err != nil || endpoint.Scheme != "https" || endpoint.Host == "" || endpoint.User != nil || endpoint.RawQuery != "" || endpoint.Fragment != "" {
-				return errors.New("r2 endpoint must be an absolute HTTPS URL without credentials, query, or fragment")
-			}
+		if err := validateStorageEndpoint("r2", cfg.R2.Endpoint); err != nil {
+			return err
 		}
-		if cfg.R2.PresignLinkTimeout.Duration() < time.Second || cfg.R2.PresignLinkTimeout.Duration() > 7*24*time.Hour {
-			return errors.New("r2 presign timeout must be between 1 second and 7 days")
-		}
-		if cfg.R2.PresignUploadTimeout.Duration() < time.Minute || cfg.R2.PresignUploadTimeout.Duration() > 7*24*time.Hour {
-			return errors.New("r2 upload presign timeout must be between 1 minute and 7 days")
+		if err := validatePresignTimeouts("r2", cfg.R2.PresignLinkTimeout, cfg.R2.PresignUploadTimeout); err != nil {
+			return err
 		}
 	case "s3":
 		if cfg.S3 == nil {
@@ -742,16 +736,30 @@ func validateS3Compatible(name string, settings *S3CompatibleConfig, requireCred
 	if requireCredentials && settings.AccessKeyID == "" {
 		return fmt.Errorf("%s access_key_id and secret_access_key are required", name)
 	}
-	if settings.Endpoint != "" {
-		endpoint, err := url.Parse(settings.Endpoint)
-		if err != nil || endpoint.Scheme != "https" || endpoint.Host == "" || endpoint.User != nil || endpoint.RawQuery != "" || endpoint.Fragment != "" {
-			return fmt.Errorf("%s endpoint must be an absolute HTTPS URL without credentials, query, or fragment", name)
-		}
+	if err := validateStorageEndpoint(name, settings.Endpoint); err != nil {
+		return err
 	}
-	if settings.PresignLinkTimeout.Duration() < time.Second || settings.PresignLinkTimeout.Duration() > 7*24*time.Hour {
+	return validatePresignTimeouts(name, settings.PresignLinkTimeout, settings.PresignUploadTimeout)
+}
+
+// validateStorageEndpoint and validatePresignTimeouts are shared by every
+// object-storage provider so their limits and messages cannot drift apart.
+func validateStorageEndpoint(name, value string) error {
+	if value == "" {
+		return nil
+	}
+	endpoint, err := url.Parse(value)
+	if err != nil || endpoint.Scheme != "https" || endpoint.Host == "" || endpoint.User != nil || endpoint.RawQuery != "" || endpoint.Fragment != "" {
+		return fmt.Errorf("%s endpoint must be an absolute HTTPS URL without credentials, query, or fragment", name)
+	}
+	return nil
+}
+
+func validatePresignTimeouts(name string, link, upload Duration) error {
+	if link.Duration() < time.Second || link.Duration() > 7*24*time.Hour {
 		return fmt.Errorf("%s presign timeout must be between 1 second and 7 days", name)
 	}
-	if settings.PresignUploadTimeout.Duration() < time.Minute || settings.PresignUploadTimeout.Duration() > 7*24*time.Hour {
+	if upload.Duration() < time.Minute || upload.Duration() > 7*24*time.Hour {
 		return fmt.Errorf("%s upload presign timeout must be between 1 minute and 7 days", name)
 	}
 	return nil
@@ -762,6 +770,13 @@ func DecodeEncryptionKey(value string) ([]byte, error) { return decodeKey(value)
 func decodeKey(value string) ([]byte, error) {
 	if value == "" {
 		return nil, errors.New("empty key")
+	}
+	// A 64-character hex string is also valid base64 (decoding to 48 bytes), so
+	// a hex-encoded 32-byte key has to be recognised before trying base64.
+	if len(value) == 64 {
+		if key, err := hex.DecodeString(value); err == nil {
+			return key, nil
+		}
 	}
 	if key, err := base64.StdEncoding.DecodeString(value); err == nil {
 		return key, nil
