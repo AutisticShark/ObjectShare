@@ -95,6 +95,11 @@ func TestPostgresClaimUnverifiedAccountRemovesTheSquattersAccess(t *testing.T) {
 
 func TestPostgresReserveGuestUploadEnforcesTheGlobalPendingCap(t *testing.T) {
 	repo := creditTestRepository(t)
+	// file_lists is not in the shared helper: the legacy-migration test creates its own
+	// older copy of that table, so tests that need it migrate it themselves.
+	if err := repo.connection.AutoMigrate(&FileList{}); err != nil {
+		t.Fatal(err)
+	}
 	const limit = int64(1000)
 	reserve := func(size int64) error {
 		id := uuid.NewString()
