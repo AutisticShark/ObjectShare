@@ -64,6 +64,34 @@ func TestClientIPTrustsOnlyConfiguredProxyChain(t *testing.T) {
 	}
 }
 
+func TestLoginThrottleKeySeparatesClientsBehindTrustedProxy(t *testing.T) {
+	networks, err := parseTrustedProxies([]string{"10.0.0.0/8"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := &Handler{trustedProxies: networks}
+	request := func(remote, forwarded string) *http.Request {
+		request := httptest.NewRequest(http.MethodPost, "/login", nil)
+		request.RemoteAddr = remote
+		if forwarded != "" {
+			request.Header.Set("X-Forwarded-For", forwarded)
+		}
+		return request
+	}
+	victim := handler.loginThrottleKey(request("10.0.0.2:8080", "203.0.113.9"), "victim@example.com")
+	attacker := handler.loginThrottleKey(request("10.0.0.2:8080", "198.51.100.7"), "victim@example.com")
+	if victim == attacker {
+		t.Fatal("clients behind the same trusted proxy share a login throttle bucket")
+	}
+	if victim != handler.loginThrottleKey(request("10.0.0.3:9090", "203.0.113.9"), " Victim@Example.com ") {
+		t.Fatal("the same client and email must map to one bucket across proxies and letter case")
+	}
+	spoofed := handler.loginThrottleKey(request("198.51.100.2:1", "203.0.113.9"), "victim@example.com")
+	if spoofed == victim {
+		t.Fatal("X-Forwarded-For from an untrusted peer must not select the throttle bucket")
+	}
+}
+
 type recordingRateLimitRepository struct {
 	scope, keyHash string
 	allowed        bool

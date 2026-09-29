@@ -11,7 +11,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -1121,11 +1120,9 @@ func (handler *Handler) preAuthCookieName() string {
 }
 
 func (handler *Handler) loginThrottleKey(request *http.Request, email string) string {
-	host, _, err := net.SplitHostPort(request.RemoteAddr)
-	if err != nil {
-		host = request.RemoteAddr
-	}
-	return appauth.TokenHash(strings.ToLower(strings.TrimSpace(email)) + "|" + host)
+	// clientIP honours the trusted-proxy list, so clients behind Cloudflare or a
+	// reverse proxy are throttled individually instead of sharing the proxy IP.
+	return appauth.TokenHash(strings.ToLower(strings.TrimSpace(email)) + "|" + handler.clientIP(request))
 }
 
 func safeLoginDestination(value string) string {
