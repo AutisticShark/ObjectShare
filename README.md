@@ -393,6 +393,8 @@ go run . -config config.json
 
 ObjectShare now keeps operational configuration in PostgreSQL. On the first start after this upgrade, it imports the existing JSON/environment values into one encrypted `application_settings` revision. Later starts load that database revision, so changing a legacy operational environment variable does not overwrite an administrator's dashboard changes. This one-time import preserves existing deployments; after it succeeds, manage application policy, OAuth, CAPTCHA, rate limits, storage providers, and object encryption at `/admin/settings`.
 
+An environment variable that is set but empty is ignored for credentials (variables containing `SECRET`, `PASSWORD`, `TOKEN` or `_KEY`, such as `OBJECTSHARE_SETTINGS_KEY` and `OBJECTSHARE_DB_PASSWORD`), so the empty defaults Compose forwards cannot erase a value from `config.json`. Other empty variables still override; `OBJECTSHARE_REDIS_URL=` deliberately disables Redis.
+
 Bootstrap infrastructure and secrets remain file/environment-owned:
 
 | Variable | Default | Purpose |

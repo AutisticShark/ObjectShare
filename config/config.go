@@ -799,10 +799,27 @@ func decodeKey(value string) ([]byte, error) {
 	return hex.DecodeString(value)
 }
 
+// setString applies a string environment override. An empty value normally
+// overrides (OBJECTSHARE_REDIS_URL="" deliberately disables Redis), but for
+// credentials it means "not provided": Compose forwards every documented
+// variable, empty by default, and an empty OBJECTSHARE_SETTINGS_KEY or password
+// must not erase the value from config.json.
 func setString(name string, target *string) {
-	if value, ok := os.LookupEnv(name); ok {
+	if value, ok := os.LookupEnv(name); ok && (value != "" || !isCredentialVariable(name)) {
 		*target = value
 	}
+}
+
+func isCredentialVariable(name string) bool {
+	if strings.HasSuffix(name, "_KEY_PREFIX") {
+		return false
+	}
+	for _, marker := range []string{"SECRET", "PASSWORD", "TOKEN", "_KEY"} {
+		if strings.Contains(name, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 func setInt(name string, target *int) error {

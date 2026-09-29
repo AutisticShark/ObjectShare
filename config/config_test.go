@@ -677,3 +677,38 @@ func TestGuestPendingUploadCapDefaultsEnvironmentAndValidation(t *testing.T) {
 		t.Fatalf("config.json.example cap = %d", example.Upload.MaxPendingGuestMiB)
 	}
 }
+
+func TestEmptyCredentialEnvironmentVariablesDoNotEraseConfiguredValues(t *testing.T) {
+	for _, name := range []string{"OBJECTSHARE_SETTINGS_KEY", "OBJECTSHARE_JWT_SECRET", "OBJECTSHARE_DB_PASSWORD", "OBJECTSHARE_STRIPE_SECRET_KEY",
+		"OBJECTSHARE_R2_SECRET_ACCESS_KEY", "OBJECTSHARE_EMAIL_SMTP_PASSWORD", "OBJECTSHARE_S3_SESSION_TOKEN", "OBJECTSHARE_ENCRYPTION_KEY"} {
+		if !isCredentialVariable(name) {
+			t.Errorf("%s is not treated as a credential", name)
+		}
+	}
+	for _, name := range []string{"OBJECTSHARE_REDIS_URL", "OBJECTSHARE_REDIS_KEY_PREFIX", "OBJECTSHARE_STORAGE_PATH", "OBJECTSHARE_EMAIL_FROM_NAME"} {
+		if isCredentialVariable(name) {
+			t.Errorf("%s must keep its explicit-empty override", name)
+		}
+	}
+
+	t.Setenv("OBJECTSHARE_SETTINGS_KEY", "")
+	t.Setenv("OBJECTSHARE_DB_PASSWORD", "")
+	t.Setenv("OBJECTSHARE_REDIS_URL", "")
+	cfg := testDefaults()
+	cfg.SettingsKey = "configured-settings-key-with-at-least-32-bytes"
+	cfg.Db.Password = "configured-database-password"
+	cfg.Redis.URL = "redis://redis:6379/0"
+	if err := applyEnvironment(cfg); err != nil {
+		t.Fatal(err)
+	}
+	if cfg.SettingsKey != "configured-settings-key-with-at-least-32-bytes" || cfg.Db.Password != "configured-database-password" {
+		t.Fatalf("empty credential variables erased configured values: %q %q", cfg.SettingsKey, cfg.Db.Password)
+	}
+	if cfg.Redis.URL != "" {
+		t.Fatalf("an explicit empty OBJECTSHARE_REDIS_URL must still disable Redis, got %q", cfg.Redis.URL)
+	}
+	t.Setenv("OBJECTSHARE_SETTINGS_KEY", "environment-settings-key-with-at-least-32-bytes")
+	if err := applyEnvironment(cfg); err != nil || cfg.SettingsKey != "environment-settings-key-with-at-least-32-bytes" {
+		t.Fatalf("a non-empty credential variable must still override: %q %v", cfg.SettingsKey, err)
+	}
+}
