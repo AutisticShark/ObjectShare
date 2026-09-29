@@ -108,9 +108,20 @@ func VerifyPassword(password, encoded string) bool {
 	return subtle.ConstantTimeCompare(got, want) == 1
 }
 
+// DummyPasswordHash returns an Argon2id hash of a random, never-disclosed
+// password. It gives callers a real verification to run for unknown or
+// passwordless accounts so timing does not reveal them. The password is random
+// per process: a constant would be a valid credential for every account that
+// falls back to this hash.
 func DummyPasswordHash() string {
 	dummyOnce.Do(func() {
-		dummyHash, _ = HashPassword("objectshare-dummy-password")
+		secret, _, err := NewToken()
+		if err == nil {
+			dummyHash, err = HashPassword(secret)
+		}
+		if err != nil {
+			panic(fmt.Sprintf("generate dummy password hash: %v", err))
+		}
 	})
 	return dummyHash
 }

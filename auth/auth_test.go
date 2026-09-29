@@ -57,3 +57,15 @@ func TestTokensAreRandomAndHashable(t *testing.T) {
 		t.Fatal("token generation is not unique or hash is inconsistent")
 	}
 }
+
+func TestDummyPasswordHashIsNotAKnownCredential(t *testing.T) {
+	hash := DummyPasswordHash()
+	if hash == "" || hash != DummyPasswordHash() {
+		t.Fatal("dummy hash must be a stable, non-empty value within one process")
+	}
+	for _, guess := range []string{"objectshare-dummy-password", "", "password", "dummy"} {
+		if VerifyPassword(guess, hash) {
+			t.Fatalf("dummy hash verifies the guessable password %q", guess)
+		}
+	}
+}

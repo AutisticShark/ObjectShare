@@ -1183,3 +1183,37 @@ func TestSetupCompleteCachesOnlyThePositiveAdministratorCheck(t *testing.T) {
 		t.Fatalf("expired cache must re-check and redirect to /setup, got %d", response.Code)
 	}
 }
+
+func TestOAuthOnlyAccountsCannotLogInWithAnyPassword(t *testing.T) {
+	repository := newAuthMemoryRepository()
+	user := &db.User{ID: "6f0a35a1-4a3e-4b8d-9d43-6e2d1b0c9a11", Email: "oauth@example.com", DisplayName: "OAuth", Role: db.RoleUser, Active: true, TokenVersion: 1}
+	repository.users[user.ID] = user
+	handler := newAuthTestHandler(t, repository, false)
+	// The historical constant fallback hash was derived from this exact string.
+	for _, password := range []string{"objectshare-dummy-password", "", "a sufficiently long password"} {
+		body, _ := json.Marshal(map[string]string{"email": user.Email, "password": password})
+		request := httptest.NewRequest(http.MethodPost, "/api/v1/auth/login", strings.NewReader(string(body)))
+		request.Header.Set("Content-Type", "application/json")
+		response := httptest.NewRecorder()
+		handler.APILogin(response, request)
+		if response.Code != http.StatusUnauthorized || strings.Contains(response.Body.String(), "access_token") {
+			t.Fatalf("API login for passwordless account with %q: status=%d body=%q", password, response.Code, response.Body.String())
+		}
+	}
+
+	page := httptest.NewRecorder()
+	handler.LoginPage(page, httptest.NewRequest(http.MethodGet, "/login", nil))
+	csrf, preAuthCookie := strings.TrimSpace(page.Body.String()), page.Result().Cookies()[0]
+	request := formRequest("/login", url.Values{"csrf_token": {csrf}, "email": {user.Email}, "password": {"objectshare-dummy-password"}})
+	request.AddCookie(preAuthCookie)
+	response := httptest.NewRecorder()
+	handler.Login(response, request)
+	for _, cookie := range response.Result().Cookies() {
+		if cookie.Name == "objectshare_jwt" && cookie.Value != "" {
+			t.Fatal("browser login issued a JWT for a passwordless account")
+		}
+	}
+	if !strings.Contains(response.Body.String(), "Email or password is incorrect.") {
+		t.Fatalf("browser login status=%d body=%q", response.Code, response.Body.String())
+	}
+}

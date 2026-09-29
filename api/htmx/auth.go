@@ -385,11 +385,13 @@ func (handler *Handler) authenticateCredentials(request *http.Request, emailValu
 	}
 	passwordCorrect := false
 	if user != nil {
-		passwordHash := user.PasswordHash
-		if passwordHash == "" {
-			passwordHash = appauth.DummyPasswordHash()
+		if user.PasswordHash == "" {
+			// OAuth-only accounts have no password. Still burn one verification
+			// so timing matches, but never let it succeed.
+			_ = appauth.VerifyPassword(password, appauth.DummyPasswordHash())
+		} else {
+			passwordCorrect = appauth.VerifyPassword(password, user.PasswordHash)
 		}
-		passwordCorrect = appauth.VerifyPassword(password, passwordHash)
 	} else {
 		_ = appauth.VerifyPassword(password, appauth.DummyPasswordHash())
 	}
