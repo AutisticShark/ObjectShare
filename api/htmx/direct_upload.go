@@ -234,7 +234,7 @@ func (handler *Handler) CompleteDirectUpload(writer http.ResponseWriter, request
 		http.Error(writer, "The uploaded object is not available yet.", http.StatusConflict)
 		return
 	}
-	if info.Size != file.FileSize || !strings.EqualFold(info.ContentType, file.ContentType) {
+	if info.Size != file.FileSize || !sameMediaType(info.ContentType, file.ContentType) {
 		if err := handler.deletePendingUpload(request.Context(), file.FileID); err != nil && !errors.Is(err, db.ErrNotFound) {
 			handler.logger.Warn("discard mismatched direct upload", "file_id", file.FileID, "error", err)
 		}
@@ -352,6 +352,20 @@ func (handler *Handler) deletePendingUpload(ctx context.Context, fileID string) 
 		return err
 	}
 	return nil
+}
+
+// sameMediaType compares the authorised and stored content types by media type
+// only. Some S3-compatible services normalise the header they store (for
+// example appending "; charset=utf-8" to text types), which must not make a
+// correct upload look tampered with; size and the signed Content-Type still
+// bind the object to what was authorised.
+func sameMediaType(stored, authorized string) bool {
+	storedType, _, storedErr := mime.ParseMediaType(stored)
+	authorizedType, _, authorizedErr := mime.ParseMediaType(authorized)
+	if storedErr != nil || authorizedErr != nil {
+		return strings.EqualFold(strings.TrimSpace(stored), strings.TrimSpace(authorized))
+	}
+	return storedType == authorizedType
 }
 
 func decodeJSON(writer http.ResponseWriter, request *http.Request, target any) error {

@@ -139,3 +139,23 @@ func TestDirectUploadEndpointsShareRejectionStatuses(t *testing.T) {
 		})
 	}
 }
+
+func TestSameMediaTypeIgnoresProviderNormalisation(t *testing.T) {
+	for _, test := range []struct {
+		stored, authorized string
+		want               bool
+	}{
+		{"text/plain", "text/plain", true},
+		{"TEXT/Plain", "text/plain", true},
+		{"text/plain; charset=utf-8", "text/plain", true},
+		{"application/octet-stream", "application/octet-stream", true},
+		{"text/html", "text/plain", false},
+		{"application/octet-stream", "text/plain", false},
+		{"", "text/plain", false},
+		{"not a type", "NOT A TYPE", true},
+	} {
+		if got := sameMediaType(test.stored, test.authorized); got != test.want {
+			t.Errorf("sameMediaType(%q, %q) = %v, want %v", test.stored, test.authorized, got, test.want)
+		}
+	}
+}
