@@ -30,4 +30,7 @@ COPY --from=build --chown=65532:65532 /out/data /var/lib/objectshare
 USER 65532:65532
 EXPOSE 8080
 HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 CMD ["/object-share", "-healthcheck"]
+# The image runs as a non-root user and the process default (data/objects) is
+# relative to an unwritable working directory, so default to the volume path.
+ENV OBJECTSHARE_STORAGE_PATH=/var/lib/objectshare/objects
 ENTRYPOINT ["/object-share"]

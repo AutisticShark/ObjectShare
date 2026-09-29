@@ -250,3 +250,33 @@ func TestLocalPlanFieldsPreserveExistingPricingColumns(t *testing.T) {
 		t.Fatal("local plan requires external fields")
 	}
 }
+
+func TestPostgresConfigHandlesIPv6HostsAndKeepsTimeZoneUnencoded(t *testing.T) {
+	for _, host := range []string{"::1", "[::1]", "2001:db8::10"} {
+		cfg := &config.DatabaseConfig{
+			Host: host, Port: 5433, User: "objectshare", Password: "pw", Database: "objectshare",
+			SSLMode: "disable", TimeZone: "Asia/Taipei",
+		}
+		parsed, _, err := postgresConfig(cfg)
+		if err != nil {
+			t.Fatalf("host %q: %v", host, err)
+		}
+		if want := strings.Trim(host, "[]"); parsed.Host != want || parsed.Port != 5433 {
+			t.Fatalf("host %q parsed as %q:%d, want %q:5433", host, parsed.Host, parsed.Port, want)
+		}
+		if parsed.RuntimeParams["timezone"] != "Asia/Taipei" {
+			t.Fatalf("host %q: timezone = %q, want Asia/Taipei unchanged", host, parsed.RuntimeParams["timezone"])
+		}
+	}
+}
+
+func TestLegacySessionsCleanupIsScopedAndShapeGuarded(t *testing.T) {
+	for _, required := range []string{"current_schema()", "'user_id'", "'expires_at'", "%I.sessions"} {
+		if !strings.Contains(dropLegacySessionsSQL, required) {
+			t.Fatalf("legacy sessions cleanup lost its guard %q", required)
+		}
+	}
+	if strings.Contains(strings.ToLower(dropLegacySessionsSQL), "if exists sessions") {
+		t.Fatal("legacy sessions cleanup drops an unqualified table unconditionally")
+	}
+}

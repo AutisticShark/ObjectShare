@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"net/url"
 	"strconv"
 	"strings"
@@ -259,7 +260,7 @@ func openPostgres(ctx context.Context, cfg *config.DatabaseConfig, pgxConfig *pg
 		_ = sqlDB.Close()
 		return nil, fmt.Errorf("migrate PostgreSQL: %w", err)
 	}
-	if err := migration.Exec("DROP TABLE IF EXISTS sessions").Error; err != nil {
+	if err := migration.Exec(dropLegacySessionsSQL).Error; err != nil {
 		_ = migration.Rollback().Error
 		_ = sqlDB.Close()
 		return nil, fmt.Errorf("remove legacy server sessions: %w", err)
@@ -270,6 +271,21 @@ func openPostgres(ctx context.Context, cfg *config.DatabaseConfig, pgxConfig *pg
 	}
 	return &GormRepository{connection: connection.Session(&gorm.Session{PrepareStmt: true})}, nil
 }
+
+// dropLegacySessionsSQL removes the server-side login sessions table that
+// earlier releases created (accounts now authenticate with JWTs only). It runs
+// on every start, so it must never touch a different application's table: it
+// looks only in the connection's current schema and only drops a table that has
+// the session shape (user_id and expires_at columns). Once the legacy table is
+// gone it does nothing.
+const dropLegacySessionsSQL = `DO $$
+BEGIN
+  IF (SELECT count(*) FROM information_schema.columns
+        WHERE table_schema = current_schema() AND table_name = 'sessions' AND column_name IN ('user_id', 'expires_at')) = 2 THEN
+    EXECUTE format('DROP TABLE %I.sessions', current_schema());
+  END IF;
+END
+$$`
 
 type legacyPaidPlan struct {
 	StripePriceID string `gorm:"column:stripe_price_id"`
@@ -291,8 +307,10 @@ func postgresConfig(cfg *config.DatabaseConfig) (*pgx.ConnConfig, *time.Location
 	dsn := &url.URL{
 		Scheme: "postgres",
 		User:   url.UserPassword(cfg.User, cfg.Password),
-		Host:   cfg.Host + ":" + strconv.Itoa(cfg.Port),
-		Path:   cfg.Database,
+		// JoinHostPort brackets IPv6 literals; strip brackets the operator may
+		// already have written so they are not doubled.
+		Host: net.JoinHostPort(strings.TrimSuffix(strings.TrimPrefix(cfg.Host, "["), "]"), strconv.Itoa(cfg.Port)),
+		Path: cfg.Database,
 	}
 	query := dsn.Query()
 	query.Set("sslmode", cfg.SSLMode)

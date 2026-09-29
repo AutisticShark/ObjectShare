@@ -2,11 +2,13 @@ package db
 
 import (
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
+	"gorm.io/gorm"
 )
 
 func TestPostgresReserveLoginAttemptIsAtomicAndClearsOnSuccess(t *testing.T) {
@@ -147,3 +149,49 @@ func TestPostgresPaymentReconciliationIsIdempotentPerGatewayPayment(t *testing.T
 		t.Fatalf("reconciliation rows = %d, err %v", count, err)
 	}
 }
+
+func TestPostgresLegacySessionsCleanupOnlyDropsTheSessionShape(t *testing.T) {
+	repo := creditTestRepository(t)
+	schema := "objectshare_sessions_" + strings.ReplaceAll(uuid.NewString(), "-", "")
+	err := repo.connection.Transaction(func(tx *gorm.DB) error {
+		for _, statement := range []string{
+			`CREATE SCHEMA ` + schema,
+			`SET LOCAL search_path TO ` + schema,
+			`CREATE TABLE sessions (id integer, note text)`, // another application's table
+		} {
+			if err := tx.Exec(statement).Error; err != nil {
+				return err
+			}
+		}
+		if err := tx.Exec(dropLegacySessionsSQL).Error; err != nil {
+			return err
+		}
+		var foreign int64
+		if err := tx.Raw(`SELECT count(*) FROM information_schema.tables WHERE table_schema = ? AND table_name = 'sessions'`, schema).Scan(&foreign).Error; err != nil || foreign != 1 {
+			t.Fatalf("a table without the session shape was dropped (count %d, err %v)", foreign, err)
+		}
+		if err := tx.Exec(`DROP TABLE sessions`).Error; err != nil {
+			return err
+		}
+		if err := tx.Exec(`CREATE TABLE sessions (token_hash text, user_id uuid, expires_at timestamptz)`).Error; err != nil {
+			return err
+		}
+		if err := tx.Exec(dropLegacySessionsSQL).Error; err != nil {
+			return err
+		}
+		var legacy int64
+		if err := tx.Raw(`SELECT count(*) FROM information_schema.tables WHERE table_schema = ? AND table_name = 'sessions'`, schema).Scan(&legacy).Error; err != nil || legacy != 0 {
+			t.Fatalf("the legacy sessions table survived (count %d, err %v)", legacy, err)
+		}
+		// Idempotent once the table is gone.
+		if err := tx.Exec(dropLegacySessionsSQL).Error; err != nil {
+			return err
+		}
+		return errRollbackSessionsTest
+	})
+	if err != errRollbackSessionsTest {
+		t.Fatal(err)
+	}
+}
+
+var errRollbackSessionsTest = errors.New("roll back the scratch schema")
