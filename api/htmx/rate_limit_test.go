@@ -2,8 +2,10 @@ package htmx
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -115,5 +117,66 @@ func TestRateLimiterUsesSharedRepositoryAndHashesIdentity(t *testing.T) {
 	handler.RateLimitAPI(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) { writer.WriteHeader(http.StatusNoContent) })).ServeHTTP(response, request)
 	if response.Code != http.StatusNoContent || repository.scope != "api" || len(repository.keyHash) != 64 || repository.keyHash == "sensitive-user-id" {
 		t.Fatalf("status=%d scope=%q key=%q", response.Code, repository.scope, repository.keyHash)
+	}
+}
+
+func TestLocalRateLimiterPrunesExpiredBuckets(t *testing.T) {
+	limiter := newLocalRateLimiter()
+	start := time.Date(2026, 9, 29, 12, 0, 0, 0, time.UTC)
+	for i := range 500 {
+		if allowed, _ := limiter.consume(fmt.Sprintf("api:client-%d", i), 5, time.Minute, start); !allowed {
+			t.Fatal("first request was refused")
+		}
+	}
+	if len(limiter.buckets) != 500 {
+		t.Fatalf("buckets = %d", len(limiter.buckets))
+	}
+	// Two windows later a single new client triggers the sweep.
+	limiter.consume("api:fresh", 5, time.Minute, start.Add(3*time.Minute))
+	if len(limiter.buckets) != 1 {
+		t.Fatalf("expired buckets were never pruned: %d left", len(limiter.buckets))
+	}
+	// A bucket still inside its window survives a later sweep and keeps counting.
+	long := 5 * time.Minute
+	limiter.consume("api:live", 2, long, start.Add(3*time.Minute+50*time.Second))
+	limiter.consume("api:live", 2, long, start.Add(3*time.Minute+55*time.Second))           // used 2 of 2
+	limiter.consume("api:trigger", 5, time.Minute, start.Add(4*time.Minute+20*time.Second)) // sweeps; "live" is still in its window
+	if allowed, _ := limiter.consume("api:live", 2, long, start.Add(4*time.Minute+30*time.Second)); allowed {
+		t.Fatal("pruning reset a live bucket")
+	}
+}
+
+func TestBillingAndWebhookRoutesAreRateLimited(t *testing.T) {
+	repository := &entitlementRepository{memoryRepository: &memoryRepository{files: make(map[string]*db.FileList)}}
+	handler := newTestHandler(t, repository, &memoryStorage{objects: make(map[string][]byte)})
+	handler.config.RateLimit = &config.RateLimitConfig{Enabled: true, Window: config.Duration(time.Minute), APILimit: 1000}
+	handler.config.Billing = &config.BillingConfig{}
+	handler.billingGateways = map[string]billingGateway{db.BillingGatewayPayPal: &paypalGatewayStub{}}
+	for name, test := range map[string]struct {
+		limit int
+		call  func() *httptest.ResponseRecorder
+	}{
+		"paypal webhook": {120, func() *httptest.ResponseRecorder {
+			response := httptest.NewRecorder()
+			handler.PayPalWebhook(response, httptest.NewRequest(http.MethodPost, "/api/v1/billing/paypal/webhook", strings.NewReader("{}")))
+			return response
+		}},
+		"billing top-up": {10, func() *httptest.ResponseRecorder {
+			response := httptest.NewRecorder()
+			handler.BillingTopUp(response, httptest.NewRequest(http.MethodPost, "/billing/top-up/stripe", strings.NewReader("")))
+			return response
+		}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			handler.localRateLimits = newLocalRateLimiter()
+			for attempt := 1; attempt <= test.limit; attempt++ {
+				if response := test.call(); response.Code == http.StatusTooManyRequests {
+					t.Fatalf("request %d of %d was limited", attempt, test.limit)
+				}
+			}
+			if response := test.call(); response.Code != http.StatusTooManyRequests || response.Header().Get("Retry-After") == "" {
+				t.Fatalf("request %d was not limited: %d", test.limit+1, response.Code)
+			}
+		})
 	}
 }

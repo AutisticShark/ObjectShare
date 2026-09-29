@@ -6,6 +6,7 @@ import (
 	_ "embed"
 	"fmt"
 	"strings"
+	"sync"
 	"unicode"
 
 	"github.com/AutisticShark/ObjectShare/db"
@@ -17,11 +18,19 @@ import (
 //go:embed fonts/NotoSansTC-Regular.ttf
 var notoSansTC []byte
 
+// The embedded fonts never change, so parse each once. Parsing the multi-megabyte
+// CJK font on every request made PDF rendering needlessly slow. A parsed
+// sfnt.Font is read-only; each PDF call uses its own sfnt.Buffer.
+var (
+	latinFont = sync.OnceValues(func() (*sfnt.Font, error) { return sfnt.Parse(goregular.TTF) })
+	cjkFont   = sync.OnceValues(func() (*sfnt.Font, error) { return sfnt.Parse(notoSansTC) })
+)
+
 // PDF uses embedded fonts, fixed margins, wrapping and automatic pagination.
 // Glyphs absent from the embedded font are shown as explicit Unicode code points
 // so identifiers and non-Latin names are never silently dropped or misrendered.
 func PDF(invoice db.Invoice, issuer string) ([]byte, error) {
-	font, err := sfnt.Parse(goregular.TTF)
+	font, err := latinFont()
 	if err != nil {
 		return nil, err
 	}
@@ -31,7 +40,7 @@ func PDF(invoice db.Invoice, issuer string) ([]byte, error) {
 		glyph, _ := font.GlyphIndex(&probe, r)
 		if glyph == 0 && r <= 0xffff && !unicode.IsControl(r) {
 			fontBytes = notoSansTC
-			font, err = sfnt.Parse(fontBytes)
+			font, err = cjkFont()
 			if err != nil {
 				return nil, err
 			}

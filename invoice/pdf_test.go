@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -26,5 +27,40 @@ func TestPDFInvoice(t *testing.T) {
 	invoice.Description = strings.Repeat("long text ", 1000)
 	if _, err = PDF(invoice, "Brand\r\nwith controls\x00"); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestParsedFontsAreReusedAndSafeForConcurrentRendering(t *testing.T) {
+	first, err := latinFont()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second, _ := latinFont(); second != first {
+		t.Fatal("the Latin font was parsed again")
+	}
+	if cjk, _ := cjkFont(); cjk == nil {
+		t.Fatal("the CJK font did not parse")
+	}
+	now := time.Date(2026, 9, 5, 12, 0, 0, 0, time.UTC)
+	var wg sync.WaitGroup
+	errs := make(chan error, 8)
+	for i := range 8 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			name := "Plus"
+			if i%2 == 1 {
+				name = "進階方案 " + name
+			}
+			_, err := PDF(db.Invoice{ID: "11111111-1111-4111-8111-111111111111", Kind: "plan", Name: name, Email: "buyer@example.com", Currency: "USD", Status: "paid", CreatedAt: now, PaidAt: &now}, "ObjectShare")
+			errs <- err
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatal(err)
+		}
 	}
 }

@@ -17,13 +17,20 @@ import (
 
 type localRateLimitBucket struct {
 	windowStarted time.Time
+	windowEnds    time.Time
 	used          int
 }
 
 type localRateLimiter struct {
-	mu      sync.Mutex
-	buckets map[string]localRateLimitBucket
+	mu         sync.Mutex
+	buckets    map[string]localRateLimitBucket
+	lastPruned time.Time
 }
+
+// localRateLimitPruneInterval bounds how often expired buckets are swept. Keys
+// are per client and per scope, so without a sweep the map would grow with every
+// distinct client for the life of the process.
+const localRateLimitPruneInterval = time.Minute
 
 func newLocalRateLimiter() *localRateLimiter {
 	return &localRateLimiter{buckets: make(map[string]localRateLimitBucket)}
@@ -32,9 +39,10 @@ func newLocalRateLimiter() *localRateLimiter {
 func (limiter *localRateLimiter) consume(key string, limit int, window time.Duration, now time.Time) (bool, time.Time) {
 	limiter.mu.Lock()
 	defer limiter.mu.Unlock()
+	limiter.pruneLocked(now)
 	bucket, found := limiter.buckets[key]
 	if !found || !now.Before(bucket.windowStarted.Add(window)) {
-		limiter.buckets[key] = localRateLimitBucket{windowStarted: now, used: 1}
+		limiter.buckets[key] = localRateLimitBucket{windowStarted: now, windowEnds: now.Add(window), used: 1}
 		return true, time.Time{}
 	}
 	retryAt := bucket.windowStarted.Add(window)
@@ -44,6 +52,18 @@ func (limiter *localRateLimiter) consume(key string, limit int, window time.Dura
 	bucket.used++
 	limiter.buckets[key] = bucket
 	return true, retryAt
+}
+
+func (limiter *localRateLimiter) pruneLocked(now time.Time) {
+	if now.Sub(limiter.lastPruned) < localRateLimitPruneInterval {
+		return
+	}
+	limiter.lastPruned = now
+	for key, bucket := range limiter.buckets {
+		if !now.Before(bucket.windowEnds) {
+			delete(limiter.buckets, key)
+		}
+	}
 }
 
 func (handler *Handler) RateLimitAPI(next http.Handler) http.Handler {

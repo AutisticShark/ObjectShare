@@ -197,6 +197,10 @@ func (handler *Handler) Invoice(writer http.ResponseWriter, request *http.Reques
 }
 
 func (handler *Handler) InvoicePDF(writer http.ResponseWriter, request *http.Request) {
+	// Rendering a PDF is CPU and memory heavy.
+	if !handler.allowRequest(writer, request, "invoice-pdf", 20) {
+		return
+	}
 	invoice := handler.ownedInvoice(writer, request)
 	if invoice == nil {
 		return

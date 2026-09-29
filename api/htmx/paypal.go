@@ -341,6 +341,11 @@ func (handler *Handler) PayPalWebhook(writer http.ResponseWriter, request *http.
 		http.NotFound(writer, request)
 		return
 	}
+	// Verifying a PayPal webhook makes an outbound API call, so an
+	// unauthenticated flood must be limited before it gets that far.
+	if !handler.allowRequest(writer, request, "paypal-webhook", 120) {
+		return
+	}
 	request.Body = http.MaxBytesReader(writer, request.Body, 1024*1024)
 	payload, err := io.ReadAll(request.Body)
 	if err != nil {

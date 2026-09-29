@@ -74,6 +74,9 @@ func (handler *Handler) BillingTopUp(writer http.ResponseWriter, request *http.R
 		http.Error(writer, "Billing is unavailable.", http.StatusServiceUnavailable)
 		return
 	}
+	if !handler.allowRequest(writer, request, "billing-topup", 10) {
+		return
+	}
 	if !handler.parseAuthForm(writer, request) || !handler.verifyAuthenticatedMutationCSRF(writer, request) {
 		return
 	}
