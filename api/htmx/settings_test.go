@@ -338,8 +338,21 @@ func TestActivatedHandlerInheritsProcessLocalState(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if bytes.Equal(activated.csrfSecret, previous.csrfSecret) {
-		t.Fatal("independently built handlers shared a pre-authentication CSRF secret")
+	// The secret is derived from the JWT secret, so replicas and restarts that
+	// share it accept each other's login and signup tokens.
+	if !bytes.Equal(activated.csrfSecret, previous.csrfSecret) {
+		t.Fatal("independently built handlers with one JWT secret disagree on the pre-authentication CSRF secret")
+	}
+	otherConfig := *cfg
+	otherAuth := *cfg.Auth
+	otherAuth.JWTSecret = "a-different-jwt-secret-with-at-least-32-bytes"
+	otherConfig.Auth = &otherAuth
+	other, err := New(&otherConfig, newAuthMemoryRepository(), &memoryStorage{objects: make(map[string][]byte)}, os.DirFS("../.."), logger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Equal(other.csrfSecret, previous.csrfSecret) {
+		t.Fatal("different JWT secrets produced the same pre-authentication CSRF secret")
 	}
 	activated.InheritProcessState(previous)
 	if !bytes.Equal(activated.csrfSecret, previous.csrfSecret) {

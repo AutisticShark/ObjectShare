@@ -1269,3 +1269,20 @@ func TestParallelLoginGuessesAreLimitedBeforePasswordVerification(t *testing.T) 
 		t.Fatalf("a locked account accepted the correct password: %d", locked.Code)
 	}
 }
+
+func TestPreAuthCSRFTokensAreValidAcrossReplicas(t *testing.T) {
+	repository := newAuthMemoryRepository()
+	first := newAuthTestHandler(t, repository, false)
+	second := newAuthTestHandler(t, repository, false) // another replica, same configuration
+	page := httptest.NewRecorder()
+	first.LoginPage(page, httptest.NewRequest(http.MethodGet, "/login", nil))
+	csrf, cookie := strings.TrimSpace(page.Body.String()), page.Result().Cookies()[0]
+
+	request := formRequest("/login", url.Values{"csrf_token": {csrf}, "email": {"nobody@example.com"}, "password": {"whatever password"}})
+	request.AddCookie(cookie)
+	response := httptest.NewRecorder()
+	second.Login(response, request)
+	if response.Code == http.StatusForbidden {
+		t.Fatalf("a token issued by one replica was rejected by another: %d %q", response.Code, response.Body.String())
+	}
+}

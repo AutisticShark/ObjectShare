@@ -93,6 +93,22 @@ func (handler *Handler) SetConfigReloader(reload func(context.Context) error) {
 	handler.reloadConfig = reload
 }
 
+// preAuthCSRFSecret keys the pre-authentication (login, signup, setup) CSRF
+// tokens. It is derived from the JWT secret, like the OAuth and download-form
+// secrets, so every replica and every restart accepts the same tokens. Only a
+// configuration without authentication falls back to a per-process random key.
+func preAuthCSRFSecret(cfg *config.ServiceConfig) ([]byte, error) {
+	if cfg.Auth != nil && cfg.Auth.JWTSecret != "" {
+		derived := sha256.Sum256([]byte("objectshare-preauth-csrf-v1\x00" + cfg.Auth.JWTSecret))
+		return derived[:], nil
+	}
+	secret := make([]byte, 32)
+	if _, err := rand.Read(secret); err != nil {
+		return nil, fmt.Errorf("generate CSRF secret: %w", err)
+	}
+	return secret, nil
+}
+
 func New(cfg *config.ServiceConfig, repository db.Repository, storage service.ObjectStore, templates fs.FS, logger *slog.Logger) (*Handler, error) {
 	parsed, err := parseTemplates(templates, cfg.Branding)
 	if err != nil {
@@ -130,9 +146,9 @@ func New(cfg *config.ServiceConfig, repository db.Repository, storage service.Ob
 	if err != nil {
 		return nil, fmt.Errorf("read administrator user stylesheet: %w", err)
 	}
-	csrfSecret := make([]byte, 32)
-	if _, err := rand.Read(csrfSecret); err != nil {
-		return nil, fmt.Errorf("generate CSRF secret: %w", err)
+	csrfSecret, err := preAuthCSRFSecret(cfg)
+	if err != nil {
+		return nil, err
 	}
 	userRepository, _ := repository.(db.AuthRepository)
 	var trustedProxyCIDRs []string
