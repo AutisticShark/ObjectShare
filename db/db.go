@@ -101,6 +101,7 @@ type AuthRepository interface {
 	TokenRevoked(context.Context, string, time.Time) (bool, error)
 	LoginAllowed(context.Context, string, time.Time) (bool, time.Time, error)
 	RecordLoginFailure(context.Context, string, time.Time) error
+	ReserveLoginAttempt(context.Context, string, time.Time) (bool, time.Time, error)
 	ClearLoginFailures(context.Context, string) error
 }
 

@@ -345,33 +345,70 @@ func (repo *GormRepository) LoginAllowed(ctx context.Context, key string, now ti
 
 func (repo *GormRepository) RecordLoginFailure(ctx context.Context, key string, now time.Time) error {
 	return repo.connection.WithContext(ctx).Transaction(func(transaction *gorm.DB) error {
-		if err := transaction.Where("updated_at < ?", now.Add(-24*time.Hour)).Delete(&LoginThrottle{}).Error; err != nil {
-			return err
-		}
-		if err := transaction.Exec("SELECT pg_advisory_xact_lock(hashtextextended(?, 0))", key).Error; err != nil {
+		return recordLoginFailure(transaction, key, now)
+	})
+}
+
+// ReserveLoginAttempt atomically checks the lockout and counts one attempt
+// against key. Callers reserve before the slow password verification and call
+// ClearLoginFailures on success, so concurrent guesses cannot all pass a
+// separate check before any failure is recorded.
+func (repo *GormRepository) ReserveLoginAttempt(ctx context.Context, key string, now time.Time) (bool, time.Time, error) {
+	allowed, retryAt := true, time.Time{}
+	err := repo.connection.WithContext(ctx).Transaction(func(transaction *gorm.DB) error {
+		if err := lockLoginThrottle(transaction, key, now); err != nil {
 			return err
 		}
 		var throttle LoginThrottle
-		err := transaction.Clauses(clause.Locking{Strength: "UPDATE"}).Where("key = ?", key).First(&throttle).Error
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return transaction.Create(&LoginThrottle{Key: key, Failures: 1, WindowStarted: now, UpdatedAt: now}).Error
-		}
-		if err != nil {
+		err := transaction.Where("key = ?", key).First(&throttle).Error
+		if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
 			return err
 		}
-		if now.Sub(throttle.WindowStarted) >= loginWindow {
-			throttle.Failures = 0
-			throttle.WindowStarted = now
-			throttle.LockedUntil = nil
+		if err == nil && throttle.LockedUntil != nil && throttle.LockedUntil.After(now) {
+			allowed, retryAt = false, *throttle.LockedUntil
+			return nil
 		}
-		throttle.Failures++
-		if throttle.Failures >= maxLoginFailures {
-			lockedUntil := now.Add(loginLockout)
-			throttle.LockedUntil = &lockedUntil
-		}
-		throttle.UpdatedAt = now
-		return transaction.Save(&throttle).Error
+		return countLoginFailure(transaction, key, now)
 	})
+	return allowed, retryAt, err
+}
+
+func lockLoginThrottle(transaction *gorm.DB, key string, now time.Time) error {
+	if err := transaction.Where("updated_at < ?", now.Add(-24*time.Hour)).Delete(&LoginThrottle{}).Error; err != nil {
+		return err
+	}
+	return transaction.Exec("SELECT pg_advisory_xact_lock(hashtextextended(?, 0))", key).Error
+}
+
+func recordLoginFailure(transaction *gorm.DB, key string, now time.Time) error {
+	if err := lockLoginThrottle(transaction, key, now); err != nil {
+		return err
+	}
+	return countLoginFailure(transaction, key, now)
+}
+
+// countLoginFailure must run under the advisory lock taken by lockLoginThrottle.
+func countLoginFailure(transaction *gorm.DB, key string, now time.Time) error {
+	var throttle LoginThrottle
+	err := transaction.Clauses(clause.Locking{Strength: "UPDATE"}).Where("key = ?", key).First(&throttle).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return transaction.Create(&LoginThrottle{Key: key, Failures: 1, WindowStarted: now, UpdatedAt: now}).Error
+	}
+	if err != nil {
+		return err
+	}
+	if now.Sub(throttle.WindowStarted) >= loginWindow {
+		throttle.Failures = 0
+		throttle.WindowStarted = now
+		throttle.LockedUntil = nil
+	}
+	throttle.Failures++
+	if throttle.Failures >= maxLoginFailures {
+		lockedUntil := now.Add(loginLockout)
+		throttle.LockedUntil = &lockedUntil
+	}
+	throttle.UpdatedAt = now
+	return transaction.Save(&throttle).Error
 }
 
 func (repo *GormRepository) ClearLoginFailures(ctx context.Context, key string) error {

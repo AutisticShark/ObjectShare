@@ -369,7 +369,9 @@ func (handler *Handler) APILogin(writer http.ResponseWriter, request *http.Reque
 func (handler *Handler) authenticateCredentials(request *http.Request, emailValue, password string) (*db.User, bool, time.Time, error) {
 	email, emailErr := appauth.NormalizeEmail(emailValue)
 	throttleKey := handler.loginThrottleKey(request, email)
-	allowed, retryAt, err := handler.users.LoginAllowed(request.Context(), throttleKey, time.Now().UTC())
+	// The attempt is counted before the slow password check so parallel guesses
+	// cannot all pass a separate check; success clears it below.
+	allowed, retryAt, err := handler.users.ReserveLoginAttempt(request.Context(), throttleKey, time.Now().UTC())
 	if err != nil {
 		return nil, false, time.Time{}, err
 	}
@@ -396,9 +398,6 @@ func (handler *Handler) authenticateCredentials(request *http.Request, emailValu
 		_ = appauth.VerifyPassword(password, appauth.DummyPasswordHash())
 	}
 	if user == nil || !user.CanAuthenticate() || !passwordCorrect {
-		if recordErr := handler.users.RecordLoginFailure(request.Context(), throttleKey, time.Now().UTC()); recordErr != nil {
-			handler.logger.Error("record login failure", "error", recordErr)
-		}
 		return nil, false, time.Time{}, nil
 	}
 	if err := handler.users.ClearLoginFailures(request.Context(), throttleKey); err != nil {

@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"sort"
 	"strings"
+	"sync"
 	"testing"
 	"testing/fstest"
 	"time"
@@ -30,6 +31,7 @@ type authMemoryRepository struct {
 	identities map[string]*db.OAuthIdentity
 	revoked    map[string]time.Time
 	throttles  map[string]int
+	throttleMu sync.Mutex
 	setting    *db.ApplicationSetting
 }
 
@@ -373,11 +375,22 @@ func (repository *authMemoryRepository) LoginAllowed(_ context.Context, key stri
 	}
 	return true, time.Time{}, nil
 }
+func (repository *authMemoryRepository) ReserveLoginAttempt(_ context.Context, key string, _ time.Time) (bool, time.Time, error) {
+	repository.throttleMu.Lock()
+	defer repository.throttleMu.Unlock()
+	if repository.throttles[key] >= 5 {
+		return false, time.Now().Add(15 * time.Minute), nil
+	}
+	repository.throttles[key]++
+	return true, time.Time{}, nil
+}
 func (repository *authMemoryRepository) RecordLoginFailure(_ context.Context, key string, _ time.Time) error {
 	repository.throttles[key]++
 	return nil
 }
 func (repository *authMemoryRepository) ClearLoginFailures(_ context.Context, key string) error {
+	repository.throttleMu.Lock()
+	defer repository.throttleMu.Unlock()
 	delete(repository.throttles, key)
 	return nil
 }
@@ -1215,5 +1228,44 @@ func TestOAuthOnlyAccountsCannotLogInWithAnyPassword(t *testing.T) {
 	}
 	if !strings.Contains(response.Body.String(), "Email or password is incorrect.") {
 		t.Fatalf("browser login status=%d body=%q", response.Code, response.Body.String())
+	}
+}
+
+func TestParallelLoginGuessesAreLimitedBeforePasswordVerification(t *testing.T) {
+	repository := newAuthMemoryRepository()
+	hash, _ := appauth.HashPassword("a sufficiently long password")
+	user := &db.User{ID: "60c628c1-85cb-4463-b895-a629c31bfa55", Email: "user@example.com", DisplayName: "User", PasswordHash: hash, Role: db.RoleUser, Active: true, TokenVersion: 1}
+	repository.users[user.ID] = user
+	handler := newAuthTestHandler(t, repository, false)
+
+	const attempts = 30
+	var wg sync.WaitGroup
+	statuses := make(chan int, attempts)
+	for range attempts {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			request := httptest.NewRequest(http.MethodPost, "/api/v1/auth/login", strings.NewReader(`{"email":"user@example.com","password":"definitely the wrong password"}`))
+			request.Header.Set("Content-Type", "application/json")
+			response := httptest.NewRecorder()
+			handler.APILogin(response, request)
+			statuses <- response.Code
+		}()
+	}
+	wg.Wait()
+	close(statuses)
+	counts := map[int]int{}
+	for status := range statuses {
+		counts[status]++
+	}
+	if counts[http.StatusUnauthorized] != 5 || counts[http.StatusTooManyRequests] != attempts-5 {
+		t.Fatalf("parallel guesses: %v, want exactly 5 verified guesses and the rest throttled", counts)
+	}
+	right := httptest.NewRequest(http.MethodPost, "/api/v1/auth/login", strings.NewReader(`{"email":"user@example.com","password":"a sufficiently long password"}`))
+	right.Header.Set("Content-Type", "application/json")
+	locked := httptest.NewRecorder()
+	handler.APILogin(locked, right)
+	if locked.Code != http.StatusTooManyRequests {
+		t.Fatalf("a locked account accepted the correct password: %d", locked.Code)
 	}
 }
