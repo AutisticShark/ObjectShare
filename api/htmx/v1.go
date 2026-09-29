@@ -23,6 +23,7 @@ import (
 	"path"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 	"unicode"
 	"unicode/utf8"
@@ -73,6 +74,9 @@ type Handler struct {
 	localRateLimits    *localRateLimiter
 	trustedProxies     []*net.IPNet
 	reloadConfig       func(context.Context) error
+	// adminsExistUntil is the Unix-nanosecond deadline until which SetupComplete
+	// may skip its AdminCount query after seeing an administrator.
+	adminsExistUntil atomic.Int64
 }
 
 // InheritProcessState carries state that belongs to the process rather than to

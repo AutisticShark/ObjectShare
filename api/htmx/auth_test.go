@@ -1135,3 +1135,51 @@ func TestLoginDestinationsRoundTripForEveryProtectedPage(t *testing.T) {
 		}
 	}
 }
+
+type adminCountingRepository struct {
+	*authMemoryRepository
+	calls int
+}
+
+func (repository *adminCountingRepository) AdminCount(ctx context.Context) (int64, error) {
+	repository.calls++
+	return repository.authMemoryRepository.AdminCount(ctx)
+}
+
+func TestSetupCompleteCachesOnlyThePositiveAdministratorCheck(t *testing.T) {
+	inner := newAuthMemoryRepository()
+	repository := &adminCountingRepository{authMemoryRepository: inner}
+	handler := newAuthTestHandler(t, inner, false)
+	handler.users = repository
+	next := http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) { writer.WriteHeader(http.StatusNoContent) })
+	serve := func() *httptest.ResponseRecorder {
+		response := httptest.NewRecorder()
+		handler.SetupComplete(next).ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/", nil))
+		return response
+	}
+
+	for attempt := 0; attempt < 2; attempt++ {
+		if response := serve(); response.Code != http.StatusSeeOther || response.Header().Get("Location") != "/setup" {
+			t.Fatalf("fresh install response = %d %q, want redirect to /setup", response.Code, response.Header().Get("Location"))
+		}
+	}
+	if repository.calls != 2 {
+		t.Fatalf("a missing administrator was cached: %d AdminCount calls, want 2", repository.calls)
+	}
+
+	inner.users["admin"] = &db.User{ID: "admin", Role: db.RoleAdmin}
+	for attempt := 0; attempt < 5; attempt++ {
+		if response := serve(); response.Code != http.StatusNoContent {
+			t.Fatalf("configured install response = %d", response.Code)
+		}
+	}
+	if repository.calls != 3 {
+		t.Fatalf("AdminCount ran %d times, want 3 (two misses, one cached hit)", repository.calls)
+	}
+
+	handler.adminsExistUntil.Store(time.Now().Add(-time.Second).UnixNano())
+	delete(inner.users, "admin")
+	if response := serve(); response.Code != http.StatusSeeOther {
+		t.Fatalf("expired cache must re-check and redirect to /setup, got %d", response.Code)
+	}
+}

@@ -88,6 +88,10 @@ type adminPageData struct {
 	Users                                             []adminUserRow
 }
 
+// adminExistsCacheTTL bounds how long SetupComplete trusts a positive
+// administrator check.
+const adminExistsCacheTTL = time.Minute
+
 var errInvalidAdminForm = errors.New("invalid administrator form")
 
 func (handler *Handler) Authenticate(next http.Handler) http.Handler {
@@ -173,6 +177,11 @@ func (handler *Handler) SetupComplete(next http.Handler) http.Handler {
 			next.ServeHTTP(writer, request)
 			return
 		}
+		now := time.Now()
+		if handler.adminsExistUntil.Load() > now.UnixNano() {
+			next.ServeHTTP(writer, request)
+			return
+		}
 		count, err := handler.users.AdminCount(request.Context())
 		if err != nil {
 			handler.internalError(writer, request, "check initial setup", err)
@@ -182,6 +191,10 @@ func (handler *Handler) SetupComplete(next http.Handler) http.Handler {
 			handler.redirect(writer, request, "/setup")
 			return
 		}
+		// Only "an administrator exists" is cached, and briefly, so every
+		// request does not pay a COUNT query but setup still reappears if the
+		// last administrator is removed. Setup itself always re-checks live.
+		handler.adminsExistUntil.Store(now.Add(adminExistsCacheTTL).UnixNano())
 		next.ServeHTTP(writer, request)
 	})
 }
