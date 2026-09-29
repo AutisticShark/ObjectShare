@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"net/mail"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -30,6 +31,24 @@ var (
 	dummyOnce sync.Once
 	dummyHash string
 )
+
+// argonGate bounds concurrent Argon2id computations. Each one holds 64 MiB and
+// a core for its whole run, so an unbounded burst of login or signup requests
+// would otherwise exhaust memory or starve every other request.
+var argonGate = newGate(runtime.NumCPU())
+
+type gate chan struct{}
+
+func newGate(size int) gate { return make(gate, max(1, size)) }
+
+func (g gate) acquire() { g <- struct{}{} }
+func (g gate) release() { <-g }
+
+func deriveKey(password, salt []byte, iterations, memory uint32, threads uint8, length uint32) []byte {
+	argonGate.acquire()
+	defer argonGate.release()
+	return argon2.IDKey(password, salt, iterations, memory, threads, length)
+}
 
 func NormalizeEmail(value string) (string, error) {
 	value = strings.ToLower(strings.TrimSpace(value))
@@ -71,7 +90,7 @@ func HashPassword(password string) (string, error) {
 	if _, err := rand.Read(salt); err != nil {
 		return "", fmt.Errorf("generate password salt: %w", err)
 	}
-	key := argon2.IDKey([]byte(password), salt, argonTime, argonMemory, argonThreads, argonKeyLen)
+	key := deriveKey([]byte(password), salt, argonTime, argonMemory, argonThreads, argonKeyLen)
 	return fmt.Sprintf("$argon2id$v=%d$m=%d,t=%d,p=%d$%s$%s", argon2.Version, argonMemory, argonTime, argonThreads,
 		base64.RawStdEncoding.EncodeToString(salt), base64.RawStdEncoding.EncodeToString(key)), nil
 }
@@ -104,7 +123,7 @@ func VerifyPassword(password, encoded string) bool {
 	if err != nil || len(want) < 16 || len(want) > 64 {
 		return false
 	}
-	got := argon2.IDKey([]byte(password), salt, iterations, memory, threads, uint32(len(want)))
+	got := deriveKey([]byte(password), salt, iterations, memory, threads, uint32(len(want)))
 	return subtle.ConstantTimeCompare(got, want) == 1
 }
 

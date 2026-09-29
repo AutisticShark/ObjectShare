@@ -2,7 +2,10 @@ package auth
 
 import (
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 )
 
 func TestPasswordHashRoundTrip(t *testing.T) {
@@ -66,6 +69,63 @@ func TestDummyPasswordHashIsNotAKnownCredential(t *testing.T) {
 	for _, guess := range []string{"objectshare-dummy-password", "", "password", "dummy"} {
 		if VerifyPassword(guess, hash) {
 			t.Fatalf("dummy hash verifies the guessable password %q", guess)
+		}
+	}
+}
+
+func TestArgonGateBoundsConcurrency(t *testing.T) {
+	g := newGate(2)
+	var running, peak atomic.Int32
+	var wg sync.WaitGroup
+	for range 12 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			g.acquire()
+			defer g.release()
+			now := running.Add(1)
+			for {
+				old := peak.Load()
+				if now <= old || peak.CompareAndSwap(old, now) {
+					break
+				}
+			}
+			time.Sleep(5 * time.Millisecond)
+			running.Add(-1)
+		}()
+	}
+	wg.Wait()
+	if peak.Load() > 2 || peak.Load() < 1 {
+		t.Fatalf("peak concurrency %d exceeded the gate size 2", peak.Load())
+	}
+	if len(newGate(0)) != 0 || cap(newGate(0)) != 1 {
+		t.Fatal("a non-positive size must still yield a usable gate")
+	}
+}
+
+func TestParallelHashingAndVerificationStillWorkThroughTheGate(t *testing.T) {
+	hash, err := HashPassword("a sufficiently long password")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var wg sync.WaitGroup
+	results := make(chan bool, 8)
+	for i := range 8 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			guess := "a sufficiently long password"
+			if i%2 == 1 {
+				guess = "a sufficiently wrong password"
+			}
+			results <- VerifyPassword(guess, hash) == (i%2 == 0)
+		}()
+	}
+	wg.Wait()
+	close(results)
+	for ok := range results {
+		if !ok {
+			t.Fatal("parallel verification returned a wrong answer")
 		}
 	}
 }
