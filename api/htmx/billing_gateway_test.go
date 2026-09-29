@@ -1,8 +1,10 @@
 package htmx
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/AutisticShark/ObjectShare/config"
@@ -48,5 +50,33 @@ func TestBillingWebhookDispatchesByRegisteredGateway(t *testing.T) {
 	router.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/unknown", nil))
 	if response.Code != http.StatusNotFound {
 		t.Fatalf("unknown gateway status = %d, want %d", response.Code, http.StatusNotFound)
+	}
+}
+
+func TestGatewayErrorsCarryProviderRequestIdentifiers(t *testing.T) {
+	stripe := &http.Response{StatusCode: http.StatusBadRequest, Header: http.Header{"Request-Id": {"req_abc123"}}}
+	err := stripeAPIError(stripe, []byte(`{"error":{"type":"invalid_request_error","code":"amount_too_small","message":"Amount must be at least $0.50"}}`))
+	for _, want := range []string{"HTTP 400", "req_abc123", "invalid_request_error/amount_too_small", "Amount must be at least"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("Stripe error %q lacks %q", err, want)
+		}
+	}
+
+	paypal := &http.Response{StatusCode: http.StatusUnprocessableEntity, Header: http.Header{"Paypal-Debug-Id": {"dbg-9f8e7d"}}}
+	err = paypalAPIError(paypal, []byte(`{"name":"UNPROCESSABLE_ENTITY","message":"The requested action could not be performed"}`))
+	for _, want := range []string{"HTTP 422", "dbg-9f8e7d", "UNPROCESSABLE_ENTITY", "could not be performed"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("PayPal error %q lacks %q", err, want)
+		}
+	}
+	// The debug id may only be in the body, and hostile bodies are bounded and stripped of control characters.
+	noHeader := &http.Response{StatusCode: http.StatusBadGateway, Header: http.Header{}}
+	hostile, _ := json.Marshal(map[string]string{"debug_id": "body-debug", "message": strings.Repeat("x\r\n", 500)})
+	err = paypalAPIError(noHeader, hostile)
+	if !strings.Contains(err.Error(), "body-debug") || len(err.Error()) > 400 || strings.ContainsAny(err.Error(), "\r\n") {
+		t.Fatalf("unbounded or unsafe error text: %q", err)
+	}
+	if plain := stripeAPIError(&http.Response{StatusCode: 503, Header: http.Header{}}, []byte("<html>")); plain.Error() != "Stripe returned HTTP 503" {
+		t.Fatalf("non-JSON bodies must still yield a status error, got %q", plain)
 	}
 }

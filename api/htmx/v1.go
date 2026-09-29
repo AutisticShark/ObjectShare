@@ -433,11 +433,26 @@ func (handler *Handler) Download(writer http.ResponseWriter, request *http.Reque
 			return
 		}
 		writer.Header().Set("Content-Length", fmt.Sprint(len(plaintext)))
-		_, _ = io.Copy(writer, bytes.NewReader(plaintext))
+		handler.logStreamError(request, fileID, "stream decrypted download", func() error {
+			_, err := io.Copy(writer, bytes.NewReader(plaintext))
+			return err
+		})
 		return
 	}
 	writer.Header().Set("Content-Length", fmt.Sprint(file.FileSize))
-	_, _ = io.Copy(writer, body)
+	handler.logStreamError(request, fileID, "stream download", func() error {
+		_, err := io.Copy(writer, body)
+		return err
+	})
+}
+
+// logStreamError runs a response-body copy and logs why it stopped early. A
+// client that disconnects mid-download (its request context is cancelled) is
+// routine and stays quiet; a storage read failure or another write error is not.
+func (handler *Handler) logStreamError(request *http.Request, fileID, operation string, copyBody func() error) {
+	if err := copyBody(); err != nil && request.Context().Err() == nil {
+		handler.logger.Warn(operation+" ended early", "file_id", fileID, "error", err)
+	}
 }
 
 // decryptObject reads and decrypts a stored object while holding the cipher

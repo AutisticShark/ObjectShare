@@ -210,6 +210,7 @@ func (handler *Handler) sendMFACode(request *http.Request, address, code string)
 		if err == nil {
 			return "A verification code was sent to your verified email address."
 		}
+		handler.logger.Warn("send MFA email code failed", "error", err)
 	}
 	return "The email provider could not confirm delivery. Check your inbox, wait one minute before resending, or use a recovery code for an existing MFA method."
 }

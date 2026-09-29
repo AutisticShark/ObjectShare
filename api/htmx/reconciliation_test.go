@@ -2,9 +2,11 @@ package htmx
 
 import (
 	"bytes"
+	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -98,5 +100,25 @@ func TestPayPalReturnNeverTellsAChargedCustomerTheCaptureIsInvalid(t *testing.T)
 	handler.PayPalTopUpReturn(response, httptest.NewRequest(http.MethodGet, "/billing/paypal/topup/return?topup="+topUpID+"&token="+orderID, nil))
 	if response.Code != http.StatusUnprocessableEntity || len(repository.reconciled) != 0 {
 		t.Fatalf("uncaptured order: status=%d records=%#v", response.Code, repository.reconciled)
+	}
+}
+
+func TestStreamErrorsAreLoggedUnlessTheClientLeft(t *testing.T) {
+	logs := new(bytes.Buffer)
+	handler := &Handler{logger: slog.New(slog.NewTextHandler(logs, nil))}
+	failing := func() error { return errors.New("storage read failed") }
+
+	handler.logStreamError(httptest.NewRequest(http.MethodGet, "/file", nil), "file-1", "stream download", failing)
+	if out := logs.String(); !strings.Contains(out, "file-1") || !strings.Contains(out, "storage read failed") || !strings.Contains(out, "level=WARN") {
+		t.Fatalf("a failed stream was not logged: %q", out)
+	}
+
+	logs.Reset()
+	gone, cancel := context.WithCancel(context.Background())
+	cancel()
+	handler.logStreamError(httptest.NewRequest(http.MethodGet, "/file", nil).WithContext(gone), "file-2", "stream download", failing)
+	handler.logStreamError(httptest.NewRequest(http.MethodGet, "/file", nil), "file-3", "stream download", func() error { return nil })
+	if logs.Len() != 0 {
+		t.Fatalf("routine disconnects or successful copies were logged: %q", logs.String())
 	}
 }

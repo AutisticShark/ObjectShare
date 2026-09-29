@@ -2,8 +2,12 @@ package htmx
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
 	"sort"
+	"strings"
 
 	"github.com/AutisticShark/ObjectShare/config"
 	"github.com/AutisticShark/ObjectShare/db"
@@ -97,4 +101,73 @@ func (handler *Handler) BillingWebhook(writer http.ResponseWriter, request *http
 		return
 	}
 	module.HandleWebhook(handler, writer, request)
+}
+
+// errorDetailLimit bounds provider text copied into an error so a hostile or
+// broken response cannot flood the logs.
+const errorDetailLimit = 200
+
+func limitedText(value string) string {
+	value = strings.Map(func(r rune) rune {
+		if r < ' ' || r == 0x7f {
+			return ' '
+		}
+		return r
+	}, value)
+	if len(value) > errorDetailLimit {
+		return value[:errorDetailLimit] + "..."
+	}
+	return value
+}
+
+// stripeAPIError turns a failed Stripe API response into an error that carries
+// what support needs (HTTP status, error type and code, message and the
+// Request-Id) instead of a bare status code. The Authorization header and the
+// request body are never included.
+func stripeAPIError(response *http.Response, body []byte) error {
+	var payload struct {
+		Error struct {
+			Type    string `json:"type"`
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	_ = json.Unmarshal(body, &payload)
+	parts := []string{fmt.Sprintf("Stripe returned HTTP %d", response.StatusCode)}
+	if id := response.Header.Get("Request-Id"); id != "" {
+		parts = append(parts, "request "+limitedText(id))
+	}
+	if payload.Error.Type != "" || payload.Error.Code != "" {
+		parts = append(parts, "error "+limitedText(payload.Error.Type+"/"+payload.Error.Code))
+	}
+	if payload.Error.Message != "" {
+		parts = append(parts, limitedText(payload.Error.Message))
+	}
+	return errors.New(strings.Join(parts, "; "))
+}
+
+// paypalAPIError is the PayPal equivalent, including the PayPal-Debug-Id that
+// PayPal support asks for.
+func paypalAPIError(response *http.Response, body []byte) error {
+	var payload struct {
+		Name    string `json:"name"`
+		Message string `json:"message"`
+		DebugID string `json:"debug_id"`
+	}
+	_ = json.Unmarshal(body, &payload)
+	debugID := response.Header.Get("PayPal-Debug-Id")
+	if debugID == "" {
+		debugID = payload.DebugID
+	}
+	parts := []string{fmt.Sprintf("PayPal returned HTTP %d", response.StatusCode)}
+	if debugID != "" {
+		parts = append(parts, "debug id "+limitedText(debugID))
+	}
+	if payload.Name != "" {
+		parts = append(parts, limitedText(payload.Name))
+	}
+	if payload.Message != "" {
+		parts = append(parts, limitedText(payload.Message))
+	}
+	return errors.New(strings.Join(parts, "; "))
 }

@@ -82,7 +82,7 @@ func (client *stripeClient) postForm(ctx context.Context, endpoint string, value
 		return "", err
 	}
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		return "", fmt.Errorf("Stripe returned HTTP %d", response.StatusCode)
+		return "", stripeAPIError(response, body)
 	}
 	var result struct {
 		URL string `json:"url"`

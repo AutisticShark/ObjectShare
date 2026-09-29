@@ -313,6 +313,7 @@ func (handler *Handler) AdminSavePlan(writer http.ResponseWriter, request *http.
 		err = handler.billing.UpdatePlan(request.Context(), plan)
 	}
 	if err != nil {
+		handler.logger.Error("save plan", "plan_id", plan.ID, "error", err)
 		message := "Could not save the plan. Check its price and access duration and try again."
 		handler.renderAdminPlans(writer, request, message)
 		return

@@ -273,7 +273,7 @@ func (client *paypalClient) requestJSON(ctx context.Context, method, endpoint st
 			continue
 		}
 		if response.StatusCode < 200 || response.StatusCode >= 300 {
-			return fmt.Errorf("PayPal returned HTTP %d", response.StatusCode)
+			return paypalAPIError(response, responseBody)
 		}
 		if result != nil && (len(responseBody) == 0 || json.Unmarshal(responseBody, result) != nil) {
 			return errors.New("PayPal returned an invalid response")
@@ -314,7 +314,7 @@ func (client *paypalClient) accessToken(ctx context.Context) (string, error) {
 		return "", err
 	}
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		return "", fmt.Errorf("PayPal OAuth returned HTTP %d", response.StatusCode)
+		return "", paypalAPIError(response, responseBody)
 	}
 	var token struct {
 		AccessToken string `json:"access_token"`
