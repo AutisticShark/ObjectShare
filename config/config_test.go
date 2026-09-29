@@ -741,3 +741,45 @@ func TestEnvExampleValuesParse(t *testing.T) {
 		t.Fatalf(".env.example values are not accepted by the parser: %v", err)
 	}
 }
+
+func TestSetupTokenIsABootstrapSettingWithValidation(t *testing.T) {
+	t.Setenv("OBJECTSHARE_JWT_SECRET", "bootstrap-test-jwt-secret-with-at-least-32-bytes")
+	t.Setenv("OBJECTSHARE_SETTINGS_KEY", "bootstrap-test-settings-key-with-at-least-32-bytes")
+	t.Setenv("OBJECTSHARE_SETUP_TOKEN", "a-sufficiently-long-setup-token")
+	cfg, err := LoadBootstrap("../config.json.example")
+	if err != nil || cfg.Auth.SetupToken != "a-sufficiently-long-setup-token" {
+		t.Fatalf("bootstrap setup token = %q, err %v", cfg.Auth.SetupToken, err)
+	}
+	// The token is never part of the database configuration document.
+	activated, err := WithRuntime(cfg, RuntimeFromService(cfg))
+	if err != nil || activated.Auth.SetupToken != "a-sufficiently-long-setup-token" {
+		t.Fatalf("an activated snapshot lost the bootstrap setup token: %v", err)
+	}
+	sealed, err := SealRuntime(RuntimeFromService(cfg), cfg.SettingsKey)
+	if err != nil || strings.Contains(sealed, "a-sufficiently-long-setup-token") {
+		t.Fatalf("setup token leaked into the sealed runtime document: %v", err)
+	}
+	for _, token := range []string{"short", "replace-with-a-random-setup-token"} {
+		bad := testDefaults()
+		bad.Auth.SetupToken = token
+		if err := bad.Validate(); err == nil || !strings.Contains(err.Error(), "setup_token") {
+			t.Fatalf("setup token %q accepted: %v", token, err)
+		}
+	}
+	empty := testDefaults()
+	if err := empty.Validate(); err != nil {
+		t.Fatalf("an unset setup token must stay valid: %v", err)
+	}
+}
+
+func TestSettingsKeyFallbackToTheJWTSecretIsReported(t *testing.T) {
+	derived := testDefaults()
+	if err := derived.Validate(); err != nil || !derived.SettingsKeyDerived || derived.SettingsKey != derived.Auth.JWTSecret {
+		t.Fatalf("fallback not reported: derived=%v err=%v", derived.SettingsKeyDerived, err)
+	}
+	independent := testDefaults()
+	independent.SettingsKey = "an-independent-settings-key-with-32-bytes"
+	if err := independent.Validate(); err != nil || independent.SettingsKeyDerived {
+		t.Fatalf("an explicit settings key was reported as derived: %v", err)
+	}
+}

@@ -58,6 +58,9 @@ func run() error {
 
 	// Opening PostgreSQL runs every schema migration in one transaction, which
 	// can legitimately outlast the short budget for the rest of start-up.
+	if cfg.SettingsKeyDerived {
+		logger.Warn("settings_key is not set, so the JWT secret also protects encrypted settings and MFA secrets; rotating the JWT secret would make them unreadable. Set OBJECTSHARE_SETTINGS_KEY (or settings_key) to an independent key")
+	}
 	migrationContext, cancelMigration := context.WithTimeout(context.Background(), cfg.Db.MigrationTimeout.Duration())
 	repository, err := db.Open(migrationContext, cfg.Db)
 	cancelMigration()

@@ -83,6 +83,7 @@
       "require_for_uploads": false
     },
     "jwt_secret": "replace-with-at-least-32-random-bytes",
+    "setup_token": "",
     "token_lifetime": "12h",
     "oauth": {
       "public_url": "http://localhost:8080",

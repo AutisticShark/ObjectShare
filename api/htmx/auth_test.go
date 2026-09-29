@@ -1305,3 +1305,31 @@ func TestPreAuthCSRFTokensAreValidAcrossReplicas(t *testing.T) {
 		t.Fatalf("a token issued by one replica was rejected by another: %d %q", response.Code, response.Body.String())
 	}
 }
+
+func TestSetupRequiresTheConfiguredTokenWhenOneIsSet(t *testing.T) {
+	repository := newAuthMemoryRepository()
+	handler := newAuthTestHandler(t, repository, false)
+	handler.config.Auth.SetupToken = "a-sufficiently-long-setup-token"
+	page := httptest.NewRecorder()
+	handler.SetupPage(page, httptest.NewRequest(http.MethodGet, "/setup", nil))
+	csrf, cookie := strings.TrimSpace(page.Body.String()), page.Result().Cookies()[0]
+	submit := func(token string) *httptest.ResponseRecorder {
+		values := url.Values{"csrf_token": {csrf}, "display_name": {"Admin"}, "email": {"admin@example.com"}, "password": {"a sufficiently long password"}, "password_confirm": {"a sufficiently long password"}}
+		if token != "" {
+			values.Set("setup_token", token)
+		}
+		request := formRequest("/setup", values)
+		request.AddCookie(cookie)
+		response := httptest.NewRecorder()
+		handler.Setup(response, request)
+		return response
+	}
+	for _, wrong := range []string{"", "not-the-token", "a-sufficiently-long-setup-token "} {
+		if response := submit(wrong); response.Code != http.StatusForbidden || len(repository.users) != 0 || !strings.Contains(response.Body.String(), "setup token is incorrect") {
+			t.Fatalf("setup with token %q: status=%d users=%d body=%q", wrong, response.Code, len(repository.users), response.Body.String())
+		}
+	}
+	if response := submit("a-sufficiently-long-setup-token"); response.Code != http.StatusSeeOther || len(repository.users) != 1 {
+		t.Fatalf("setup with the right token: status=%d users=%d body=%q", response.Code, len(repository.users), response.Body.String())
+	}
+}

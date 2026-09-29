@@ -37,35 +37,39 @@ func (duration *Duration) UnmarshalJSON(data []byte) error {
 type ServiceConfig struct {
 	Branding        BrandingConfig `json:"branding"`
 	seedProblems    error
-	Address         string             `json:"address"`
-	Port            int                `json:"port,omitempty"`
-	Timeout         int                `json:"timeout,omitempty"`
-	ReadTimeout     Duration           `json:"read_timeout"`
-	WriteTimeout    Duration           `json:"write_timeout"`
-	IdleTimeout     Duration           `json:"idle_timeout"`
-	ShutdownTimeout Duration           `json:"shutdown_timeout"`
-	ConfigReload    Duration           `json:"config_reload_interval"`
-	MaxFileSize     int64              `json:"max_file_size"`
-	SecureCookies   bool               `json:"secure_cookies"`
-	SettingsKey     string             `json:"settings_key,omitempty"`
-	Upload          *UploadConfig      `json:"upload,omitempty"`
-	Retention       *RetentionConfig   `json:"retention,omitempty"`
-	Billing         *BillingConfig     `json:"billing,omitempty"`
-	Email           *EmailConfig       `json:"email,omitempty"`
-	Auth            *AuthConfig        `json:"auth"`
-	Captcha         *CaptchaConfig     `json:"captcha,omitempty"`
-	RateLimit       *RateLimitConfig   `json:"rate_limit,omitempty"`
-	StorageService  string             `json:"storage_service"`
-	StoragePath     string             `json:"storage_path"`
-	UploadCache     *UploadCacheConfig `json:"upload_cache,omitempty"`
-	Db              *DatabaseConfig    `json:"db"`
-	Redis           RedisConfig        `json:"redis"`
-	Encryption      *EncryptionConfig  `json:"encryption"`
-	R2              *R2Config          `json:"r2,omitempty"`
-	S3              *S3Config          `json:"s3,omitempty"`
-	B2              *B2Config          `json:"b2,omitempty"`
-	OSS             *OSSConfig         `json:"oss,omitempty"`
-	COS             *COSConfig         `json:"cos,omitempty"`
+	Address         string   `json:"address"`
+	Port            int      `json:"port,omitempty"`
+	Timeout         int      `json:"timeout,omitempty"`
+	ReadTimeout     Duration `json:"read_timeout"`
+	WriteTimeout    Duration `json:"write_timeout"`
+	IdleTimeout     Duration `json:"idle_timeout"`
+	ShutdownTimeout Duration `json:"shutdown_timeout"`
+	ConfigReload    Duration `json:"config_reload_interval"`
+	MaxFileSize     int64    `json:"max_file_size"`
+	SecureCookies   bool     `json:"secure_cookies"`
+	SettingsKey     string   `json:"settings_key,omitempty"`
+	// SettingsKeyDerived reports that settings_key was empty and the JWT secret
+	// is being used in its place, which ties JWT rotation to the encrypted
+	// settings and MFA secrets. It is informational and never serialized.
+	SettingsKeyDerived bool               `json:"-"`
+	Upload             *UploadConfig      `json:"upload,omitempty"`
+	Retention          *RetentionConfig   `json:"retention,omitempty"`
+	Billing            *BillingConfig     `json:"billing,omitempty"`
+	Email              *EmailConfig       `json:"email,omitempty"`
+	Auth               *AuthConfig        `json:"auth"`
+	Captcha            *CaptchaConfig     `json:"captcha,omitempty"`
+	RateLimit          *RateLimitConfig   `json:"rate_limit,omitempty"`
+	StorageService     string             `json:"storage_service"`
+	StoragePath        string             `json:"storage_path"`
+	UploadCache        *UploadCacheConfig `json:"upload_cache,omitempty"`
+	Db                 *DatabaseConfig    `json:"db"`
+	Redis              RedisConfig        `json:"redis"`
+	Encryption         *EncryptionConfig  `json:"encryption"`
+	R2                 *R2Config          `json:"r2,omitempty"`
+	S3                 *S3Config          `json:"s3,omitempty"`
+	B2                 *B2Config          `json:"b2,omitempty"`
+	OSS                *OSSConfig         `json:"oss,omitempty"`
+	COS                *COSConfig         `json:"cos,omitempty"`
 }
 
 // UploadConfig controls whether people without an account may upload. Account
@@ -125,7 +129,11 @@ type AuthConfig struct {
 	SignupEnabled     bool                    `json:"signup_enabled"`
 	JWTSecret         string                  `json:"jwt_secret"`
 	TokenLifetime     Duration                `json:"token_lifetime"`
-	OAuth             *OAuthConfig            `json:"oauth,omitempty"`
+	// SetupToken, when set, must be entered on /setup to create the first
+	// administrator. It is a bootstrap secret and is never stored in the
+	// database configuration document.
+	SetupToken string       `json:"setup_token,omitempty"`
+	OAuth      *OAuthConfig `json:"oauth,omitempty"`
 }
 
 type EmailVerificationConfig struct {

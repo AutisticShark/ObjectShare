@@ -61,6 +61,7 @@ File links are unlisted by default; owners can restrict details and downloads to
 - [x] Invoice generation
 - [x] Multi-factor authentication with email codes, authenticator apps, and recovery codes
 - [x] Optional client-side encryption for each upload or batch
+- [x] Optional setup token protecting first administrator creation
 - [x] Paid storage, retention, and direct-link plans
 - [x] Redis caching and shared request rate limits
 - [x] Searchable, paginated account file workspace
@@ -407,6 +408,8 @@ Bootstrap infrastructure and secrets remain file/environment-owned:
 | `OBJECTSHARE_DB_*` | varies | PostgreSQL connection and pool settings. `OBJECTSHARE_DB_MIGRATION_TIMEOUT` (`db.migration_timeout` in `config.json`, default `5m`, allowed `1s`-`1h`) bounds connecting and running the start-up schema migrations, which run in one transaction; raise it for large databases. |
 | `OBJECTSHARE_REDIS_*` | see below | Optional Redis connection, namespace, timeouts, and public plan cache; bootstrap settings requiring a restart |
 | `OBJECTSHARE_JWT_SECRET` | none (required) | JWT HMAC signing secret, at least 32 random bytes |
+| `OBJECTSHARE_SETUP_TOKEN` (`auth.setup_token` in `config.json`) | empty (setup stays open) | Optional secret, at least 16 characters, that `/setup` requires before it creates the first administrator, so nobody who reaches a fresh instance first can claim it. Bootstrap setting: never stored in the database configuration. Unset it, or create the administrator with `-create-admin`, when you prefer. |
+| `OBJECTSHARE_SETTINGS_KEY` (`settings_key`) | JWT secret (deprecated fallback) | Independent key protecting encrypted settings and MFA secrets. When unset, the JWT secret is used and ObjectShare logs a warning at start-up, because rotating the JWT secret would then make those values unreadable |
 | `OBJECTSHARE_JWT_LIFETIME` | `12h` | JWT lifetime (`5m` to `24h`) |
 | `OBJECTSHARE_CONFIG_RELOAD_INTERVAL` | `30s` | How often a replica checks PostgreSQL for a newer configuration revision and activates it without a restart; `0` disables polling and `1s` to `24h` are accepted |
 | `OBJECTSHARE_SETTINGS_KEY` | JWT secret for upgrade compatibility | Independent key that encrypts the database configuration document; set it before the first import and keep it stable |

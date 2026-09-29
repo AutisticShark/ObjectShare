@@ -56,6 +56,7 @@ func LoadBootstrap(path string) (*ServiceConfig, error) {
 	bootstrap.Db, bootstrap.SettingsKey = cfg.Db, cfg.SettingsKey
 	bootstrap.Redis = cfg.Redis
 	bootstrap.Auth.JWTSecret, bootstrap.Auth.TokenLifetime = cfg.Auth.JWTSecret, cfg.Auth.TokenLifetime
+	bootstrap.Auth.SetupToken = cfg.Auth.SetupToken
 	if err := bootstrap.Validate(); err != nil {
 		return nil, err
 	}
@@ -64,8 +65,10 @@ func LoadBootstrap(path string) (*ServiceConfig, error) {
 	cfg.IdleTimeout, cfg.ShutdownTimeout = bootstrap.IdleTimeout, bootstrap.ShutdownTimeout
 	cfg.ConfigReload = bootstrap.ConfigReload
 	cfg.Db, cfg.SettingsKey = bootstrap.Db, bootstrap.SettingsKey
+	cfg.SettingsKeyDerived = bootstrap.SettingsKeyDerived
 	cfg.Redis = bootstrap.Redis
 	cfg.Auth.JWTSecret, cfg.Auth.TokenLifetime = bootstrap.Auth.JWTSecret, bootstrap.Auth.TokenLifetime
+	cfg.Auth.SetupToken = bootstrap.Auth.SetupToken
 	return cfg, nil
 }
 
@@ -258,6 +261,7 @@ func applyEnvironment(cfg *ServiceConfig) error {
 	problems = append(problems, setBool("OBJECTSHARE_EMAIL_VERIFICATION_REQUIRE_FOR_PURCHASES", &cfg.Auth.EmailVerification.RequireForPurchases))
 	problems = append(problems, setBool("OBJECTSHARE_EMAIL_VERIFICATION_REQUIRE_FOR_UPLOADS", &cfg.Auth.EmailVerification.RequireForUploads))
 	setString("OBJECTSHARE_JWT_SECRET", &cfg.Auth.JWTSecret)
+	setString("OBJECTSHARE_SETUP_TOKEN", &cfg.Auth.SetupToken)
 	problems = append(problems, setDuration("OBJECTSHARE_JWT_LIFETIME", &cfg.Auth.TokenLifetime))
 	if cfg.Auth.OAuth == nil {
 		cfg.Auth.OAuth = &OAuthConfig{}
@@ -442,6 +446,9 @@ func (cfg *ServiceConfig) Validate() error {
 	if len(cfg.Auth.JWTSecret) < 32 || cfg.Auth.JWTSecret == "replace-with-at-least-32-random-bytes" {
 		return errors.New("auth jwt_secret must contain at least 32 non-placeholder bytes")
 	}
+	if cfg.Auth.SetupToken != "" && (len(cfg.Auth.SetupToken) < 16 || cfg.Auth.SetupToken == "replace-with-a-random-setup-token") {
+		return errors.New("auth setup_token must contain at least 16 non-placeholder characters")
+	}
 	if err := cfg.validateEmailVerification(); err != nil {
 		return err
 	}
@@ -449,6 +456,7 @@ func (cfg *ServiceConfig) Validate() error {
 		// Compatibility for existing installations. New deployments should use
 		// an independent stable settings key so JWT rotation is possible.
 		cfg.SettingsKey = cfg.Auth.JWTSecret
+		cfg.SettingsKeyDerived = true
 	}
 	if len(cfg.SettingsKey) < 32 || cfg.SettingsKey == "replace-with-at-least-32-random-bytes" || cfg.SettingsKey == "replace-with-a-different-32-byte-random-secret" {
 		return errors.New("settings_key must contain at least 32 non-placeholder bytes")

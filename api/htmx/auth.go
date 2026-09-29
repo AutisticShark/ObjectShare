@@ -2,6 +2,7 @@ package htmx
 
 import (
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -35,7 +36,7 @@ const (
 
 type authPageData struct {
 	Version, CSRF, Error, Email, DisplayName, Next string
-	SignupEnabled, Setup                           bool
+	SignupEnabled, Setup, SetupTokenRequired       bool
 	OAuthProviders                                 []oauthButton
 	Captcha                                        *captchaWidget
 }
@@ -210,18 +211,38 @@ func (handler *Handler) SetupPage(writer http.ResponseWriter, request *http.Requ
 	if csrf == "" {
 		return
 	}
-	handler.render(writer, "setup.html", authPageData{Version: config.GetVersion(), CSRF: csrf, Setup: true})
+	if handler.setupToken() == "" {
+		handler.logger.Warn("initial setup is open to anyone who can reach /setup; set OBJECTSHARE_SETUP_TOKEN to require a token, or create the administrator with -create-admin")
+	}
+	handler.render(writer, "setup.html", authPageData{Version: config.GetVersion(), CSRF: csrf, Setup: true, SetupTokenRequired: handler.setupToken() != ""})
+}
+
+// setupToken is the optional bootstrap secret required to create the first
+// administrator through /setup.
+func (handler *Handler) setupToken() string {
+	if handler.config.Auth == nil {
+		return ""
+	}
+	return handler.config.Auth.SetupToken
 }
 
 func (handler *Handler) Setup(writer http.ResponseWriter, request *http.Request) {
-	if !handler.setupAvailable(writer, request) || !handler.parseAuthForm(writer, request) || !handler.verifyPreAuthCSRF(writer, request) {
+	if !handler.setupAvailable(writer, request) || !handler.allowRequest(writer, request, "login", handler.rateLimitSettings().LoginLimit) ||
+		!handler.parseAuthForm(writer, request) || !handler.verifyPreAuthCSRF(writer, request) {
+		return
+	}
+	if expected := handler.setupToken(); expected != "" && subtle.ConstantTimeCompare([]byte(request.FormValue("setup_token")), []byte(expected)) != 1 {
+		csrf := handler.preAuthCSRF(writer, request)
+		if csrf != "" {
+			handler.renderStatus(writer, http.StatusForbidden, "setup.html", authPageData{Version: config.GetVersion(), CSRF: csrf, Error: "The setup token is incorrect.", Email: request.FormValue("email"), DisplayName: request.FormValue("display_name"), Setup: true, SetupTokenRequired: true})
+		}
 		return
 	}
 	email, displayName, password, err := validatedRegistration(request)
 	if err != nil {
 		csrf := handler.preAuthCSRF(writer, request)
 		if csrf != "" {
-			handler.render(writer, "setup.html", authPageData{Version: config.GetVersion(), CSRF: csrf, Error: err.Error(), Email: request.FormValue("email"), DisplayName: request.FormValue("display_name"), Setup: true})
+			handler.render(writer, "setup.html", authPageData{Version: config.GetVersion(), CSRF: csrf, Error: err.Error(), Email: request.FormValue("email"), DisplayName: request.FormValue("display_name"), Setup: true, SetupTokenRequired: handler.setupToken() != ""})
 		}
 		return
 	}
@@ -239,7 +260,7 @@ func (handler *Handler) Setup(writer http.ResponseWriter, request *http.Request)
 		if errors.Is(err, db.ErrConflict) {
 			csrf := handler.preAuthCSRF(writer, request)
 			if csrf != "" {
-				handler.render(writer, "setup.html", authPageData{Version: config.GetVersion(), CSRF: csrf, Error: "That email address is already registered.", Email: email, DisplayName: displayName, Setup: true})
+				handler.render(writer, "setup.html", authPageData{Version: config.GetVersion(), CSRF: csrf, Error: "That email address is already registered.", Email: email, DisplayName: displayName, Setup: true, SetupTokenRequired: handler.setupToken() != ""})
 			}
 			return
 		}
