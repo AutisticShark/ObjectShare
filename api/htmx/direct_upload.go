@@ -74,46 +74,67 @@ func (handler *Handler) BeginDirectUploadBatch(writer http.ResponseWriter, reque
 		}
 	}
 	for _, file := range input.Files {
-		authorization, record, err := handler.authorizeDirectUpload(request, file)
+		authorization, err := handler.reserveDirectUpload(request, file)
 		if err != nil {
 			rollback()
-			var quotaError *db.UploadQuotaError
-			if errors.As(err, &quotaError) {
-				http.Error(writer, "This upload batch would exceed your account storage quota.", http.StatusRequestEntityTooLarge)
-			} else if errors.Is(err, errInvalidUpload) {
-				http.Error(writer, err.Error(), http.StatusBadRequest)
-			} else {
-				handler.internalError(writer, request, "authorize direct upload batch", err)
-			}
+			handler.writeUploadError(writer, request, "authorize direct upload batch", err)
 			return
 		}
-		if err := handler.repository.ReserveUpload(request.Context(), record); err != nil {
-			rollback()
-			var quotaError *db.UploadQuotaError
-			if errors.As(err, &quotaError) {
-				http.Error(writer, "This upload batch would exceed your account storage quota.", http.StatusRequestEntityTooLarge)
-			} else {
-				handler.internalError(writer, request, "reserve direct upload batch", err)
-			}
-			return
-		}
-		uploadURL, err := handler.direct.PresignPut(request.Context(), record.FileID, record.FileSize, record.ContentType)
-		if err != nil {
-			handler.discardUpload(request, record.FileID, false)
-			rollback()
-			handler.internalError(writer, request, "presign direct upload batch", err)
-			return
-		}
-		authorization.UploadURL = uploadURL
 		authorizations = append(authorizations, authorization)
 	}
 	writeJSON(writer, http.StatusCreated, map[string]any{"uploads": authorizations})
 }
 
+// uploadRejection is a client-visible refusal from authorizeDirectUpload with
+// the HTTP status that both the single and batch endpoints report for it.
+type uploadRejection struct {
+	status  int
+	message string
+}
+
+func (rejection *uploadRejection) Error() string { return rejection.message }
+
+// reserveDirectUpload authorizes one file, reserves its quota, and presigns the
+// upload URL. On failure the reservation it made (if any) has been discarded.
+func (handler *Handler) reserveDirectUpload(request *http.Request, input directUploadRequest) (directUploadAuthorization, error) {
+	authorization, record, err := handler.authorizeDirectUpload(request, input)
+	if err != nil {
+		return directUploadAuthorization{}, err
+	}
+	if err := handler.repository.ReserveUpload(request.Context(), record); err != nil {
+		return directUploadAuthorization{}, err
+	}
+	uploadURL, err := handler.direct.PresignPut(request.Context(), record.FileID, record.FileSize, record.ContentType)
+	if err != nil {
+		handler.discardUpload(request, record.FileID, false)
+		return directUploadAuthorization{}, fmt.Errorf("presign direct upload: %w", err)
+	}
+	authorization.UploadURL = uploadURL
+	return authorization, nil
+}
+
+// writeUploadError maps reserveDirectUpload failures onto one set of
+// status codes and messages shared by the single and batch endpoints.
+func (handler *Handler) writeUploadError(writer http.ResponseWriter, request *http.Request, operation string, err error) {
+	var rejection *uploadRejection
+	var quotaError *db.UploadQuotaError
+	switch {
+	case errors.As(err, &rejection):
+		http.Error(writer, rejection.message, rejection.status)
+	case errors.As(err, &quotaError):
+		writer.Header().Set("X-Upload-Quota-Scope", quotaError.Scope)
+		http.Error(writer, "This upload would exceed your account storage quota.", http.StatusRequestEntityTooLarge)
+	case errors.Is(err, errInvalidUpload):
+		http.Error(writer, err.Error(), http.StatusBadRequest)
+	default:
+		handler.internalError(writer, request, operation, err)
+	}
+}
+
 func (handler *Handler) authorizeDirectUpload(request *http.Request, input directUploadRequest) (directUploadAuthorization, *db.FileList, error) {
 	mode, ok := uploadShareMode(input.ShareMode)
 	if !ok {
-		return directUploadAuthorization{}, nil, fmt.Errorf("%w: invalid upload access option", errInvalidUpload)
+		return directUploadAuthorization{}, nil, &uploadRejection{http.StatusBadRequest, "Invalid upload access option."}
 	}
 	if err := handler.validateClientEncryption(request, input.ClientEncryption, input.FileSize); err != nil {
 		return directUploadAuthorization{}, nil, err
@@ -123,21 +144,21 @@ func (handler *Handler) authorizeDirectUpload(request *http.Request, input direc
 	}
 	fileName, err := safeFileName(input.FileName)
 	if err != nil {
-		return directUploadAuthorization{}, nil, fmt.Errorf("%w: %s", errInvalidUpload, err)
+		return directUploadAuthorization{}, nil, &uploadRejection{http.StatusBadRequest, err.Error()}
 	}
 	maxBytes := handler.config.MaxFileSize * mebibyte
 	if maxBytes > handler.directPolicy.MaxSize {
 		maxBytes = handler.directPolicy.MaxSize
 	}
 	if input.FileSize <= 0 || input.FileSize > maxBytes {
-		return directUploadAuthorization{}, nil, fmt.Errorf("%w: file size must be between 1 byte and %s", errInvalidUpload, humanSize(maxBytes))
+		return directUploadAuthorization{}, nil, &uploadRejection{http.StatusRequestEntityTooLarge, fmt.Sprintf("File size must be between 1 byte and %s.", humanSize(maxBytes))}
 	}
 	contentType := strings.TrimSpace(input.ContentType)
 	if contentType == "" {
 		contentType = "application/octet-stream"
 	}
 	if _, _, err := mime.ParseMediaType(contentType); err != nil || len(contentType) > 255 {
-		return directUploadAuthorization{}, nil, fmt.Errorf("%w: invalid content type", errInvalidUpload)
+		return directUploadAuthorization{}, nil, &uploadRejection{http.StatusBadRequest, "Invalid content type."}
 	}
 	token, tokenHash, err := newOwnerToken()
 	if err != nil {
@@ -162,98 +183,27 @@ func (handler *Handler) BeginDirectUpload(writer http.ResponseWriter, request *h
 		http.Error(writer, "Direct uploads are unavailable for this storage or encryption mode.", http.StatusNotFound)
 		return
 	}
-	if !handler.allowRequest(writer, request, "upload", handler.rateLimitSettings().UploadLimit) {
+	if !handler.allowRequest(writer, request, "upload", handler.rateLimitSettings().UploadLimit) || !handler.verifyAuthenticatedMutationCSRF(writer, request) || !handler.uploadAllowed(writer, request) {
 		return
 	}
-	if !handler.verifyAuthenticatedMutationCSRF(writer, request) {
-		return
-	}
-	if !handler.uploadAllowed(writer, request) {
-		return
-	}
-
 	var input directUploadRequest
 	if err := decodeJSON(writer, request, &input); err != nil {
 		http.Error(writer, err.Error(), http.StatusBadRequest)
-		return
-	}
-	if err := handler.validateClientEncryption(request, input.ClientEncryption, input.FileSize); err != nil {
-		if errors.Is(err, errInvalidUpload) {
-			http.Error(writer, err.Error(), http.StatusBadRequest)
-		} else {
-			handler.internalError(writer, request, "validate client encryption", err)
-		}
-		return
-	}
-	if input.ClientEncryption != "" {
-		input.ContentType = "application/octet-stream"
-	}
-	mode, ok := uploadShareMode(input.ShareMode)
-	if !ok {
-		http.Error(writer, "Invalid upload access option.", http.StatusBadRequest)
 		return
 	}
 	if !handler.verifyCaptcha(writer, request, "upload", input.CaptchaToken) {
 		return
 	}
 	handler.cleanupExpiredUploads(request)
-	fileName, err := safeFileName(input.FileName)
+	authorization, err := handler.reserveDirectUpload(request, input)
 	if err != nil {
-		http.Error(writer, err.Error(), http.StatusBadRequest)
+		handler.writeUploadError(writer, request, "begin direct upload", err)
 		return
 	}
-	maxBytes := handler.config.MaxFileSize * mebibyte
-	if maxBytes > handler.directPolicy.MaxSize {
-		maxBytes = handler.directPolicy.MaxSize
-	}
-	if input.FileSize <= 0 || input.FileSize > maxBytes {
-		http.Error(writer, fmt.Sprintf("File size must be between 1 byte and %s.", humanSize(maxBytes)), http.StatusRequestEntityTooLarge)
-		return
-	}
-	contentType := strings.TrimSpace(input.ContentType)
-	if contentType == "" {
-		contentType = "application/octet-stream"
-	}
-	if _, _, err := mime.ParseMediaType(contentType); err != nil || len(contentType) > 255 {
-		http.Error(writer, "Invalid content type.", http.StatusBadRequest)
-		return
-	}
-
-	token, tokenHash, err := newOwnerToken()
-	if err != nil {
-		handler.internalError(writer, request, "create direct-upload token", err)
-		return
-	}
-	fileID := uuid.NewString()
-	now := time.Now().UTC()
-	expiresAt := now.Add(handler.directPolicy.Expires)
-	record := &db.FileList{
-		ClientEncryption:      input.ClientEncryption,
-		ShareMode:             mode,
-		AnonymousSessionToken: tokenHash, FileID: fileID, FileName: fileName, FileSize: input.FileSize,
-		ContentType: contentType, IsAnonymousUpload: true, StorageService: handler.config.StorageService,
-		UploadStatus: "pending", ChecksumStatus: "unavailable", UploadExpiresAt: &expiresAt,
-		CreatedAt: now, UpdatedAt: now,
-	}
-	if identity := currentIdentity(request); identity != nil {
-		record.FileOwner = &identity.User.ID
-		record.IsAnonymousUpload = false
-	}
-	if !handler.reserveUpload(writer, request, record) {
-		return
-	}
-	uploadURL, err := handler.direct.PresignPut(request.Context(), fileID, input.FileSize, contentType)
-	if err != nil {
-		handler.discardUpload(request, fileID, false)
-		handler.internalError(writer, request, "presign direct upload", err)
-		return
-	}
-
 	writeJSON(writer, http.StatusCreated, map[string]any{
-		"file_id": fileID, "upload_url": uploadURL,
-		"complete_url": "/api/v1/uploads/direct/" + fileID + "/complete",
-		"abort_url":    "/api/v1/uploads/direct/" + fileID + "/abort",
-		"token":        token, "expires_at": expiresAt.Format(time.RFC3339),
+		"file_id": authorization.FileID, "upload_url": authorization.UploadURL,
+		"complete_url": authorization.CompleteURL, "abort_url": authorization.AbortURL,
+		"token": authorization.Token, "expires_at": authorization.ExpiresAt,
 	})
 }
 

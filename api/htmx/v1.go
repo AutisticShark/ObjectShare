@@ -968,13 +968,7 @@ func (handler *Handler) reserveUpload(writer http.ResponseWriter, request *http.
 	if err == nil {
 		return true
 	}
-	var quotaError *db.UploadQuotaError
-	if errors.As(err, &quotaError) {
-		writer.Header().Set("X-Upload-Quota-Scope", quotaError.Scope)
-		http.Error(writer, "This upload would exceed your account storage quota.", http.StatusRequestEntityTooLarge)
-		return false
-	}
-	handler.internalError(writer, request, "reserve upload quota", err)
+	handler.writeUploadError(writer, request, "reserve upload quota", err)
 	return false
 }
 

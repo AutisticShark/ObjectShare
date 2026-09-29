@@ -3,7 +3,10 @@ package htmx
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	appauth "github.com/AutisticShark/ObjectShare/auth"
@@ -101,5 +104,38 @@ func TestCompletedUploadReplayRechecksEmailVerification(t *testing.T) {
 	handler.CompleteDirectUpload(response, sharingRequest("POST", file.FileID, string(body), owner))
 	if response.Code != 403 || len(response.Result().Cookies()) != 0 {
 		t.Fatal("replay bypassed newly required email verification")
+	}
+}
+
+func TestDirectUploadEndpointsShareRejectionStatuses(t *testing.T) {
+	repository := &memoryRepository{files: make(map[string]*db.FileList)}
+	handler := newTestHandler(t, repository, &directMemoryStorage{memoryStorage: &memoryStorage{objects: make(map[string][]byte)}})
+	oversized := handler.config.MaxFileSize*mebibyte + 1
+	for _, test := range []struct {
+		name   string
+		file   string
+		status int
+		text   string
+	}{
+		{"oversized", fmt.Sprintf(`{"file_name":"big.bin","file_size":%d,"content_type":"text/plain"}`, oversized), http.StatusRequestEntityTooLarge, "File size must be between"},
+		{"empty", `{"file_name":"empty.txt","file_size":0,"content_type":"text/plain"}`, http.StatusRequestEntityTooLarge, "File size must be between"},
+		{"bad name", `{"file_name":"..","file_size":3,"content_type":"text/plain"}`, http.StatusBadRequest, "Invalid file name."},
+		{"bad type", `{"file_name":"a.txt","file_size":3,"content_type":"not a media type"}`, http.StatusBadRequest, "Invalid content type."},
+		{"bad share mode", `{"file_name":"a.txt","file_size":3,"content_type":"text/plain","share_mode":"nope"}`, http.StatusBadRequest, "Invalid upload access option."},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			single := httptest.NewRecorder()
+			handler.BeginDirectUpload(single, httptest.NewRequest(http.MethodPost, "/api/v1/uploads/direct", strings.NewReader(test.file)))
+			batch := httptest.NewRecorder()
+			handler.BeginDirectUploadBatch(batch, httptest.NewRequest(http.MethodPost, "/api/v1/uploads/direct/batch", strings.NewReader(`{"files":[`+test.file+`]}`)))
+			for name, response := range map[string]*httptest.ResponseRecorder{"single": single, "batch": batch} {
+				if response.Code != test.status || !strings.Contains(response.Body.String(), test.text) {
+					t.Fatalf("%s endpoint: status=%d body=%q, want %d containing %q", name, response.Code, response.Body.String(), test.status, test.text)
+				}
+			}
+			if len(repository.files) != 0 {
+				t.Fatalf("rejected upload left %d reservations", len(repository.files))
+			}
+		})
 	}
 }
