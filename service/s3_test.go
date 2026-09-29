@@ -1,11 +1,15 @@
 package service
 
 import (
+	"bytes"
 	"context"
+	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -149,5 +153,94 @@ func TestPresignedDownloadsForceAttachmentAndNeutralContentType(t *testing.T) {
 	}
 	if got := query.Get("response-content-disposition"); !strings.HasPrefix(got, "attachment") {
 		t.Fatalf("response-content-disposition = %q, want an attachment", got)
+	}
+}
+
+// fakeS3 is a minimal in-memory S3 endpoint: path-style PUT, GET, HEAD and DELETE.
+type fakeS3 struct {
+	mu      sync.Mutex
+	objects map[string]fakeS3Object
+	puts    []string
+}
+
+type fakeS3Object struct {
+	body        []byte
+	contentType string
+}
+
+func (server *fakeS3) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
+	server.mu.Lock()
+	defer server.mu.Unlock()
+	key := strings.TrimPrefix(request.URL.Path, "/objectshare-test/")
+	switch request.Method {
+	case http.MethodPut:
+		body, _ := io.ReadAll(request.Body)
+		server.objects[key] = fakeS3Object{body: body, contentType: request.Header.Get("Content-Type")}
+		server.puts = append(server.puts, fmt.Sprintf("%s:%d:%s", key, request.ContentLength, request.Header.Get("Content-Type")))
+		writer.Header().Set("ETag", `"etag"`)
+	case http.MethodGet, http.MethodHead:
+		object, ok := server.objects[key]
+		if !ok {
+			writer.Header().Set("Content-Type", "application/xml")
+			writer.WriteHeader(http.StatusNotFound)
+			if request.Method == http.MethodGet {
+				_, _ = writer.Write([]byte(`<Error><Code>NoSuchKey</Code><Message>missing</Message></Error>`))
+			}
+			return
+		}
+		writer.Header().Set("Content-Type", object.contentType)
+		writer.Header().Set("Content-Length", fmt.Sprint(len(object.body)))
+		if request.Method == http.MethodGet {
+			_, _ = writer.Write(object.body)
+		}
+	case http.MethodDelete:
+		delete(server.objects, key)
+		writer.WriteHeader(http.StatusNoContent)
+	}
+}
+
+func TestS3CompatibleObjectLifecycleAgainstAnEndpoint(t *testing.T) {
+	fake := &fakeS3{objects: map[string]fakeS3Object{}}
+	server := httptest.NewServer(fake)
+	defer server.Close()
+	store, err := NewS3(&config.S3Config{UsePathStyle: true, S3CompatibleConfig: config.S3CompatibleConfig{
+		BucketName: "objectshare-test", Region: "us-east-1", Endpoint: server.URL, AccessKeyID: "access-key", SecretAccessKey: "secret-key",
+		PresignLinkTimeout: config.Duration(time.Minute), PresignUploadTimeout: config.Duration(time.Hour),
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	content := []byte("hello object storage")
+	if err := store.Put(ctx, "object-1", bytes.NewReader(content), int64(len(content)), "text/plain"); err != nil {
+		t.Fatal(err)
+	}
+	if len(fake.puts) != 1 || fake.puts[0] != fmt.Sprintf("object-1:%d:text/plain", len(content)) {
+		t.Fatalf("PutObject request = %v, want an exact content length and the declared type", fake.puts)
+	}
+	info, err := store.Stat(ctx, "object-1")
+	if err != nil || info.Size != int64(len(content)) || info.ContentType != "text/plain" {
+		t.Fatalf("Stat = %#v, %v", info, err)
+	}
+	body, err := store.Open(ctx, "object-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, _ := io.ReadAll(body)
+	_ = body.Close()
+	if !bytes.Equal(got, content) {
+		t.Fatalf("Open returned %q", got)
+	}
+	if err := store.Delete(ctx, "object-1"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Stat(ctx, "object-1"); err == nil {
+		t.Fatal("Stat of a deleted object succeeded")
+	}
+	if _, err := store.Open(ctx, "object-1"); err == nil || !strings.Contains(err.Error(), "S3") {
+		t.Fatalf("Open of a deleted object = %v, want a provider-labelled error", err)
+	}
+	if err := store.Delete(ctx, "never-existed"); err != nil {
+		t.Fatalf("deleting a missing object must be idempotent: %v", err)
 	}
 }
