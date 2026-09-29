@@ -81,7 +81,7 @@ type Handler struct {
 	// off in production (cleanup runs in the background) and on in tests that
 	// inspect repository and storage state right after a request.
 	inlineCleanup bool
-	lastCleanup    time.Time
+	lastCleanup   time.Time
 }
 
 // InheritProcessState carries state that belongs to the process rather than to
