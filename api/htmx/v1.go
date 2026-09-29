@@ -422,19 +422,12 @@ func (handler *Handler) Download(writer http.ResponseWriter, request *http.Reque
 			handler.internalError(writer, request, "decrypt object", errors.New("encryption key is unavailable"))
 			return
 		}
-		if !handler.acquireCipherSlot() {
+		plaintext, err := handler.decryptObject(body)
+		switch {
+		case errors.Is(err, errCipherBusy):
 			http.Error(writer, "Encryption capacity is busy; retry shortly.", http.StatusServiceUnavailable)
 			return
-		}
-		defer handler.releaseCipherSlot()
-		limit := handler.config.MaxFileSize*mebibyte + int64(handler.cipher.Overhead()) + 1
-		ciphertext, err := io.ReadAll(io.LimitReader(body, limit))
-		if err != nil || int64(len(ciphertext)) >= limit {
-			handler.internalError(writer, request, "read encrypted object", err)
-			return
-		}
-		plaintext, err := handler.cipher.Decrypt(ciphertext)
-		if err != nil {
+		case err != nil:
 			handler.internalError(writer, request, "decrypt object", err)
 			return
 		}
@@ -444,6 +437,22 @@ func (handler *Handler) Download(writer http.ResponseWriter, request *http.Reque
 	}
 	writer.Header().Set("Content-Length", fmt.Sprint(file.FileSize))
 	_, _ = io.Copy(writer, body)
+}
+
+// decryptObject reads and decrypts a stored object while holding the cipher
+// slot, releasing it before the caller streams the plaintext to a possibly slow
+// client so one slow download cannot block every other encrypted transfer.
+func (handler *Handler) decryptObject(body io.Reader) ([]byte, error) {
+	if !handler.acquireCipherSlot() {
+		return nil, errCipherBusy
+	}
+	defer handler.releaseCipherSlot()
+	limit := handler.config.MaxFileSize*mebibyte + int64(handler.cipher.Overhead()) + 1
+	ciphertext, err := io.ReadAll(io.LimitReader(body, limit))
+	if err != nil || int64(len(ciphertext)) >= limit {
+		return nil, fmt.Errorf("read encrypted object: %w", errors.Join(err, errors.New("object exceeds the encrypted size limit")))
+	}
+	return handler.cipher.Decrypt(ciphertext)
 }
 
 func (handler *Handler) fileHasDirectLinks(ctx context.Context, file *db.FileList) bool {

@@ -835,3 +835,78 @@ func newTestHandlerConfig(t *testing.T, cfg *config.ServiceConfig, repository db
 
 var _ db.Repository = (*memoryRepository)(nil)
 var _ service.ObjectStore = (*memoryStorage)(nil)
+
+// blockingPutStorage stalls Put until released, like a slow object-storage write.
+type blockingPutStorage struct {
+	*memoryStorage
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (storage *blockingPutStorage) Put(ctx context.Context, key string, reader io.Reader, size int64, contentType string) error {
+	close(storage.entered)
+	<-storage.release
+	return storage.memoryStorage.Put(ctx, key, reader, size, contentType)
+}
+
+func TestCipherSlotIsFreeWhileEncryptedTransfersAreStillWriting(t *testing.T) {
+	repository := &memoryRepository{files: make(map[string]*db.FileList)}
+	storage := &blockingPutStorage{memoryStorage: &memoryStorage{objects: make(map[string][]byte)}, entered: make(chan struct{}), release: make(chan struct{})}
+	cfg := &config.ServiceConfig{MaxFileSize: 1, StorageService: "filesystem",
+		Encryption: &config.EncryptionConfig{Enabled: true, Method: "aes-256-gcm", Key: "QkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkI="}}
+	handler := newTestHandlerConfig(t, cfg, repository, storage)
+
+	done := make(chan int)
+	go func() {
+		response := httptest.NewRecorder()
+		handler.Upload(response, multipartUploadRequest(t, []byte("slow storage write")))
+		done <- response.Code
+	}()
+	<-storage.entered // encryption finished; the object write is now stalled
+	if !handler.acquireCipherSlot() {
+		t.Fatal("the cipher slot stayed held while the encrypted object was being written")
+	}
+	handler.releaseCipherSlot()
+	close(storage.release)
+	if code := <-done; code != http.StatusSeeOther {
+		t.Fatalf("upload status = %d", code)
+	}
+
+	var fileID string
+	for id := range repository.files {
+		fileID = id
+	}
+	writer := &stallingResponseWriter{ResponseRecorder: httptest.NewRecorder(), entered: make(chan struct{}), release: make(chan struct{})}
+	router := chi.NewRouter()
+	router.Get("/{id}", handler.Download)
+	finished := make(chan struct{})
+	go func() {
+		router.ServeHTTP(writer, httptest.NewRequest(http.MethodGet, "/"+fileID, nil))
+		close(finished)
+	}()
+	<-writer.entered // decryption finished; the client write is now stalled
+	if !handler.acquireCipherSlot() {
+		t.Fatal("the cipher slot stayed held while plaintext was streaming to the client")
+	}
+	handler.releaseCipherSlot()
+	close(writer.release)
+	<-finished
+	if !bytes.Equal(writer.Body.Bytes(), []byte("slow storage write")) {
+		t.Fatalf("download = %q", writer.Body.Bytes())
+	}
+}
+
+// stallingResponseWriter blocks the first body write, like a slow client.
+type stallingResponseWriter struct {
+	*httptest.ResponseRecorder
+	entered, release chan struct{}
+	once             sync.Once
+}
+
+func (writer *stallingResponseWriter) Write(data []byte) (int, error) {
+	writer.once.Do(func() {
+		close(writer.entered)
+		<-writer.release
+	})
+	return writer.ResponseRecorder.Write(data)
+}
