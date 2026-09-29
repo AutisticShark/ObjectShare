@@ -4,6 +4,7 @@ import (
 	"crypto/subtle"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"strconv"
@@ -65,9 +66,21 @@ func (handler *Handler) BeginMFAChange(writer http.ResponseWriter, request *http
 		return
 	}
 	if strings.HasPrefix(action, "setup-") {
-		valid := id.User.PasswordHash != "" && appauth.VerifyPassword(request.FormValue("current_password"), id.User.PasswordHash)
+		var valid bool
 		if id.User.PasswordHash == "" {
 			valid = id.Claims.IssuedAt != nil && time.Since(id.Claims.IssuedAt.Time) < 5*time.Minute
+		} else {
+			ok, lockedUntil, err := handler.verifyCurrentPassword(request, id.User, request.FormValue("current_password"))
+			if err != nil {
+				handler.internalError(writer, request, "verify current password for MFA setup", err)
+				return
+			}
+			if !lockedUntil.IsZero() {
+				writer.Header().Set("Retry-After", fmt.Sprint(max(1, int(time.Until(lockedUntil).Seconds()))))
+				http.Error(writer, "Too many incorrect password attempts. Try again later.", http.StatusTooManyRequests)
+				return
+			}
+			valid = ok
 		}
 		if !valid {
 			handler.renderMFA(writer, mfaPageData{User: id.User, CSRF: id.Claims.CSRF, EmailAvailable: handler.mfaEmailAvailable(), Error: "Confirm your current password. For an OAuth-only account, sign out and sign in again, then enroll within five minutes."})

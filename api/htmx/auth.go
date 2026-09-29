@@ -516,6 +516,10 @@ func (handler *Handler) renderAccount(writer http.ResponseWriter, request *http.
 }
 
 func (handler *Handler) renderAccountPage(writer http.ResponseWriter, request *http.Request, identity *identity, formError, message, pageTemplate string) {
+	handler.renderAccountPageStatus(writer, request, identity, http.StatusOK, formError, message, pageTemplate)
+}
+
+func (handler *Handler) renderAccountPageStatus(writer http.ResponseWriter, request *http.Request, identity *identity, status int, formError, message, pageTemplate string) {
 	var rows []accountFile
 	var providers []oauthAccountProvider
 	if pageTemplate == "account.html" {
@@ -582,7 +586,7 @@ func (handler *Handler) renderAccountPage(writer http.ResponseWriter, request *h
 			data.PlanRenews = entitlements.CurrentPeriodEnd.UTC().Format("2006-01-02")
 		}
 	}
-	handler.render(writer, pageTemplate, data)
+	handler.renderStatus(writer, status, pageTemplate, data)
 }
 
 func (handler *Handler) UpdateProfile(writer http.ResponseWriter, request *http.Request) {
@@ -652,9 +656,21 @@ func (handler *Handler) UpdateOwnPassword(writer http.ResponseWriter, request *h
 	if !handler.parseAuthForm(writer, request) || !handler.verifyJWTCSRF(writer, request, identity) {
 		return
 	}
-	if identity.User.PasswordHash != "" && !appauth.VerifyPassword(request.FormValue("current_password"), identity.User.PasswordHash) {
-		handler.renderAccount(writer, request, identity, "Current password is incorrect.", "")
-		return
+	if identity.User.PasswordHash != "" {
+		ok, lockedUntil, err := handler.verifyCurrentPassword(request, identity.User, request.FormValue("current_password"))
+		if err != nil {
+			handler.internalError(writer, request, "verify current password", err)
+			return
+		}
+		if !lockedUntil.IsZero() {
+			writer.Header().Set("Retry-After", fmt.Sprint(max(1, int(time.Until(lockedUntil).Seconds()))))
+			handler.renderAccountPageStatus(writer, request, identity, http.StatusTooManyRequests, "Too many incorrect password attempts. Try again later.", "", "account.html")
+			return
+		}
+		if !ok {
+			handler.renderAccount(writer, request, identity, "Current password is incorrect.", "")
+			return
+		}
 	}
 	password := request.FormValue("password")
 	if password != request.FormValue("password_confirm") {

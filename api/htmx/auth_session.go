@@ -182,3 +182,26 @@ func (handler *Handler) redirectAfterLogin(writer http.ResponseWriter, request *
 	}
 	handler.redirect(writer, request, "/account")
 }
+
+// verifyCurrentPassword re-checks a signed-in user's password for a sensitive
+// account change. Attempts share the login lockout, keyed per account, so a
+// hijacked session cannot be used to guess the password without limit. It
+// reports whether the password matched and, when the account is locked out, the
+// time it may try again.
+func (handler *Handler) verifyCurrentPassword(request *http.Request, user *db.User, password string) (ok bool, lockedUntil time.Time, err error) {
+	key := appauth.TokenHash("account-password|" + user.ID)
+	allowed, retryAt, err := handler.users.ReserveLoginAttempt(request.Context(), key, time.Now().UTC())
+	if err != nil {
+		return false, time.Time{}, err
+	}
+	if !allowed {
+		return false, retryAt, nil
+	}
+	if user.PasswordHash == "" || !appauth.VerifyPassword(password, user.PasswordHash) {
+		return false, time.Time{}, nil
+	}
+	if err := handler.users.ClearLoginFailures(request.Context(), key); err != nil {
+		handler.logger.Error("clear password verification failures", "error", err)
+	}
+	return true, time.Time{}, nil
+}

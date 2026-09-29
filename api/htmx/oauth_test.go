@@ -274,3 +274,46 @@ func oauthRouteRequest(method, target, provider string) *http.Request {
 	routeContext.URLParams.Add("provider", provider)
 	return request.WithContext(context.WithValue(request.Context(), chi.RouteCtxKey, routeContext))
 }
+
+func TestPasswordReverificationIsThrottledPerAccount(t *testing.T) {
+	repository := newAuthMemoryRepository()
+	hash, _ := appauth.HashPassword("the current password")
+	user := &db.User{ID: "60c628c1-85cb-4463-b895-a629c31bfa55", Email: "user@example.com", DisplayName: "User", PasswordHash: hash, Role: db.RoleUser, Active: true, TokenVersion: 1}
+	repository.users[user.ID] = user
+	handler := newAuthTestHandler(t, repository, false)
+	_, claims := issueTestJWT(t, handler, user)
+	change := func(current string) *httptest.ResponseRecorder {
+		request := formRequest("/account/password", url.Values{
+			"csrf_token": {claims.CSRF}, "current_password": {current},
+			"password": {"a brand new password"}, "password_confirm": {"a brand new password"},
+		})
+		request = request.WithContext(context.WithValue(request.Context(), identityContextKey{}, &identity{User: user, Claims: claims, Transport: transportCookie}))
+		response := httptest.NewRecorder()
+		handler.UpdateOwnPassword(response, request)
+		return response
+	}
+	for attempt := 1; attempt <= 5; attempt++ {
+		if response := change("a wrong password"); response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "Current password is incorrect.") {
+			t.Fatalf("guess %d: status=%d body=%q", attempt, response.Code, response.Body.String())
+		}
+	}
+	locked := change("the current password")
+	if locked.Code != http.StatusTooManyRequests || locked.Header().Get("Retry-After") == "" || repository.users[user.ID].TokenVersion != 1 {
+		t.Fatalf("a locked account accepted a password change: status=%d retry=%q", locked.Code, locked.Header().Get("Retry-After"))
+	}
+
+	// A different account is unaffected, and success clears the counter.
+	other := &db.User{ID: "b8a2e2a4-7a68-4b35-8d3c-2a4c8a1d5e71", Email: "other@example.com", DisplayName: "Other", PasswordHash: hash, Role: db.RoleUser, Active: true, TokenVersion: 1}
+	repository.users[other.ID] = other
+	_, otherClaims := issueTestJWT(t, handler, other)
+	request := formRequest("/account/password", url.Values{
+		"csrf_token": {otherClaims.CSRF}, "current_password": {"the current password"},
+		"password": {"another brand new password"}, "password_confirm": {"another brand new password"},
+	})
+	request = request.WithContext(context.WithValue(request.Context(), identityContextKey{}, &identity{User: other, Claims: otherClaims, Transport: transportCookie}))
+	response := httptest.NewRecorder()
+	handler.UpdateOwnPassword(response, request)
+	if response.Code != http.StatusSeeOther {
+		t.Fatalf("another account was throttled: %d %q", response.Code, response.Body.String())
+	}
+}
