@@ -11,6 +11,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/golang-jwt/jwt/v5"
+
 	appauth "github.com/AutisticShark/ObjectShare/auth"
 	"github.com/AutisticShark/ObjectShare/db"
 	"github.com/go-chi/chi/v5"
@@ -220,7 +222,7 @@ func TestDiscordOAuthIsPresentedAndCanBeUnlinked(t *testing.T) {
 	request := oauthRouteRequest(http.MethodPost, "/account/oauth/discord/unlink", "discord")
 	request.Body = io.NopCloser(strings.NewReader(url.Values{"csrf_token": {"signed-csrf"}}.Encode()))
 	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	request = request.WithContext(context.WithValue(request.Context(), identityContextKey{}, &identity{User: user, Claims: &appauth.Claims{CSRF: "signed-csrf"}, Transport: transportCookie}))
+	request = request.WithContext(context.WithValue(request.Context(), identityContextKey{}, &identity{User: user, Claims: &appauth.Claims{CSRF: "signed-csrf", RegisteredClaims: jwt.RegisteredClaims{IssuedAt: jwt.NewNumericDate(time.Now())}}, Transport: transportCookie}))
 	response := httptest.NewRecorder()
 	handler.OAuthUnlink(response, request)
 	if response.Code != http.StatusSeeOther || response.Header().Get("Location") != "/account?message=oauth-unlinked" || len(repository.identities) != 0 {
@@ -315,5 +317,43 @@ func TestPasswordReverificationIsThrottledPerAccount(t *testing.T) {
 	handler.UpdateOwnPassword(response, request)
 	if response.Code != http.StatusSeeOther {
 		t.Fatalf("another account was throttled: %d %q", response.Code, response.Body.String())
+	}
+}
+
+func TestOAuthLinkChangesRequireAFreshSignIn(t *testing.T) {
+	repository := newAuthMemoryRepository()
+	user := &db.User{ID: "60c628c1-85cb-4463-b895-a629c31bfa55", Email: "user@example.com", DisplayName: "User", Role: db.RoleUser, Active: true, TokenVersion: 1}
+	repository.users[user.ID] = user
+	repository.identities["discord|subject"] = &db.OAuthIdentity{Provider: "discord", Subject: "subject", UserID: user.ID}
+	handler := newAuthTestHandler(t, repository, false)
+	stale := &identity{User: user, Transport: transportCookie, Claims: &appauth.Claims{CSRF: "signed-csrf", RegisteredClaims: jwt.RegisteredClaims{
+		IssuedAt: jwt.NewNumericDate(time.Now().Add(-time.Hour)), ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Hour)),
+	}}}
+	if recentlyAuthenticated(stale) || recentlyAuthenticated(nil) || recentlyAuthenticated(&identity{User: user}) {
+		t.Fatal("stale or claim-less sessions must not count as recently authenticated")
+	}
+
+	request := oauthRouteRequest(http.MethodPost, "/account/oauth/discord/unlink", "discord")
+	request.Body = io.NopCloser(strings.NewReader(url.Values{"csrf_token": {"signed-csrf"}}.Encode()))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	request = request.WithContext(context.WithValue(request.Context(), identityContextKey{}, stale))
+	response := httptest.NewRecorder()
+	handler.OAuthUnlink(response, request)
+	if len(repository.identities) != 1 || !strings.Contains(response.Body.String(), "sign in again") {
+		t.Fatalf("a stale session unlinked a provider: identities=%d body=%q", len(repository.identities), response.Body.String())
+	}
+
+	handler.oauthProviders = map[string]appauth.OAuthProvider{"google": &fakeOAuthProvider{key: "google", label: "Google"}}
+	startRequest := oauthRouteRequest(http.MethodGet, "/oauth/google/start", "google")
+	startRequest = startRequest.WithContext(context.WithValue(startRequest.Context(), identityContextKey{}, stale))
+	start := httptest.NewRecorder()
+	handler.OAuthStart(start, startRequest)
+	for _, cookie := range start.Result().Cookies() {
+		if strings.Contains(cookie.Name, "objectshare_oauth") {
+			t.Fatal("a stale session was given an OAuth link flow cookie")
+		}
+	}
+	if !strings.Contains(start.Body.String(), "sign in again") {
+		t.Fatalf("a stale session started a provider link: status=%d body=%q", start.Code, start.Body.String())
 	}
 }

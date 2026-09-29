@@ -89,6 +89,10 @@ func (handler *Handler) OAuthStart(writer http.ResponseWriter, request *http.Req
 			handler.renderOAuthError(writer, request, "Your login cannot be used to link an OAuth provider. Log in again and retry.", true)
 			return
 		}
+		if !recentlyAuthenticated(identity) {
+			handler.renderOAuthError(writer, request, "To link a login provider, sign out and sign in again, then link it within five minutes.", true)
+			return
+		}
 		flow.LinkUserID = identity.User.ID
 		flow.LinkTokenVersion = identity.User.TokenVersion
 		flow.LinkJTIHash = appauth.TokenHash(identity.Claims.ID)
@@ -261,6 +265,10 @@ func (handler *Handler) OAuthUnlink(writer http.ResponseWriter, request *http.Re
 	}
 	identity := currentIdentity(request)
 	if !handler.parseAuthForm(writer, request) || !handler.verifyJWTCSRF(writer, request, identity) {
+		return
+	}
+	if !recentlyAuthenticated(identity) {
+		handler.renderAccount(writer, request, identity, "To remove a login provider, sign out and sign in again, then remove it within five minutes.", "")
 		return
 	}
 	err := handler.users.UnlinkOAuthIdentity(request.Context(), identity.User.ID, provider)

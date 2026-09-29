@@ -68,7 +68,7 @@ func (handler *Handler) BeginMFAChange(writer http.ResponseWriter, request *http
 	if strings.HasPrefix(action, "setup-") {
 		var valid bool
 		if id.User.PasswordHash == "" {
-			valid = id.Claims.IssuedAt != nil && time.Since(id.Claims.IssuedAt.Time) < 5*time.Minute
+			valid = recentlyAuthenticated(id)
 		} else {
 			ok, lockedUntil, err := handler.verifyCurrentPassword(request, id.User, request.FormValue("current_password"))
 			if err != nil {

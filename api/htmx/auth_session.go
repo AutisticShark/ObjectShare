@@ -205,3 +205,14 @@ func (handler *Handler) verifyCurrentPassword(request *http.Request, user *db.Us
 	}
 	return true, time.Time{}, nil
 }
+
+// recentAuthWindow is how long after signing in a session may still change its
+// login methods (linked providers, MFA enrolment for passwordless accounts).
+const recentAuthWindow = 5 * time.Minute
+
+// recentlyAuthenticated reports whether the JWT behind identity was issued
+// recently enough to count as a fresh sign-in.
+func recentlyAuthenticated(identity *identity) bool {
+	return identity != nil && identity.Claims != nil && identity.Claims.IssuedAt != nil &&
+		time.Since(identity.Claims.IssuedAt.Time) < recentAuthWindow
+}
