@@ -606,3 +606,46 @@ func TestEncryptionKeyAcceptsBase64AndHex(t *testing.T) {
 		t.Fatal("empty key was accepted")
 	}
 }
+
+func TestDatabaseMigrationTimeoutDefaultsEnvironmentAndValidation(t *testing.T) {
+	cfg := testDefaults()
+	if err := cfg.Validate(); err != nil || cfg.Db.MigrationTimeout != Duration(5*time.Minute) {
+		t.Fatalf("default migration timeout = %s, err %v", cfg.Db.MigrationTimeout, err)
+	}
+	t.Setenv("OBJECTSHARE_DB_MIGRATION_TIMEOUT", "20m")
+	cfg = testDefaults()
+	if err := applyEnvironment(cfg); err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Db.MigrationTimeout != Duration(20*time.Minute) {
+		t.Fatalf("environment migration timeout = %s", cfg.Db.MigrationTimeout)
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("20m migration timeout rejected: %v", err)
+	}
+	for _, value := range []Duration{Duration(time.Millisecond), Duration(2 * time.Hour), Duration(-time.Second)} {
+		cfg = testDefaults()
+		cfg.Db.MigrationTimeout = value
+		if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "migration_timeout") {
+			t.Fatalf("migration timeout %s accepted: %v", value, err)
+		}
+	}
+	cfg = testDefaults()
+	cfg.Db.MigrationTimeout = 0
+	if err := cfg.Validate(); err != nil || cfg.Db.MigrationTimeout != Duration(5*time.Minute) {
+		t.Fatalf("unset migration timeout must fall back to 5m: %s %v", cfg.Db.MigrationTimeout, err)
+	}
+	t.Setenv("OBJECTSHARE_JWT_SECRET", "bootstrap-test-jwt-secret-with-at-least-32-bytes")
+	t.Setenv("OBJECTSHARE_SETTINGS_KEY", "bootstrap-test-settings-key-with-at-least-32-bytes")
+	t.Setenv("OBJECTSHARE_DB_MIGRATION_TIMEOUT", "not a duration")
+	if _, err := LoadBootstrap("../config.json.example"); err == nil || !strings.Contains(err.Error(), "OBJECTSHARE_DB_MIGRATION_TIMEOUT") {
+		t.Fatalf("an unparsable bootstrap migration timeout was accepted: %v", err)
+	}
+	if err := os.Unsetenv("OBJECTSHARE_DB_MIGRATION_TIMEOUT"); err != nil {
+		t.Fatal(err)
+	}
+	example, err := LoadBootstrap("../config.json.example")
+	if err != nil || example.Db.MigrationTimeout != Duration(5*time.Minute) {
+		t.Fatalf("config.json.example migration timeout = %v, err %v", example, err)
+	}
+}

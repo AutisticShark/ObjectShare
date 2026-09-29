@@ -399,7 +399,7 @@ Bootstrap infrastructure and secrets remain file/environment-owned:
 | --- | --- | --- |
 | `OBJECTSHARE_ADDRESS` | `:8080` | HTTP listen address |
 | `OBJECTSHARE_READ_TIMEOUT`, `OBJECTSHARE_WRITE_TIMEOUT`, `OBJECTSHARE_IDLE_TIMEOUT`, `OBJECTSHARE_SHUTDOWN_TIMEOUT` | varies | HTTP server lifecycle timeouts |
-| `OBJECTSHARE_DB_*` | varies | PostgreSQL connection and pool settings |
+| `OBJECTSHARE_DB_*` | varies | PostgreSQL connection and pool settings. `OBJECTSHARE_DB_MIGRATION_TIMEOUT` (`db.migration_timeout` in `config.json`, default `5m`, allowed `1s`-`1h`) bounds connecting and running the start-up schema migrations, which run in one transaction; raise it for large databases. |
 | `OBJECTSHARE_REDIS_*` | see below | Optional Redis connection, namespace, timeouts, and public plan cache; bootstrap settings requiring a restart |
 | `OBJECTSHARE_JWT_SECRET` | none (required) | JWT HMAC signing secret, at least 32 random bytes |
 | `OBJECTSHARE_JWT_LIFETIME` | `12h` | JWT lifetime (`5m` to `24h`) |

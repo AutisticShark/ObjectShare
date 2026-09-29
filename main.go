@@ -56,12 +56,16 @@ func run() error {
 		return fmt.Errorf("load configuration: %w", err)
 	}
 
-	startupContext, cancelStartup := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancelStartup()
-	repository, err := db.Open(startupContext, cfg.Db)
+	// Opening PostgreSQL runs every schema migration in one transaction, which
+	// can legitimately outlast the short budget for the rest of start-up.
+	migrationContext, cancelMigration := context.WithTimeout(context.Background(), cfg.Db.MigrationTimeout.Duration())
+	repository, err := db.Open(migrationContext, cfg.Db)
+	cancelMigration()
 	if err != nil {
 		return err
 	}
+	startupContext, cancelStartup := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancelStartup()
 	defer repository.Close()
 	if err := loadDatabaseConfiguration(startupContext, repository, cfg, logger); err != nil {
 		return err

@@ -99,7 +99,7 @@ func (cfg *ServiceConfig) ValidateSeed() error { return cfg.seedProblems }
 func bootstrapEnvironmentProblems(err error) error {
 	bootstrapNames := []string{
 		"OBJECTSHARE_PORT", "OBJECTSHARE_READ_TIMEOUT", "OBJECTSHARE_WRITE_TIMEOUT", "OBJECTSHARE_IDLE_TIMEOUT", "OBJECTSHARE_SHUTDOWN_TIMEOUT",
-		"OBJECTSHARE_CONFIG_RELOAD_INTERVAL", "OBJECTSHARE_JWT_LIFETIME", "OBJECTSHARE_DB_PORT", "OBJECTSHARE_DB_MAX_OPEN_CONNS", "OBJECTSHARE_DB_MAX_IDLE_CONNS", "OBJECTSHARE_DB_CONN_MAX_LIFETIME",
+		"OBJECTSHARE_CONFIG_RELOAD_INTERVAL", "OBJECTSHARE_JWT_LIFETIME", "OBJECTSHARE_DB_PORT", "OBJECTSHARE_DB_MAX_OPEN_CONNS", "OBJECTSHARE_DB_MAX_IDLE_CONNS", "OBJECTSHARE_DB_CONN_MAX_LIFETIME", "OBJECTSHARE_DB_MIGRATION_TIMEOUT",
 		"OBJECTSHARE_REDIS_TIMEOUT", "OBJECTSHARE_REDIS_PUBLIC_PLANS_TTL",
 	}
 	var selected []error
@@ -148,16 +148,17 @@ func defaults() *ServiceConfig {
 		StorageService: "filesystem",
 		StoragePath:    "data/objects",
 		Db: &DatabaseConfig{
-			Type:            "postgres",
-			Host:            "127.0.0.1",
-			Port:            5432,
-			User:            "postgres",
-			Database:        "object_share",
-			SSLMode:         "require",
-			TimeZone:        "UTC",
-			MaxOpenConns:    25,
-			MaxIdleConns:    5,
-			ConnMaxLifetime: Duration(30 * time.Minute),
+			Type:             "postgres",
+			Host:             "127.0.0.1",
+			Port:             5432,
+			User:             "postgres",
+			Database:         "object_share",
+			SSLMode:          "require",
+			TimeZone:         "UTC",
+			MaxOpenConns:     25,
+			MaxIdleConns:     5,
+			ConnMaxLifetime:  Duration(30 * time.Minute),
+			MigrationTimeout: Duration(5 * time.Minute),
 		},
 		Encryption: &EncryptionConfig{Method: "aes-256-gcm"},
 		R2: &R2Config{
@@ -315,6 +316,7 @@ func applyEnvironment(cfg *ServiceConfig) error {
 	problems = append(problems, setInt("OBJECTSHARE_DB_MAX_OPEN_CONNS", &cfg.Db.MaxOpenConns))
 	problems = append(problems, setInt("OBJECTSHARE_DB_MAX_IDLE_CONNS", &cfg.Db.MaxIdleConns))
 	problems = append(problems, setDuration("OBJECTSHARE_DB_CONN_MAX_LIFETIME", &cfg.Db.ConnMaxLifetime))
+	problems = append(problems, setDuration("OBJECTSHARE_DB_MIGRATION_TIMEOUT", &cfg.Db.MigrationTimeout))
 
 	if cfg.Encryption == nil {
 		cfg.Encryption = &EncryptionConfig{}
@@ -515,6 +517,12 @@ func (cfg *ServiceConfig) Validate() error {
 	}
 	if cfg.Db.TimeZone == "" {
 		cfg.Db.TimeZone = "UTC"
+	}
+	if cfg.Db.MigrationTimeout == 0 {
+		cfg.Db.MigrationTimeout = Duration(5 * time.Minute)
+	}
+	if cfg.Db.MigrationTimeout < Duration(time.Second) || cfg.Db.MigrationTimeout > Duration(time.Hour) {
+		return errors.New("db migration_timeout must be between 1s and 1h")
 	}
 	if cfg.Db.MaxOpenConns < 1 || cfg.Db.MaxIdleConns < 0 || cfg.Db.MaxIdleConns > cfg.Db.MaxOpenConns {
 		return errors.New("invalid database connection pool limits")

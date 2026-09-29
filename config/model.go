@@ -187,6 +187,9 @@ type DatabaseConfig struct {
 	MaxOpenConns    int      `json:"max_open_conns"`
 	MaxIdleConns    int      `json:"max_idle_conns"`
 	ConnMaxLifetime Duration `json:"conn_max_lifetime"`
+	// MigrationTimeout bounds opening PostgreSQL and running every schema
+	// migration (one transaction) at start-up, separately from other start-up work.
+	MigrationTimeout Duration `json:"migration_timeout"`
 }
 
 type EncryptionConfig struct {
