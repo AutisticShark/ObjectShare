@@ -29,7 +29,7 @@ func creditTestRepository(t testing.TB) *GormRepository {
 	if err != nil {
 		t.Fatal("cannot connect to test database")
 	}
-	models := []any{&User{}, &PaidPlan{}, &Subscription{}, &BillingCheckout{}, &BillingEvent{}, &CreditTopUp{}, &CreditTransaction{}, &Invoice{}}
+	models := []any{&User{}, &PaidPlan{}, &Subscription{}, &BillingCheckout{}, &BillingEvent{}, &CreditTopUp{}, &CreditTransaction{}, &Invoice{}, &LoginThrottle{}, &OAuthIdentity{}, &PaymentReconciliation{}, &FileList{}}
 	for range 2 {
 		if err := connection.AutoMigrate(models...); err != nil {
 			t.Fatal(err)
