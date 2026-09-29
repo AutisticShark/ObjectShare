@@ -187,3 +187,77 @@ func TestExpiredReservationCleanupRunsOffTheRequestPathAndIsSingleFlight(t *test
 		t.Fatalf("passes were not spaced: %d delete calls", calls)
 	}
 }
+
+// claimingRepository adds the delete-claim capability PostgreSQL provides.
+type claimingRepository struct {
+	*authMemoryRepository
+	failDelete bool
+}
+
+func (repository *claimingRepository) ClaimFileDeletion(_ context.Context, fileID string, _ time.Time) error {
+	file, ok := repository.files[fileID]
+	if !ok || file.UploadStatus != "complete" {
+		return db.ErrNotFound
+	}
+	file.UploadStatus = "deleting"
+	return nil
+}
+
+func (repository *claimingRepository) ReleaseRetentionClaim(_ context.Context, fileID string) error {
+	file, ok := repository.files[fileID]
+	if !ok || file.UploadStatus != "deleting" {
+		return db.ErrNotFound
+	}
+	file.UploadStatus = "complete"
+	return nil
+}
+
+func (repository *claimingRepository) Delete(ctx context.Context, fileID string) error {
+	if repository.failDelete {
+		return errors.New("database unavailable")
+	}
+	return repository.authMemoryRepository.Delete(ctx, fileID)
+}
+
+type failingDeleteStorage struct{ *memoryStorage }
+
+func (*failingDeleteStorage) Delete(context.Context, string) error {
+	return errors.New("object store unavailable")
+}
+
+func TestOwnerDeleteClaimsBeforeRemovingTheObject(t *testing.T) {
+	for name, test := range map[string]struct {
+		failStorage, failRecord bool
+		wantStatus              int
+		wantRecord              string // status of the row afterwards, "" when removed
+		wantObject              bool
+	}{
+		"success":                {false, false, http.StatusSeeOther, "", false},
+		"object store failure":   {true, false, http.StatusInternalServerError, "complete", true},
+		"database failure after": {false, true, http.StatusInternalServerError, "deleting", false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			handler, repo, storage, file, owner := sharingTestHandler(t)
+			claiming := &claimingRepository{authMemoryRepository: repo, failDelete: test.failRecord}
+			handler.repository = claiming
+			if test.failStorage {
+				handler.storage = &failingDeleteStorage{storage}
+			}
+			response := httptest.NewRecorder()
+			handler.Delete(response, sharingRequest("POST", file.FileID, "", owner))
+			if response.Code != test.wantStatus {
+				t.Fatalf("status = %d, want %d: %s", response.Code, test.wantStatus, response.Body.String())
+			}
+			status := ""
+			if row, exists := repo.files[file.FileID]; exists {
+				status = row.UploadStatus
+			}
+			if status != test.wantRecord {
+				t.Fatalf("row status = %q, want %q", status, test.wantRecord)
+			}
+			if _, hasObject := storage.objects[file.FileID]; hasObject != test.wantObject {
+				t.Fatalf("object present = %v, want %v", hasObject, test.wantObject)
+			}
+		})
+	}
+}

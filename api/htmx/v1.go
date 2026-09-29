@@ -537,11 +537,31 @@ func (handler *Handler) Delete(writer http.ResponseWriter, request *http.Request
 		http.Error(writer, "Forbidden", http.StatusForbidden)
 		return
 	}
+	// Claim first when the repository supports it, so a failure after the object
+	// is gone leaves a "deleting" row the retention sweep retries rather than a
+	// "complete" record pointing at a missing object.
+	claimer, claimed := handler.repository.(db.FileDeletionClaimer)
+	if claimed {
+		if err := claimer.ClaimFileDeletion(request.Context(), fileID, time.Now().UTC()); err != nil {
+			if errors.Is(err, db.ErrNotFound) {
+				http.NotFound(writer, request)
+				return
+			}
+			handler.internalError(writer, request, "claim file deletion", err)
+			return
+		}
+	}
 	if err := handler.storage.Delete(request.Context(), fileID); err != nil {
+		if claimed {
+			if releaseErr := claimer.ReleaseRetentionClaim(context.WithoutCancel(request.Context()), fileID); releaseErr != nil && !errors.Is(releaseErr, db.ErrNotFound) {
+				handler.logger.Error("release file deletion claim", "file_id", fileID, "error", releaseErr)
+			}
+		}
 		handler.internalError(writer, request, "delete object", err)
 		return
 	}
 	if err := handler.repository.Delete(request.Context(), fileID); err != nil && !errors.Is(err, db.ErrNotFound) {
+		handler.logger.Error("delete file record after removing its object; the retention sweep will retry", "file_id", fileID, "claimed", claimed, "error", err)
 		handler.internalError(writer, request, "delete file record", err)
 		return
 	}

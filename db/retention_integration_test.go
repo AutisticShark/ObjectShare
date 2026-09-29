@@ -1,6 +1,7 @@
 package db
 
 import (
+	"errors"
 	"testing"
 	"time"
 
@@ -63,5 +64,38 @@ func TestPostgresRetentionClaimPagesPastRowsTheEntitlementCheckRejects(t *testin
 	}
 	if len(claimed) > 2 {
 		t.Fatalf("claimed %d files, limit was 2", len(claimed))
+	}
+}
+
+func TestPostgresClaimFileDeletionHidesTheFileAndCanBeReleased(t *testing.T) {
+	repo := creditTestRepository(t)
+	if err := repo.connection.AutoMigrate(&FileList{}); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	id := uuid.NewString()
+	file := FileList{AnonymousSessionToken: "token", FileID: id, FileName: "f.bin", FileSize: 1, FileSHA256: "a", FileSHA3: "b", ContentType: "application/octet-stream",
+		IsAnonymousUpload: true, StorageService: "r2", UploadStatus: "complete", ChecksumStatus: "verified", CreatedAt: now, UpdatedAt: now}
+	if err := repo.connection.Create(&file).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.ClaimFileDeletion(t.Context(), id, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.ClaimFileDeletion(t.Context(), id, now); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("a second claim = %v, want ErrNotFound", err)
+	}
+	var stored FileList
+	if err := repo.connection.Where("file_id = ?", id).First(&stored).Error; err != nil || stored.UploadStatus != "deleting" || stored.RetentionClaimedAt == nil {
+		t.Fatalf("claimed row = %#v, err %v", stored, err)
+	}
+	if err := repo.ReleaseRetentionClaim(t.Context(), id); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.connection.Where("file_id = ?", id).First(&stored).Error; err != nil || stored.UploadStatus != "complete" {
+		t.Fatalf("released row = %#v, err %v", stored, err)
+	}
+	if err := repo.Delete(t.Context(), id); err != nil {
+		t.Fatal(err)
 	}
 }

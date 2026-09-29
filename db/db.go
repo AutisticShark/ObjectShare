@@ -84,6 +84,15 @@ type RetentionRepository interface {
 	Delete(context.Context, string) error
 }
 
+// FileDeletionClaimer lets an owner-initiated delete follow the same safe order
+// as retention: mark the file as being deleted, remove the object, then remove
+// the row. A failure between the last two steps leaves a "deleting" row that the
+// retention sweep retries, instead of a "complete" row whose object is gone.
+type FileDeletionClaimer interface {
+	ClaimFileDeletion(ctx context.Context, fileID string, now time.Time) error
+	ReleaseRetentionClaim(context.Context, string) error
+}
+
 type AuthRepository interface {
 	AdminCount(context.Context) (int64, error)
 	BootstrapAdmin(context.Context, *User) error
@@ -669,6 +678,22 @@ func retentionEligibilitySQLAt(now time.Time, guestBefore, unpaidBefore *time.Ti
 		eligibleSQL = strings.Join(eligibility, " OR ")
 	}
 	return eligibleSQL, eligibilityArgs
+}
+
+// ClaimFileDeletion moves a complete file to the "deleting" state so it can no
+// longer be served, using the same claim the retention sweep uses (and retries
+// once the claim is stale).
+func (repo *GormRepository) ClaimFileDeletion(ctx context.Context, fileID string, now time.Time) error {
+	result := repo.connection.WithContext(ctx).Model(&FileList{}).
+		Where("file_id = ? AND upload_status = ?", fileID, "complete").
+		Updates(map[string]any{"upload_status": "deleting", "retention_claimed_at": now, "updated_at": now})
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected == 0 {
+		return ErrNotFound
+	}
+	return nil
 }
 
 func (repo *GormRepository) ReleaseRetentionClaim(ctx context.Context, fileID string) error {
