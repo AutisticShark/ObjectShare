@@ -18,6 +18,12 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
+      # KNOWN LIMITATION: this action is not manifest-aware. For multi-arch
+      # images, the per-platform and provenance/SBOM manifests are untagged
+      # package versions, so once more than min-versions-to-keep of them
+      # accumulate, older tagged images can lose the manifests they point at.
+      # The behaviour is kept as configured; replacing it with a manifest-aware
+      # retention tool is a maintainer decision.
       - name: Delete old packages
         uses: actions/delete-package-versions@e5bc658cc4c965c472efe991f8beea3981499c55 # v5.0.0
         with:
