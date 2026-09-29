@@ -41,6 +41,7 @@ type Invoice struct {
 	EmailSentAt       *time.Time
 	EmailRetryAt      time.Time `gorm:"index"`
 	EmailLease        string    `gorm:"type:varchar(36);not null;default:''"`
+	EmailAttempts     int       `gorm:"not null;default:0"`
 	User              User      `gorm:"foreignKey:UserID;constraint:OnDelete:CASCADE"`
 }
 
@@ -292,7 +293,7 @@ func ensureTopUpInvoice(tx *gorm.DB, topUp *CreditTopUp) (*Invoice, error) {
 func (repo *GormRepository) ClaimInvoiceEmail(ctx context.Context, now time.Time) (*Invoice, error) {
 	var invoice Invoice
 	err := repo.connection.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		if err := tx.Clauses(clause.Locking{Strength: "UPDATE", Options: "SKIP LOCKED"}).Where("status = 'paid' AND email_sent_at IS NULL AND email_retry_at <= ?", now).Order("email_retry_at, id").First(&invoice).Error; err != nil {
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE", Options: "SKIP LOCKED"}).Where("status = 'paid' AND email_sent_at IS NULL AND email_retry_at <= ? AND email_attempts < ?", now, MaxInvoiceEmailAttempts).Order("email_retry_at, id").First(&invoice).Error; err != nil {
 			return invoiceError(err)
 		}
 		invoice.EmailLease = uuid.NewString()
@@ -301,12 +302,37 @@ func (repo *GormRepository) ClaimInvoiceEmail(ctx context.Context, now time.Time
 	return &invoice, err
 }
 
-func (repo *GormRepository) FinishInvoiceEmail(ctx context.Context, id, lease string, sent bool, now time.Time) error {
-	values := map[string]any{"email_lease": "", "email_retry_at": now.Add(5 * time.Minute)}
-	if sent {
-		values["email_sent_at"] = now
+// MaxInvoiceEmailAttempts is how many delivery attempts an invoice confirmation
+// email gets before the outbox gives up on it. The invoice stays paid; only the
+// notification stops being retried.
+const MaxInvoiceEmailAttempts = 10
+
+// InvoiceEmailBackoff is the wait before the given (1-based) retry: five minutes,
+// doubling, capped at six hours.
+func InvoiceEmailBackoff(attempt int) time.Duration {
+	delay := 5 * time.Minute
+	for i := 1; i < attempt && delay < 6*time.Hour; i++ {
+		delay *= 2
 	}
-	return repo.connection.WithContext(ctx).Model(&Invoice{}).Where("id = ? AND email_lease = ? AND email_sent_at IS NULL", id, lease).Updates(values).Error
+	return min(delay, 6*time.Hour)
+}
+
+func (repo *GormRepository) FinishInvoiceEmail(ctx context.Context, id, lease string, sent bool, now time.Time) error {
+	if sent {
+		return repo.connection.WithContext(ctx).Model(&Invoice{}).Where("id = ? AND email_lease = ? AND email_sent_at IS NULL", id, lease).
+			Updates(map[string]any{"email_lease": "", "email_sent_at": now, "email_retry_at": now.Add(5 * time.Minute)}).Error
+	}
+	// A failed attempt counts, and the next one waits longer each time.
+	return repo.connection.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var invoice Invoice
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ? AND email_lease = ? AND email_sent_at IS NULL", id, lease).First(&invoice).Error; errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil
+		} else if err != nil {
+			return err
+		}
+		attempts := invoice.EmailAttempts + 1
+		return tx.Model(&invoice).Updates(map[string]any{"email_lease": "", "email_attempts": attempts, "email_retry_at": now.Add(InvoiceEmailBackoff(attempts))}).Error
+	})
 }
 
 // BindInvoiceCheckout stores only a URL already validated by a gateway module.

@@ -281,3 +281,35 @@ func TestPostgresExpiredGatewayInvoiceDoesNotBlockLaterPlanPurchases(t *testing.
 		t.Fatalf("expired gateway invoice still blocks plan purchases: %v", err)
 	}
 }
+
+func TestPostgresInvoiceEmailRetriesBackOffAndStopAtTheCap(t *testing.T) {
+	repo := creditTestRepository(t)
+	user := creditTestUser(t, repo, 0)
+	now := time.Now().UTC().Truncate(time.Second)
+	invoice := Invoice{ID: uuid.NewString(), UserID: user.ID, RequestID: uuid.NewString(), Kind: "plan", Name: "Plus", Description: "d", Email: user.Email, Credits: 10, AmountMinor: 1000,
+		Currency: "USD", Status: "paid", PaidAt: &now, CreatedAt: now, ExpiresAt: now, EmailRetryAt: now.Add(-time.Hour)}
+	if err := repo.connection.Create(&invoice).Error; err != nil {
+		t.Fatal(err)
+	}
+	at := now
+	for attempt := 1; attempt <= MaxInvoiceEmailAttempts; attempt++ {
+		claimed, err := repo.ClaimInvoiceEmail(t.Context(), at)
+		if err != nil || claimed.ID != invoice.ID || claimed.EmailAttempts != attempt-1 {
+			t.Fatalf("attempt %d: claim = %#v, %v", attempt, claimed, err)
+		}
+		if err = repo.FinishInvoiceEmail(t.Context(), invoice.ID, claimed.EmailLease, false, at); err != nil {
+			t.Fatal(err)
+		}
+		var stored Invoice
+		if err = repo.connection.First(&stored, "id = ?", invoice.ID).Error; err != nil {
+			t.Fatal(err)
+		}
+		if want := at.Add(InvoiceEmailBackoff(attempt)); stored.EmailAttempts != attempt || !stored.EmailRetryAt.Equal(want) {
+			t.Fatalf("attempt %d: stored attempts=%d retry=%v, want retry %v", attempt, stored.EmailAttempts, stored.EmailRetryAt, want)
+		}
+		at = stored.EmailRetryAt.Add(time.Second)
+	}
+	if _, err := repo.ClaimInvoiceEmail(t.Context(), at.Add(365*24*time.Hour)); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("an invoice past the attempt cap was claimed again: %v", err)
+	}
+}

@@ -1,6 +1,7 @@
 package htmx
 
 import (
+	"bytes"
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
@@ -281,5 +282,44 @@ func TestLegacyReceiptFailuresThatCannotSucceedAreNotPermanentServerErrors(t *te
 				t.Fatalf("record = %#v", repo.reconciled[0])
 			}
 		})
+	}
+}
+
+func TestInvoiceEmailFailuresBackOffAndEventuallyStop(t *testing.T) {
+	for _, test := range []struct {
+		attempts    int
+		wantLogText string
+	}{
+		{0, "will retry with backoff"},
+		{db.MaxInvoiceEmailAttempts - 1, "giving up"},
+	} {
+		t.Run(fmt.Sprintf("after %d failed attempts", test.attempts), func(t *testing.T) {
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			now := time.Now().UTC()
+			repo := &invoiceOutboxStub{entitlementRepository: &entitlementRepository{memoryRepository: &memoryRepository{files: make(map[string]*db.FileList)}}, cancel: cancel,
+				invoice: db.Invoice{ID: "invoice-id", Name: "Plus", Status: "paid", Email: "buyer@example.com", AmountMinor: 1000, Currency: "USD", PaidAt: &now, CreatedAt: now, EmailLease: "lease-token", EmailAttempts: test.attempts}}
+			handler := newTestHandler(t, repo, &memoryStorage{objects: make(map[string][]byte)})
+			handler.config.Email = &config.EmailConfig{Provider: "smtp"}
+			logs := new(bytes.Buffer)
+			handler.logger = slog.New(slog.NewTextHandler(logs, nil))
+			handler.emailSender = invoiceSenderFunc(func(context.Context, email.Message) error { return errors.New("provider unavailable") })
+			handler.RunInvoiceEmails(ctx)
+			if !strings.Contains(logs.String(), test.wantLogText) || !strings.Contains(logs.String(), "provider unavailable") {
+				t.Fatalf("log = %q, want %q with the provider error", logs.String(), test.wantLogText)
+			}
+		})
+	}
+}
+
+func TestInvoiceEmailBackoffDoublesAndIsCapped(t *testing.T) {
+	want := []time.Duration{5 * time.Minute, 10 * time.Minute, 20 * time.Minute, 40 * time.Minute, 80 * time.Minute, 160 * time.Minute, 320 * time.Minute, 6 * time.Hour, 6 * time.Hour}
+	for index, expected := range want {
+		if got := db.InvoiceEmailBackoff(index + 1); got != expected {
+			t.Errorf("backoff for attempt %d = %v, want %v", index+1, got, expected)
+		}
+	}
+	if db.InvoiceEmailBackoff(0) != 5*time.Minute || db.InvoiceEmailBackoff(1000) != 6*time.Hour {
+		t.Fatal("out-of-range attempts must stay within 5 minutes and 6 hours")
 	}
 }

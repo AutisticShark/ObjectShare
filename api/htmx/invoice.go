@@ -301,7 +301,11 @@ func (handler *Handler) RunInvoiceEmails(ctx context.Context) {
 						Attachments: []email.Attachment{{Filename: "invoice-" + invoice.ID + ".pdf", ContentType: "application/pdf", Data: data}}})
 				}
 				if sendErr != nil {
-					handler.logger.Error("invoice email delivery failed; will retry", "invoice_id", invoice.ID)
+					if attempt := invoice.EmailAttempts + 1; attempt >= db.MaxInvoiceEmailAttempts {
+						handler.logger.Error("invoice email delivery failed; giving up", "invoice_id", invoice.ID, "attempts", attempt, "error", sendErr)
+					} else {
+						handler.logger.Error("invoice email delivery failed; will retry with backoff", "invoice_id", invoice.ID, "attempt", attempt, "retry_in", db.InvoiceEmailBackoff(attempt), "error", sendErr)
+					}
 				}
 				if err = repo.FinishInvoiceEmail(ctx, invoice.ID, invoice.EmailLease, sendErr == nil, time.Now().UTC()); err != nil {
 					handler.logger.Error("record invoice email delivery failed", "invoice_id", invoice.ID)
