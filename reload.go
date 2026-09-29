@@ -66,6 +66,16 @@ type configReloader struct {
 // errReloaderStopped is returned by Reload after Stop.
 var errReloaderStopped = errors.New("configuration reloader is stopped")
 
+// revisionError marks an activation failure with the stored revision that
+// caused it, so Watch can report each failing revision once.
+type revisionError struct {
+	revision string
+	err      error
+}
+
+func (failure *revisionError) Error() string { return failure.err.Error() }
+func (failure *revisionError) Unwrap() error { return failure.err }
+
 // newConfigReloader keeps the bootstrap configuration as the pristine base for
 // every snapshot. Listener, database, and JWT bootstrap settings are not part
 // of the database document and therefore still require a restart to change.
@@ -99,6 +109,15 @@ func (reloader *configReloader) Reload(ctx context.Context) error {
 	if previous != nil && previous.sealed == setting.Value {
 		return nil
 	}
+	if err := reloader.activate(setting, previous); err != nil {
+		return &revisionError{revision: setting.Value, err: err}
+	}
+	return nil
+}
+
+// activate builds and swaps in the snapshot for a stored revision. The caller
+// holds mu.
+func (reloader *configReloader) activate(setting *db.ApplicationSetting, previous *configSnapshot) error {
 	runtime, err := config.OpenRuntime(setting.Value, reloader.base.SettingsKey)
 	if err != nil {
 		return fmt.Errorf("open database configuration: %w", err)
@@ -149,6 +168,9 @@ func (reloader *configReloader) Watch(ctx context.Context, interval time.Duratio
 		defer ticker.Stop()
 		poll = ticker.C
 	}
+	// A bad revision fails identically on every poll; log each distinct failure
+	// once so a 30-second poll does not write the same error 2880 times a day.
+	var lastLogged string
 	for {
 		select {
 		case <-ctx.Done():
@@ -159,8 +181,20 @@ func (reloader *configReloader) Watch(ctx context.Context, interval time.Duratio
 		reloadContext, cancel := context.WithTimeout(ctx, reloadTimeout)
 		err := reloader.Reload(reloadContext)
 		cancel()
-		if err != nil && ctx.Err() == nil && !errors.Is(err, errReloaderStopped) {
-			reloader.logger.Error("activate saved configuration failed", "error", err)
+		switch {
+		case err == nil:
+			lastLogged = ""
+		case ctx.Err() != nil || errors.Is(err, errReloaderStopped):
+		default:
+			key := err.Error()
+			var failure *revisionError
+			if errors.As(err, &failure) {
+				key = "revision:" + failure.revision
+			}
+			if key != lastLogged {
+				lastLogged = key
+				reloader.logger.Error("activate saved configuration failed", "error", err)
+			}
 		}
 	}
 }

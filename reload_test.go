@@ -1,12 +1,14 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -257,4 +259,69 @@ func TestStopAndReloadCannotRaceOnTheWorkerGroup(t *testing.T) {
 		t.Fatal("a snapshot was activated after Stop")
 	}
 	reloader.workers.Wait() // returns at once: no worker was added after Stop
+}
+
+// syncBuffer lets the watcher goroutine write logs the test goroutine reads.
+type syncBuffer struct {
+	mu   sync.Mutex
+	data bytes.Buffer
+}
+
+func (buffer *syncBuffer) Write(data []byte) (int, error) {
+	buffer.mu.Lock()
+	defer buffer.mu.Unlock()
+	return buffer.data.Write(data)
+}
+
+func (buffer *syncBuffer) count(text string) int {
+	buffer.mu.Lock()
+	defer buffer.mu.Unlock()
+	return strings.Count(buffer.data.String(), text)
+}
+
+func TestWatchLogsEachDistinctActivationFailureOnce(t *testing.T) {
+	t.Setenv("OBJECTSHARE_JWT_SECRET", "quiet-test-jwt-secret-with-at-least-32-bytes")
+	t.Setenv("OBJECTSHARE_SETTINGS_KEY", "quiet-test-settings-key-with-at-least-32-bytes")
+	base, err := config.Load("config.json.example")
+	if err != nil {
+		t.Fatal(err)
+	}
+	base.RateLimit.Enabled = false
+	base.StorageService, base.StoragePath = "filesystem", t.TempDir()
+	repository := &memoryApplicationRepository{}
+	runtime := config.RuntimeFromService(base)
+	repository.store(t, base, runtime)
+	logs := &syncBuffer{}
+	reloader := newConfigReloader(t.Context(), base, repository, templateFiles, slog.New(slog.NewTextHandler(logs, nil)))
+	defer reloader.Stop()
+	if err := reloader.Reload(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+
+	watchContext, stopWatch := context.WithCancel(t.Context())
+	done := make(chan struct{})
+	go func() { defer close(done); reloader.Watch(watchContext, 5*time.Millisecond) }()
+	repository.storeSealed("enc:v1:not-valid-base64-ciphertext-!")
+	deadline := time.Now().Add(5 * time.Second)
+	for logs.count("activate saved configuration failed") == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("a failing revision was never reported")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	time.Sleep(200 * time.Millisecond) // dozens of further polls of the same bad revision
+	if got := logs.count("activate saved configuration failed"); got != 1 {
+		t.Fatalf("the same failure was logged %d times, want once", got)
+	}
+
+	// A different failure is reported again, and a good revision resets the memory.
+	repository.storeSealed("enc:v1:another-broken-ciphertext-!")
+	for logs.count("activate saved configuration failed") < 2 {
+		if time.Now().After(deadline) {
+			t.Fatal("a different failure was suppressed")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	stopWatch()
+	<-done
 }
