@@ -244,6 +244,8 @@ func runtimeFormValues(runtime config.RuntimeConfig) url.Values {
 		"b2_bucket_name": {runtime.B2.BucketName}, "b2_endpoint": {runtime.B2.Endpoint}, "b2_region": {runtime.B2.Region}, "b2_presign_timeout": {runtime.B2.PresignLinkTimeout.String()}, "b2_upload_presign_timeout": {runtime.B2.PresignUploadTimeout.String()},
 		"oss_bucket_name": {runtime.OSS.BucketName}, "oss_endpoint": {runtime.OSS.Endpoint}, "oss_region": {runtime.OSS.Region}, "oss_presign_timeout": {runtime.OSS.PresignLinkTimeout.String()}, "oss_upload_presign_timeout": {runtime.OSS.PresignUploadTimeout.String()},
 		"cos_bucket_name": {runtime.COS.BucketName}, "cos_endpoint": {runtime.COS.Endpoint}, "cos_region": {runtime.COS.Region}, "cos_presign_timeout": {runtime.COS.PresignLinkTimeout.String()}, "cos_upload_presign_timeout": {runtime.COS.PresignUploadTimeout.String()},
+		"gcs_bucket_name": {runtime.GCS.BucketName}, "gcs_endpoint": {runtime.GCS.Endpoint}, "gcs_region": {runtime.GCS.Region}, "gcs_presign_timeout": {runtime.GCS.PresignLinkTimeout.String()}, "gcs_upload_presign_timeout": {runtime.GCS.PresignUploadTimeout.String()},
+		"oci_bucket_name": {runtime.OCI.BucketName}, "oci_endpoint": {runtime.OCI.Endpoint}, "oci_region": {runtime.OCI.Region}, "oci_presign_timeout": {runtime.OCI.PresignLinkTimeout.String()}, "oci_upload_presign_timeout": {runtime.OCI.PresignUploadTimeout.String()},
 		"encryption_method": {runtime.Encryption.Method},
 	}
 	for name, enabled := range map[string]bool{

@@ -66,6 +66,8 @@ type ServiceConfig struct {
 	B2              *B2Config          `json:"b2,omitempty"`
 	OSS             *OSSConfig         `json:"oss,omitempty"`
 	COS             *COSConfig         `json:"cos,omitempty"`
+	GCS             *GCSConfig         `json:"gcs,omitempty"`
+	OCI             *OCIConfig         `json:"oci,omitempty"`
 }
 
 // UploadConfig controls whether people without an account may upload. Account
@@ -217,8 +219,8 @@ type R2Config struct {
 }
 
 // S3CompatibleConfig contains the settings shared by Amazon S3 and the
-// S3-compatible APIs exposed by Backblaze B2, Alibaba Cloud OSS, and Tencent
-// Cloud COS. Endpoint is optional for providers whose public endpoint can be
+// S3-compatible APIs exposed by Backblaze B2, Alibaba Cloud OSS, Tencent
+// Cloud COS, Google Cloud Storage, and Oracle Cloud Object Storage. Endpoint is optional for providers whose public endpoint can be
 // derived from the region.
 type S3CompatibleConfig struct {
 	BucketName           string   `json:"bucket_name"`
@@ -239,3 +241,5 @@ type S3Config struct {
 type B2Config = S3CompatibleConfig
 type OSSConfig = S3CompatibleConfig
 type COSConfig = S3CompatibleConfig
+type GCSConfig = S3CompatibleConfig
+type OCIConfig = S3CompatibleConfig

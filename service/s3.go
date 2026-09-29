@@ -16,7 +16,7 @@ import (
 )
 
 // S3Compatible implements ObjectStore and DirectUploader through the Amazon S3
-// API. It is shared by S3, R2, B2, OSS, and COS while retaining provider names
+// API. It is shared by S3, R2, B2, OSS, COS, GCS, and OCI while retaining provider names
 // in operational errors.
 type S3Compatible struct {
 	provider        string
@@ -66,6 +66,35 @@ func NewCOS(settings *config.COSConfig) (*S3Compatible, error) {
 		settings.Endpoint = fmt.Sprintf("https://cos.%s.myqcloud.com", settings.Region)
 	}
 	return newS3Compatible("COS", settings, "", false)
+}
+
+// NewGCS uses Google Cloud Storage's Amazon S3 interoperability API, which
+// authenticates with HMAC keys rather than service-account credentials.
+func NewGCS(settings *config.GCSConfig) (*S3Compatible, error) {
+	if settings == nil {
+		return nil, fmt.Errorf("GCS configuration is required")
+	}
+	settings = cloneS3Settings(settings)
+	if settings.Endpoint == "" {
+		settings.Endpoint = "https://storage.googleapis.com"
+	}
+	if settings.Region == "" {
+		settings.Region = "auto"
+	}
+	return newS3Compatible("GCS", settings, "", false)
+}
+
+// NewOCI uses Oracle Cloud Object Storage's Amazon S3 Compatibility API. Its
+// endpoint embeds the tenancy namespace, so it must be configured explicitly,
+// and it only accepts path-style requests.
+func NewOCI(settings *config.OCIConfig) (*S3Compatible, error) {
+	if settings == nil {
+		return nil, fmt.Errorf("OCI configuration is required")
+	}
+	if settings.Endpoint == "" {
+		return nil, fmt.Errorf("OCI endpoint is required")
+	}
+	return newS3Compatible("OCI", cloneS3Settings(settings), "", true)
 }
 
 func cloneS3Settings(settings *config.S3CompatibleConfig) *config.S3CompatibleConfig {

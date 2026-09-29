@@ -11,7 +11,7 @@ ObjectShare is a small self-hosted file sharing service written in Go. Files use
 - Single-file and multiple-file, size-limited uploads with SHA-256 and SHA3-256 checksums
 - Tabler UI with HTMX progressive enhancement and native-form fallbacks
 - Administrator-managed site name, logo, header banner, favicon, tagline, and footer
-- Filesystem, Cloudflare R2, AWS S3, Backblaze B2, Alibaba Cloud OSS, or Tencent Cloud COS object storage
+- Filesystem, Cloudflare R2, AWS S3, Backblaze B2, Alibaba Cloud OSS, Tencent Cloud COS, Google Cloud Storage, or Oracle Cloud Object Storage
 - Direct-to-object-storage uploads that avoid reverse-proxy request-body limits
 - PostgreSQL metadata with bounded connection pools
 - Optional per-upload browser encryption and decryption with passphrase-protected account keys, encrypted backups, and per-file sharing keys
@@ -80,10 +80,10 @@ HTMX is intentionally part of the frontend architecture. The native forms are ac
 - [x] AWS S3
 - [x] Backblaze B2
 - [x] Cloudflare R2
+- [x] Google Cloud Storage
+- [x] Oracle Cloud Object Storage
 - [x] Tencent Cloud COS
-- [ ] Google Cloud Storage
 - [ ] Microsoft Azure Blob Storage
-- [ ] Oracle Cloud Object Storage
 
 ### Website workspace
 
@@ -991,7 +991,7 @@ Restricted downloads stream through the application to recheck authorization on 
 
 ### Object storage
 
-All five object-storage providers use private buckets and the S3 API. When server-side encryption is disabled, JavaScript-enabled browsers upload directly to a short-lived URL bound to one object key, exact size, and content type. ObjectShare creates a pending database record first, then verifies the stored object's size and content type before publishing its share page. Account-owned uploads require both the scoped completion token and the owning account's current JWT to complete or abort; guest uploads use the scoped token alone. Expired or aborted pending uploads are removed. Cancellation and expiry cleanup claim unfinished uploads in the database before deleting objects, so a stale request cannot delete an upload that has already completed. Failed object deletions remain reserved against the owner's quota and are retried during cleanup triggered by subsequent uploads. Only authorization and completion requests pass through ObjectShare, so a reverse proxy or CDN in front of the app does not carry the file body.
+All seven object-storage providers use private buckets and the S3 API. When server-side encryption is disabled, JavaScript-enabled browsers upload directly to a short-lived URL bound to one object key, exact size, and content type. ObjectShare creates a pending database record first, then verifies the stored object's size and content type before publishing its share page. Account-owned uploads require both the scoped completion token and the owning account's current JWT to complete or abort; guest uploads use the scoped token alone. Expired or aborted pending uploads are removed. Cancellation and expiry cleanup claim unfinished uploads in the database before deleting objects, so a stale request cannot delete an upload that has already completed. Failed object deletions remain reserved against the owner's quota and are retried during cleanup triggered by subsequent uploads. Only authorization and completion requests pass through ObjectShare, so a reverse proxy or CDN in front of the app does not carry the file body.
 
 Files shared with anyone use short-lived presigned download URLs unless ObjectShare server-side encryption is enabled. Signed-in, selected-account, and private downloads stream through ObjectShare after authorization on each request; provision application bandwidth and proxy download timeouts accordingly. The direct path cannot provide application-verified SHA checksums because ObjectShare never receives the file bytes; the details page labels those checksums as unavailable. Server-side encryption and direct upload are mutually exclusive because that encryption runs on the server. Client-side encryption supports direct uploads: browsers send ciphertext with the same size/type-bound authorization and finalize checks. Client-encrypted downloads stream through ObjectShare for same-origin browser decryption and access checks, including files shared with anyone.
 
@@ -1010,7 +1010,7 @@ Grant the configured identity only read, write, and delete access to the selecte
 
 Use the provider console's equivalent fields when it does not accept S3 CORS JSON directly. Add a separate localhost origin for local browser testing. Avoid wildcard origins for private buckets.
 
-Presigned download timeouts default to `10m`; upload timeouts default to `1h`. Configure them per provider in the dashboard. The legacy first-import variables are `OBJECTSHARE_<PROVIDER>_PRESIGN_TIMEOUT` and `OBJECTSHARE_<PROVIDER>_UPLOAD_PRESIGN_TIMEOUT`, replacing `<PROVIDER>` with `R2`, `S3`, `B2`, `OSS`, or `COS`. Both support a maximum of `168h`. Each direct object upload is a single PUT and is capped at 5 GiB; the UI can upload several such files as a batch, but larger individual objects require S3 multipart-object upload support, which ObjectShare does not currently implement.
+Presigned download timeouts default to `10m`; upload timeouts default to `1h`. Configure them per provider in the dashboard. The legacy first-import variables are `OBJECTSHARE_<PROVIDER>_PRESIGN_TIMEOUT` and `OBJECTSHARE_<PROVIDER>_UPLOAD_PRESIGN_TIMEOUT`, replacing `<PROVIDER>` with `R2`, `S3`, `B2`, `OSS`, `COS`, `GCS`, or `OCI`. Both support a maximum of `168h`. Each direct object upload is a single PUT and is capped at 5 GiB; the UI can upload several such files as a batch, but larger individual objects require S3 multipart-object upload support, which ObjectShare does not currently implement.
 
 #### Cloudflare R2
 
@@ -1050,6 +1050,18 @@ See Alibaba Cloud's [AWS SDK compatibility guide](https://www.alibabacloud.com/h
 Select **Tencent COS** in the dashboard and provide its bucket, region, and write-only credentials. The matching legacy seeds use the `OBJECTSHARE_COS_*` prefix. Use the full bucket name including its APPID suffix, such as `objectshare-1250000000`. The endpoint defaults to `https://cos.<region>.myqcloud.com`; override it only when needed. Current COS buckets use virtual-hosted-style requests.
 
 See Tencent Cloud's [S3-compatible configuration guide](https://intl.cloud.tencent.com/document/product/436/34688?lang=en) and [AWS SDK for Go v2 compatibility example](https://cloud.tencent.com/document/product/436/37421).
+
+#### Google Cloud Storage
+
+Select **Google Cloud Storage** in the dashboard and provide its bucket and write-only HMAC credentials. The legacy seeds are `OBJECTSHARE_STORAGE_SERVICE=gcs` and the `OBJECTSHARE_GCS_*` prefix. ObjectShare uses Cloud Storage's Amazon S3 interoperability API, so authentication is an HMAC access key and secret for a service account, not a service-account JSON key or Application Default Credentials. The region defaults to `auto`, the endpoint defaults to `https://storage.googleapis.com`, and requests are virtual-hosted-style. Grant that service account only the object read, write, and delete permissions it needs on the bucket, and apply the CORS rule above with the bucket's CORS configuration (for example `gcloud storage buckets update gs://BUCKET --cors-file=cors.json`, using the Cloud Storage JSON CORS format).
+
+See Google's [XML API interoperability guide](https://cloud.google.com/storage/docs/interoperability), [HMAC key guide](https://cloud.google.com/storage/docs/authentication/hmackeys), and [CORS guide](https://cloud.google.com/storage/docs/configuring-cors).
+
+#### Oracle Cloud Object Storage
+
+Select **Oracle Cloud Object Storage** in the dashboard and provide its bucket, region, endpoint, and write-only credentials. The legacy seeds are `OBJECTSHARE_STORAGE_SERVICE=oci` and the `OBJECTSHARE_OCI_*` prefix. ObjectShare uses the Amazon S3 Compatibility API with a customer secret key (an access key and secret generated for an OCI user), not an API signing key. The endpoint has no default because it contains your tenancy's Object Storage namespace: set it to `https://<namespace>.compat.objectstorage.<region>.oraclecloud.com`, and set the region to the matching OCI region identifier, such as `us-ashburn-1`. Requests use path style. Restrict the OCI user's policy to the target bucket's object read, write, and delete permissions, and confirm your tenancy's cross-origin behavior in Oracle's documentation before relying on browser direct uploads.
+
+See Oracle's [Amazon S3 Compatibility API guide](https://docs.oracle.com/en-us/iaas/Content/Object/Tasks/s3compatibleapi.htm) and [customer secret key guide](https://docs.oracle.com/en-us/iaas/Content/Identity/Tasks/managingcredentials.htm).
 
 ## Production checklist
 

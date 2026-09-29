@@ -37,6 +37,8 @@ type RuntimeConfig struct {
 	B2             B2Config          `json:"b2"`
 	OSS            OSSConfig         `json:"oss"`
 	COS            COSConfig         `json:"cos"`
+	GCS            GCSConfig         `json:"gcs"`
+	OCI            OCIConfig         `json:"oci"`
 }
 
 type RuntimeAuthConfig struct {
@@ -99,6 +101,12 @@ func RuntimeFromService(cfg *ServiceConfig) RuntimeConfig {
 	}
 	if cfg.COS != nil {
 		runtime.COS = *cfg.COS
+	}
+	if cfg.GCS != nil {
+		runtime.GCS = *cfg.GCS
+	}
+	if cfg.OCI != nil {
+		runtime.OCI = *cfg.OCI
 	}
 	return runtime
 }
@@ -167,6 +175,8 @@ func applyRuntimeUnchecked(cfg *ServiceConfig, runtime RuntimeConfig) {
 	cfg.B2 = &runtime.B2
 	cfg.OSS = &runtime.OSS
 	cfg.COS = &runtime.COS
+	cfg.GCS = &runtime.GCS
+	cfg.OCI = &runtime.OCI
 }
 
 func cloneService(cfg *ServiceConfig) (*ServiceConfig, error) {

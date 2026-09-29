@@ -49,7 +49,7 @@ func TestS3SessionTokenRequiresExplicitCredentials(t *testing.T) {
 }
 
 func TestSupportedObjectStorageConfigurations(t *testing.T) {
-	for _, storage := range []string{"s3", "b2", "oss", "cos"} {
+	for _, storage := range []string{"s3", "b2", "oss", "cos", "gcs", "oci"} {
 		t.Run(storage, func(t *testing.T) {
 			cfg := testDefaults()
 			cfg.StorageService = storage
@@ -66,6 +66,11 @@ func TestSupportedObjectStorageConfigurations(t *testing.T) {
 				cfg.OSS = settings
 			case "cos":
 				cfg.COS = settings
+			case "gcs":
+				cfg.GCS = settings
+			case "oci":
+				settings.Endpoint = "https://tenancy.compat.objectstorage.us-ashburn-1.oraclecloud.com"
+				cfg.OCI = settings
 			}
 			if err := cfg.Validate(); err != nil {
 				t.Fatal(err)
@@ -545,5 +550,32 @@ func TestConfigReloadIntervalRejectsInvalidBootstrapValue(t *testing.T) {
 	t.Setenv("OBJECTSHARE_CONFIG_RELOAD_INTERVAL", "half an hour")
 	if _, err := LoadBootstrap("../config.json.example"); err == nil || !strings.Contains(err.Error(), "OBJECTSHARE_CONFIG_RELOAD_INTERVAL") {
 		t.Fatalf("an unparsable bootstrap reload interval was accepted: %v", err)
+	}
+}
+
+func TestGCSAndOCIEnvironmentOverrides(t *testing.T) {
+	t.Setenv("OBJECTSHARE_STORAGE_SERVICE", "oci")
+	t.Setenv("OBJECTSHARE_GCS_BUCKET_NAME", "gcs-bucket")
+	t.Setenv("OBJECTSHARE_GCS_ACCESS_KEY_ID", "GOOGHMAC")
+	t.Setenv("OBJECTSHARE_GCS_SECRET_ACCESS_KEY", "gcs-secret")
+	t.Setenv("OBJECTSHARE_OCI_BUCKET_NAME", "oci-bucket")
+	t.Setenv("OBJECTSHARE_OCI_REGION", "us-ashburn-1")
+	t.Setenv("OBJECTSHARE_OCI_ENDPOINT", "https://tenancy.compat.objectstorage.us-ashburn-1.oraclecloud.com")
+	t.Setenv("OBJECTSHARE_OCI_ACCESS_KEY_ID", "customer-key")
+	t.Setenv("OBJECTSHARE_OCI_SECRET_ACCESS_KEY", "customer-secret")
+
+	cfg := testDefaults()
+	if err := applyEnvironment(cfg); err != nil {
+		t.Fatal(err)
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	if cfg.GCS.BucketName != "gcs-bucket" || cfg.GCS.Region != "auto" || cfg.OCI.BucketName != "oci-bucket" || cfg.OCI.Region != "us-ashburn-1" {
+		t.Fatalf("GCS/OCI environment was not applied: %#v %#v", cfg.GCS, cfg.OCI)
+	}
+	cfg.OCI.Endpoint = ""
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "oci endpoint is required") {
+		t.Fatalf("error = %v, want OCI endpoint requirement", err)
 	}
 }

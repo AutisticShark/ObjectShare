@@ -169,6 +169,8 @@ func defaults() *ServiceConfig {
 		B2:  defaultS3CompatibleConfig(""),
 		OSS: defaultS3CompatibleConfig(""),
 		COS: defaultS3CompatibleConfig(""),
+		GCS: defaultS3CompatibleConfig("auto"),
+		OCI: defaultS3CompatibleConfig(""),
 	}
 }
 
@@ -353,6 +355,14 @@ func applyEnvironment(cfg *ServiceConfig) error {
 		cfg.COS = defaultS3CompatibleConfig("")
 	}
 	applyS3Environment("COS", cfg.COS, &problems)
+	if cfg.GCS == nil {
+		cfg.GCS = defaultS3CompatibleConfig("auto")
+	}
+	applyS3Environment("GCS", cfg.GCS, &problems)
+	if cfg.OCI == nil {
+		cfg.OCI = defaultS3CompatibleConfig("")
+	}
+	applyS3Environment("OCI", cfg.OCI, &problems)
 	return errors.Join(problems...)
 }
 
@@ -571,6 +581,17 @@ func (cfg *ServiceConfig) Validate() error {
 	case "cos":
 		if err := validateS3Compatible("cos", cfg.COS, true); err != nil {
 			return err
+		}
+	case "gcs":
+		if err := validateS3Compatible("gcs", cfg.GCS, true); err != nil {
+			return err
+		}
+	case "oci":
+		if err := validateS3Compatible("oci", cfg.OCI, true); err != nil {
+			return err
+		}
+		if cfg.OCI.Endpoint == "" {
+			return errors.New("oci endpoint is required")
 		}
 	default:
 		return fmt.Errorf("unsupported storage service %q", cfg.StorageService)
