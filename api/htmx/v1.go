@@ -429,7 +429,7 @@ func (handler *Handler) Download(writer http.ResponseWriter, request *http.Reque
 			handler.internalError(writer, request, "decrypt object", errors.New("encryption key is unavailable"))
 			return
 		}
-		plaintext, err := handler.decryptObject(body)
+		plaintext, err := handler.decryptObject(body, fileID)
 		switch {
 		case errors.Is(err, errCipherBusy):
 			http.Error(writer, "Encryption capacity is busy; retry shortly.", http.StatusServiceUnavailable)
@@ -464,7 +464,7 @@ func (handler *Handler) logStreamError(request *http.Request, fileID, operation 
 // decryptObject reads and decrypts a stored object while holding the cipher
 // slot, releasing it before the caller streams the plaintext to a possibly slow
 // client so one slow download cannot block every other encrypted transfer.
-func (handler *Handler) decryptObject(body io.Reader) ([]byte, error) {
+func (handler *Handler) decryptObject(body io.Reader, fileID string) ([]byte, error) {
 	if !handler.acquireCipherSlot() {
 		return nil, errCipherBusy
 	}
@@ -474,7 +474,7 @@ func (handler *Handler) decryptObject(body io.Reader) ([]byte, error) {
 	if err != nil || int64(len(ciphertext)) >= limit {
 		return nil, fmt.Errorf("read encrypted object: %w", errors.Join(err, errors.New("object exceeds the encrypted size limit")))
 	}
-	return handler.cipher.Decrypt(ciphertext)
+	return handler.cipher.DecryptFor(fileID, ciphertext)
 }
 
 func (handler *Handler) fileHasDirectLinks(ctx context.Context, file *db.FileList) bool {
