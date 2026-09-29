@@ -244,6 +244,7 @@ func runtimeFormValues(runtime config.RuntimeConfig) url.Values {
 		"b2_bucket_name": {runtime.B2.BucketName}, "b2_endpoint": {runtime.B2.Endpoint}, "b2_region": {runtime.B2.Region}, "b2_presign_timeout": {runtime.B2.PresignLinkTimeout.String()}, "b2_upload_presign_timeout": {runtime.B2.PresignUploadTimeout.String()},
 		"oss_bucket_name": {runtime.OSS.BucketName}, "oss_endpoint": {runtime.OSS.Endpoint}, "oss_region": {runtime.OSS.Region}, "oss_presign_timeout": {runtime.OSS.PresignLinkTimeout.String()}, "oss_upload_presign_timeout": {runtime.OSS.PresignUploadTimeout.String()},
 		"cos_bucket_name": {runtime.COS.BucketName}, "cos_endpoint": {runtime.COS.Endpoint}, "cos_region": {runtime.COS.Region}, "cos_presign_timeout": {runtime.COS.PresignLinkTimeout.String()}, "cos_upload_presign_timeout": {runtime.COS.PresignUploadTimeout.String()},
+		"oci_bucket_name": {runtime.OCI.BucketName}, "oci_endpoint": {runtime.OCI.Endpoint}, "oci_region": {runtime.OCI.Region}, "oci_presign_timeout": {runtime.OCI.PresignLinkTimeout.String()}, "oci_upload_presign_timeout": {runtime.OCI.PresignUploadTimeout.String()},
 		"encryption_method": {runtime.Encryption.Method},
 	}
 	for name, enabled := range map[string]bool{
@@ -360,5 +361,46 @@ func TestActivatedHandlerInheritsProcessLocalState(t *testing.T) {
 	}
 	if activated.localRateLimits != previous.localRateLimits {
 		t.Fatal("activation reset the local rate-limit windows")
+	}
+}
+
+func TestDashboardFormUpdatesOracleCloudObjectStorage(t *testing.T) {
+	runtime := config.RuntimeFromService(&config.ServiceConfig{})
+	runtime.OCI = config.OCIConfig{AccessKeyID: "stored-access", SecretAccessKey: "stored-secret", PresignLinkTimeout: config.Duration(10 * time.Minute), PresignUploadTimeout: config.Duration(time.Hour)}
+	form := url.Values{
+		"storage_service": {"OCI"}, "oci_bucket_name": {"objectshare"}, "oci_region": {"us-ashburn-1"},
+		"oci_endpoint":        {"https://ns.compat.objectstorage.us-ashburn-1.oraclecloud.com"},
+		"oci_presign_timeout": {"15m"}, "oci_upload_presign_timeout": {"2h"},
+		"max_file_size": {"10"}, "rate_limit_window": {"1m"},
+	}
+	request := httptest.NewRequest(http.MethodPost, "/admin/settings", strings.NewReader(form.Encode()))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	if err := request.ParseForm(); err != nil {
+		t.Fatal(err)
+	}
+	_ = updateRuntimeFromForm(&runtime, request)
+	if runtime.StorageService != "oci" || runtime.OCI.BucketName != "objectshare" || runtime.OCI.Region != "us-ashburn-1" ||
+		runtime.OCI.Endpoint != "https://ns.compat.objectstorage.us-ashburn-1.oraclecloud.com" ||
+		runtime.OCI.PresignLinkTimeout.Duration() != 15*time.Minute || runtime.OCI.PresignUploadTimeout.Duration() != 2*time.Hour {
+		t.Fatalf("OCI form values were not applied: %#v", runtime.OCI)
+	}
+	if runtime.OCI.AccessKeyID != "stored-access" || runtime.OCI.SecretAccessKey != "stored-secret" {
+		t.Fatal("leaving the write-only credential fields empty must preserve the stored values")
+	}
+
+	form.Set("oci_access_key_id", "new-access")
+	form.Set("clear_oci_secret_key", "on")
+	request = httptest.NewRequest(http.MethodPost, "/admin/settings", strings.NewReader(form.Encode()))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	_ = request.ParseForm()
+	_ = updateRuntimeFromForm(&runtime, request)
+	if runtime.OCI.AccessKeyID != "new-access" || runtime.OCI.SecretAccessKey != "" {
+		t.Fatalf("credential replace/clear = %q / %q", runtime.OCI.AccessKeyID, runtime.OCI.SecretAccessKey)
+	}
+
+	redacted := runtime
+	redactRuntimeSecrets(&redacted)
+	if redacted.OCI.AccessKeyID != "" || redacted.OCI.SecretAccessKey != "" {
+		t.Fatal("OCI credentials are shown back to the dashboard")
 	}
 }

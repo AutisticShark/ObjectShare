@@ -50,7 +50,7 @@ func TestS3SessionTokenRequiresExplicitCredentials(t *testing.T) {
 }
 
 func TestSupportedObjectStorageConfigurations(t *testing.T) {
-	for _, storage := range []string{"s3", "b2", "oss", "cos"} {
+	for _, storage := range []string{"s3", "b2", "oss", "cos", "oci"} {
 		t.Run(storage, func(t *testing.T) {
 			cfg := testDefaults()
 			cfg.StorageService = storage
@@ -67,6 +67,9 @@ func TestSupportedObjectStorageConfigurations(t *testing.T) {
 				cfg.OSS = settings
 			case "cos":
 				cfg.COS = settings
+			case "oci":
+				settings.Endpoint = "https://namespace.compat.objectstorage.us-ashburn-1.oraclecloud.com"
+				cfg.OCI = settings
 			}
 			if err := cfg.Validate(); err != nil {
 				t.Fatal(err)
@@ -781,5 +784,93 @@ func TestSettingsKeyFallbackToTheJWTSecretIsReported(t *testing.T) {
 	independent.SettingsKey = "an-independent-settings-key-with-32-bytes"
 	if err := independent.Validate(); err != nil || independent.SettingsKeyDerived {
 		t.Fatalf("an explicit settings key was reported as derived: %v", err)
+	}
+}
+
+func TestOCIRequiresAnHTTPSEndpointAndCredentials(t *testing.T) {
+	valid := func() *S3CompatibleConfig {
+		return &S3CompatibleConfig{BucketName: "bucket", Region: "us-ashburn-1", Endpoint: "https://namespace.compat.objectstorage.us-ashburn-1.oraclecloud.com",
+			AccessKeyID: "key", SecretAccessKey: "secret", PresignLinkTimeout: Duration(10 * time.Minute), PresignUploadTimeout: Duration(time.Hour)}
+	}
+	for name, test := range map[string]struct {
+		mutate   func(*S3CompatibleConfig)
+		contains string
+	}{
+		"missing endpoint": {func(c *S3CompatibleConfig) { c.Endpoint = "" }, "oci endpoint is required"},
+		"insecure endpoint": {func(c *S3CompatibleConfig) {
+			c.Endpoint = "http://namespace.compat.objectstorage.us-ashburn-1.oraclecloud.com"
+		}, "absolute HTTPS URL"},
+		"missing region":       {func(c *S3CompatibleConfig) { c.Region = "" }, "bucket_name and region are required"},
+		"missing credentials":  {func(c *S3CompatibleConfig) { c.AccessKeyID, c.SecretAccessKey = "", "" }, "access_key_id and secret_access_key are required"},
+		"partial credentials":  {func(c *S3CompatibleConfig) { c.SecretAccessKey = "" }, "provided together"},
+		"short download timer": {func(c *S3CompatibleConfig) { c.PresignLinkTimeout = Duration(time.Millisecond) }, "presign timeout"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			cfg := testDefaults()
+			cfg.StorageService = "oci"
+			cfg.OCI = valid()
+			test.mutate(cfg.OCI)
+			if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), test.contains) {
+				t.Fatalf("error = %v, want text %q", err, test.contains)
+			}
+		})
+	}
+	cfg := testDefaults()
+	cfg.StorageService = "oci"
+	cfg.OCI = valid()
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("valid OCI configuration rejected: %v", err)
+	}
+}
+
+func TestOCIEnvironmentOverridesAndDefaults(t *testing.T) {
+	defaults := testDefaults()
+	if defaults.OCI == nil || defaults.OCI.PresignLinkTimeout != Duration(10*time.Minute) || defaults.OCI.PresignUploadTimeout != Duration(time.Hour) || defaults.OCI.Endpoint != "" {
+		t.Fatalf("OCI defaults = %#v", defaults.OCI)
+	}
+	t.Setenv("OBJECTSHARE_STORAGE_SERVICE", "oci")
+	t.Setenv("OBJECTSHARE_OCI_BUCKET_NAME", "objectshare")
+	t.Setenv("OBJECTSHARE_OCI_REGION", "eu-frankfurt-1")
+	t.Setenv("OBJECTSHARE_OCI_ENDPOINT", "https://ns.compat.objectstorage.eu-frankfurt-1.oraclecloud.com")
+	t.Setenv("OBJECTSHARE_OCI_ACCESS_KEY_ID", "customer-secret-key-id")
+	t.Setenv("OBJECTSHARE_OCI_SECRET_ACCESS_KEY", "customer-secret-key")
+	t.Setenv("OBJECTSHARE_OCI_PRESIGN_TIMEOUT", "20m")
+	t.Setenv("OBJECTSHARE_OCI_UPLOAD_PRESIGN_TIMEOUT", "30m")
+	cfg := testDefaults()
+	if err := applyEnvironment(cfg); err != nil {
+		t.Fatal(err)
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	if cfg.StorageService != "oci" || cfg.OCI.BucketName != "objectshare" || cfg.OCI.Region != "eu-frankfurt-1" || cfg.OCI.AccessKeyID != "customer-secret-key-id" ||
+		cfg.OCI.PresignLinkTimeout.Duration() != 20*time.Minute || cfg.OCI.PresignUploadTimeout.Duration() != 30*time.Minute {
+		t.Fatalf("OCI environment was not applied: %#v", cfg.OCI)
+	}
+}
+
+func TestRuntimeDocumentsSavedBeforeOCIGainDefaults(t *testing.T) {
+	cfg := testDefaults()
+	if err := cfg.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	runtime := RuntimeFromService(cfg)
+	runtime.OCI = OCIConfig{} // a document sealed by a release without OCI support
+	sealed, err := SealRuntime(runtime, cfg.SettingsKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	opened, err := OpenRuntime(sealed, cfg.SettingsKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if opened.OCI.PresignLinkTimeout != Duration(10*time.Minute) || opened.OCI.PresignUploadTimeout != Duration(time.Hour) {
+		t.Fatalf("missing OCI defaults were not filled: %#v", opened.OCI)
+	}
+	configured := RuntimeFromService(cfg)
+	configured.OCI = OCIConfig{BucketName: "b", PresignLinkTimeout: Duration(3 * time.Minute), PresignUploadTimeout: Duration(2 * time.Hour)}
+	sealed, _ = SealRuntime(configured, cfg.SettingsKey)
+	if reopened, err := OpenRuntime(sealed, cfg.SettingsKey); err != nil || reopened.OCI.PresignLinkTimeout != Duration(3*time.Minute) || reopened.OCI.PresignUploadTimeout != Duration(2*time.Hour) {
+		t.Fatalf("configured OCI values were overwritten: %#v %v", reopened.OCI, err)
 	}
 }

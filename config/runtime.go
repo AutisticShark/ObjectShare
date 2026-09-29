@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"time"
 )
 
 const sealedRuntimePrefix = "enc:v1:"
@@ -37,6 +38,7 @@ type RuntimeConfig struct {
 	B2             B2Config          `json:"b2"`
 	OSS            OSSConfig         `json:"oss"`
 	COS            COSConfig         `json:"cos"`
+	OCI            OCIConfig         `json:"oci"`
 }
 
 type RuntimeAuthConfig struct {
@@ -100,6 +102,9 @@ func RuntimeFromService(cfg *ServiceConfig) RuntimeConfig {
 	}
 	if cfg.COS != nil {
 		runtime.COS = *cfg.COS
+	}
+	if cfg.OCI != nil {
+		runtime.OCI = *cfg.OCI
 	}
 	return runtime
 }
@@ -168,6 +173,7 @@ func applyRuntimeUnchecked(cfg *ServiceConfig, runtime RuntimeConfig) {
 	cfg.B2 = &runtime.B2
 	cfg.OSS = &runtime.OSS
 	cfg.COS = &runtime.COS
+	cfg.OCI = &runtime.OCI
 }
 
 func cloneService(cfg *ServiceConfig) (*ServiceConfig, error) {
@@ -231,7 +237,23 @@ func OpenRuntime(value, settingsKey string) (RuntimeConfig, error) {
 	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
 		return runtime, errors.New("decode database configuration: unexpected trailing data")
 	}
+	fillNewProviderDefaults(&runtime)
 	return runtime, nil
+}
+
+// fillNewProviderDefaults gives object-storage providers added after a document
+// was saved the same defaults a fresh installation has, so the dashboard shows
+// usable presign timeouts instead of zero values. Documents that already carry
+// the provider are left untouched.
+func fillNewProviderDefaults(runtime *RuntimeConfig) {
+	for _, provider := range []*S3CompatibleConfig{&runtime.OCI} {
+		if provider.PresignLinkTimeout == 0 {
+			provider.PresignLinkTimeout = Duration(10 * time.Minute)
+		}
+		if provider.PresignUploadTimeout == 0 {
+			provider.PresignUploadTimeout = Duration(time.Hour)
+		}
+	}
 }
 
 func runtimeAEAD(settingsKey string) (cipher.AEAD, error) {

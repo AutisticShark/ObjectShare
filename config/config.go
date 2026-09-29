@@ -173,6 +173,7 @@ func defaults() *ServiceConfig {
 		B2:  defaultS3CompatibleConfig(""),
 		OSS: defaultS3CompatibleConfig(""),
 		COS: defaultS3CompatibleConfig(""),
+		OCI: defaultS3CompatibleConfig(""),
 	}
 }
 
@@ -360,6 +361,10 @@ func applyEnvironment(cfg *ServiceConfig) error {
 		cfg.COS = defaultS3CompatibleConfig("")
 	}
 	applyS3Environment("COS", cfg.COS, &problems)
+	if cfg.OCI == nil {
+		cfg.OCI = defaultS3CompatibleConfig("")
+	}
+	applyS3Environment("OCI", cfg.OCI, &problems)
 	return errors.Join(problems...)
 }
 
@@ -588,6 +593,15 @@ func (cfg *ServiceConfig) Validate() error {
 	case "cos":
 		if err := validateS3Compatible("cos", cfg.COS, true); err != nil {
 			return err
+		}
+	case "oci":
+		if err := validateS3Compatible("oci", cfg.OCI, true); err != nil {
+			return err
+		}
+		// The compatibility endpoint embeds the tenancy's object storage
+		// namespace, so it cannot be derived from the region alone.
+		if cfg.OCI.Endpoint == "" {
+			return errors.New("oci endpoint is required (https://<namespace>.compat.objectstorage.<region>.oraclecloud.com)")
 		}
 	default:
 		return fmt.Errorf("unsupported storage service %q", cfg.StorageService)

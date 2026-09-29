@@ -11,7 +11,7 @@ ObjectShare is a small self-hosted file sharing service written in Go. Files use
 - Single-file and multiple-file, size-limited uploads with SHA-256 and SHA3-256 checksums
 - Tabler UI with HTMX progressive enhancement and native-form fallbacks
 - Administrator-managed site name, logo, header banner, favicon, tagline, and footer
-- Filesystem, Cloudflare R2, AWS S3, Backblaze B2, Alibaba Cloud OSS, or Tencent Cloud COS object storage
+- Filesystem, Cloudflare R2, AWS S3, Backblaze B2, Alibaba Cloud OSS, Tencent Cloud COS, or Oracle Cloud Object Storage object storage
 - Direct-to-object-storage uploads that avoid reverse-proxy request-body limits
 - PostgreSQL metadata with bounded connection pools
 - Optional per-upload browser encryption and decryption with passphrase-protected account keys, encrypted backups, and per-file sharing keys
@@ -81,10 +81,10 @@ HTMX is intentionally part of the frontend architecture. The native forms are ac
 - [x] AWS S3
 - [x] Backblaze B2
 - [x] Cloudflare R2
+- [x] Oracle Cloud Object Storage
 - [x] Tencent Cloud COS
 - [ ] Google Cloud Storage
 - [ ] Microsoft Azure Blob Storage
-- [ ] Oracle Cloud Object Storage
 
 ### Website workspace
 
@@ -1020,7 +1020,7 @@ Grant the configured identity only read, write, and delete access to the selecte
 
 Use the provider console's equivalent fields when it does not accept S3 CORS JSON directly. Add a separate localhost origin for local browser testing. Avoid wildcard origins for private buckets.
 
-Presigned download timeouts default to `10m`; upload timeouts default to `1h`. Configure them per provider in the dashboard. The legacy first-import variables are `OBJECTSHARE_<PROVIDER>_PRESIGN_TIMEOUT` and `OBJECTSHARE_<PROVIDER>_UPLOAD_PRESIGN_TIMEOUT`, replacing `<PROVIDER>` with `R2`, `S3`, `B2`, `OSS`, or `COS`. Both support a maximum of `168h`. Each direct object upload is a single PUT and is capped at 5 GiB; the UI can upload several such files as a batch, but larger individual objects require S3 multipart-object upload support, which ObjectShare does not currently implement.
+Presigned download timeouts default to `10m`; upload timeouts default to `1h`. Configure them per provider in the dashboard. The legacy first-import variables are `OBJECTSHARE_<PROVIDER>_PRESIGN_TIMEOUT` and `OBJECTSHARE_<PROVIDER>_UPLOAD_PRESIGN_TIMEOUT`, replacing `<PROVIDER>` with `R2`, `S3`, `B2`, `OSS`, `COS`, or `OCI`. Both support a maximum of `168h`. Each direct object upload is a single PUT and is capped at 5 GiB; the UI can upload several such files as a batch, but larger individual objects require S3 multipart-object upload support, which ObjectShare does not currently implement.
 
 Direct uploads are staged. The presigned `PUT` targets a `pending/<file-id>` key, never the key the finished file is served from, so a presigned URL that is replayed after completion or abort cannot replace a finalized file. Finalizing verifies the staged object's size and content type, copies it server-side to the file's real key (the existing read and write permissions cover `CopyObject`), re-checks the size, and deletes the staged copy; aborting or expiring an upload deletes both keys. A replayed `PUT` can still leave an orphan staged object that no file record references, so add a bucket lifecycle rule that expires objects under the `pending/` prefix after a day or two. Uploads authorized before this change were presigned for the final key and are still accepted at completion. Because a direct upload stores the `Content-Type` the browser declared (ObjectShare never sees the bytes to sniff them, unlike proxied uploads), presigned downloads always force `Content-Disposition: attachment` and a neutral `application/octet-stream` response type.
 
@@ -1062,6 +1062,18 @@ See Alibaba Cloud's [AWS SDK compatibility guide](https://www.alibabacloud.com/h
 Select **Tencent COS** in the dashboard and provide its bucket, region, and write-only credentials. The matching legacy seeds use the `OBJECTSHARE_COS_*` prefix. Use the full bucket name including its APPID suffix, such as `objectshare-1250000000`. The endpoint defaults to `https://cos.<region>.myqcloud.com`; override it only when needed. Current COS buckets use virtual-hosted-style requests.
 
 See Tencent Cloud's [S3-compatible configuration guide](https://intl.cloud.tencent.com/document/product/436/34688?lang=en) and [AWS SDK for Go v2 compatibility example](https://cloud.tencent.com/document/product/436/37421).
+
+#### Oracle Cloud Object Storage
+
+Select **Oracle Cloud Object Storage** in the dashboard and provide its bucket, region, endpoint, and write-only credentials. The matching legacy seeds use the `OBJECTSHARE_OCI_*` prefix. ObjectShare talks to Oracle's [Amazon S3 Compatibility API](https://docs.oracle.com/en-us/iaas/Content/Object/Tasks/s3compatibleapi.htm) through the same S3-compatible client as the other providers.
+
+- **Endpoint (required):** `https://<namespace>.compat.objectstorage.<region>.oraclecloud.com`. The host embeds your tenancy's object storage namespace (shown in the console under the tenancy details or on the bucket page), so it cannot be derived from the region and ObjectShare refuses to start with the `oci` service until it is set.
+- **Region:** the OCI region identifier, such as `us-ashburn-1` or `eu-frankfurt-1`; it is used for request signing.
+- **Credentials:** create a **Customer Secret Key** for a user that can read, write, and delete objects in the bucket. Use its generated access key ID and secret as `access_key_id` / `secret_access_key`; they are write-only in the dashboard.
+- **Addressing:** requests use path-style URLs (`<endpoint>/<bucket>/<object>`), which is what Oracle documents for the compatibility endpoint. Direct-upload CORS therefore only needs the endpoint origin.
+- **Bucket CORS:** Oracle configures CORS through the console or CLI (for example `oci os bucket update --namespace-name <namespace> --name <bucket> --cors-rules ...`) rather than the S3 CORS JSON above; allow the exact ObjectShare origin, the `PUT` method, and the `Content-Type` header.
+
+ObjectShare requests optional S3 checksums only when an operation requires them, which keeps requests within what S3-compatible services commonly accept. See Oracle's [Amazon S3 Compatibility API documentation](https://docs.oracle.com/en-us/iaas/Content/Object/Tasks/s3compatibleapi.htm) for the supported operations and any differences from Amazon S3.
 
 ## Production checklist
 

@@ -16,7 +16,7 @@ import (
 )
 
 // S3Compatible implements ObjectStore and DirectUploader through the Amazon S3
-// API. It is shared by S3, R2, B2, OSS, and COS while retaining provider names
+// API. It is shared by S3, R2, B2, OSS, COS, and OCI while retaining provider names
 // in operational errors.
 type S3Compatible struct {
 	provider        string
@@ -68,6 +68,20 @@ func NewCOS(settings *config.COSConfig) (*S3Compatible, error) {
 	return newS3Compatible("COS", settings, "", false)
 }
 
+// NewOCI opens Oracle Cloud Object Storage through its Amazon S3 Compatibility
+// API. Oracle documents path-style addressing on the compat endpoint, whose host
+// embeds the tenancy's namespace, so the endpoint has no region-derived default
+// and must be configured.
+func NewOCI(settings *config.OCIConfig) (*S3Compatible, error) {
+	if settings == nil {
+		return nil, fmt.Errorf("OCI configuration is required")
+	}
+	if settings.Endpoint == "" {
+		return nil, fmt.Errorf("OCI endpoint is required")
+	}
+	return newS3Compatible("OCI", cloneS3Settings(settings), "", true)
+}
+
 func cloneS3Settings(settings *config.S3CompatibleConfig) *config.S3CompatibleConfig {
 	copy := *settings
 	return &copy
@@ -79,6 +93,9 @@ func newS3Compatible(provider string, settings *config.S3CompatibleConfig, sessi
 		// COS and OSS reject the optional streaming checksum trailer that newer
 		// AWS SDK releases otherwise add to compatible PutObject requests.
 		awsconfig.WithRequestChecksumCalculation(aws.RequestChecksumCalculationWhenRequired),
+		// Providers that reject the streaming trailer generally do not implement the
+		// optional checksum-mode header newer SDK releases add to reads either.
+		awsconfig.WithResponseChecksumValidation(aws.ResponseChecksumValidationWhenRequired),
 	}
 	if settings.AccessKeyID != "" {
 		loadOptions = append(loadOptions, awsconfig.WithCredentialsProvider(credentials.NewStaticCredentialsProvider(

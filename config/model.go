@@ -70,6 +70,7 @@ type ServiceConfig struct {
 	B2                 *B2Config          `json:"b2,omitempty"`
 	OSS                *OSSConfig         `json:"oss,omitempty"`
 	COS                *COSConfig         `json:"cos,omitempty"`
+	OCI                *OCIConfig         `json:"oci,omitempty"`
 }
 
 // UploadConfig controls whether people without an account may upload. Account
@@ -257,3 +258,10 @@ type S3Config struct {
 type B2Config = S3CompatibleConfig
 type OSSConfig = S3CompatibleConfig
 type COSConfig = S3CompatibleConfig
+
+// OCIConfig configures Oracle Cloud Object Storage through its Amazon S3
+// Compatibility API. Endpoint is required (for example
+// https://<namespace>.compat.objectstorage.<region>.oraclecloud.com), Region is
+// the OCI region identifier such as us-ashburn-1, and the credentials are a
+// Customer Secret Key pair.
+type OCIConfig = S3CompatibleConfig

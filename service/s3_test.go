@@ -244,3 +244,58 @@ func TestS3CompatibleObjectLifecycleAgainstAnEndpoint(t *testing.T) {
 		t.Fatalf("deleting a missing object must be idempotent: %v", err)
 	}
 }
+
+func TestOCIUsesPathStyleOnItsCompatibilityEndpoint(t *testing.T) {
+	settings := &config.OCIConfig{
+		BucketName: "objectshare-test", Region: "us-ashburn-1", Endpoint: "https://ns.compat.objectstorage.us-ashburn-1.oraclecloud.com",
+		AccessKeyID: "access-key", SecretAccessKey: "secret-key",
+		PresignLinkTimeout: config.Duration(10 * time.Minute), PresignUploadTimeout: config.Duration(time.Hour),
+	}
+	store, err := NewOCI(settings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	upload, err := store.PresignPut(context.Background(), "pending/object-id", 1234, "text/plain")
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsed, err := url.Parse(upload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if parsed.Host != "ns.compat.objectstorage.us-ashburn-1.oraclecloud.com" || parsed.Path != "/objectshare-test/pending/object-id" {
+		t.Fatalf("OCI must address the bucket in the path, got %s", upload)
+	}
+	if !strings.Contains(parsed.Query().Get("X-Amz-SignedHeaders"), "content-length") || !strings.Contains(parsed.Query().Get("X-Amz-Credential"), "/us-ashburn-1/s3/") {
+		t.Fatalf("presigned upload is not bound to size and the OCI region: %s", upload)
+	}
+	if sources := store.DirectUploadPolicy().ConnectSources; len(sources) != 1 || sources[0] != "https://ns.compat.objectstorage.us-ashburn-1.oraclecloud.com" {
+		t.Fatalf("OCI direct upload CSP sources = %v", sources)
+	}
+	download, err := store.PresignGet(context.Background(), "object-id", "report.txt")
+	if err != nil || !strings.Contains(download, "/objectshare-test/object-id") {
+		t.Fatalf("OCI presigned download = %q, %v", download, err)
+	}
+	if _, err := NewOCI(nil); err == nil {
+		t.Fatal("a nil OCI configuration was accepted")
+	}
+	settings.Endpoint = ""
+	if _, err := NewOCI(settings); err == nil || !strings.Contains(err.Error(), "endpoint") {
+		t.Fatalf("OCI without an endpoint = %v", err)
+	}
+}
+
+func TestStorageFactoryBuildsOCI(t *testing.T) {
+	cfg := &config.ServiceConfig{StorageService: "OCI", OCI: &config.OCIConfig{
+		BucketName: "objectshare-test", Region: "us-ashburn-1", Endpoint: "https://ns.compat.objectstorage.us-ashburn-1.oraclecloud.com",
+		AccessKeyID: "access-key", SecretAccessKey: "secret-key",
+		PresignLinkTimeout: config.Duration(time.Minute), PresignUploadTimeout: config.Duration(time.Hour),
+	}}
+	store, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if uploader, ok := store.(DirectUploader); !ok || uploader.DirectUploadPolicy().MaxSize != MaxSinglePartUploadSize {
+		t.Fatalf("the OCI store does not support direct uploads: %T", store)
+	}
+}
