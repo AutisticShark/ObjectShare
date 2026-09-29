@@ -32,12 +32,12 @@ These instructions apply to every change in this repository.
 ## Preserve automation behavior
 
 - Do not delete or silently replace established GitHub Actions workflows. In
-  particular, preserve `release.yml`, `workflow_runs_clean_up.yml`, and their
+  particular, preserve `release.yml`, `workflow-runs-clean-up.yml`, and their
   established triggers and behavior.
 - Secure workflows in place with least-privilege permissions and full commit-SHA
   action pins. Do not mistake a third-party action for unwanted code when the user
   deliberately chose it.
-- `workflow_runs_clean_up.yml` must use `Mattraks/delete-workflow-runs`, retain runs
+- `workflow-runs-clean-up.yml` must use `Mattraks/delete-workflow-runs`, retain runs
   for seven days, and keep at least one run per workflow unless the user requests a
   policy change.
 - Container publication must always support GHCR. Docker Hub must remain optional:
