@@ -216,8 +216,28 @@ func (handler *Handler) finishOAuthLogin(writer http.ResponseWriter, request *ht
 			handler.renderOAuthError(writer, request, "This OAuth account is not linked, and new account registration is disabled.", false)
 			return
 		}
-		if _, emailErr := handler.users.UserByEmail(request.Context(), email); emailErr == nil {
-			handler.renderOAuthError(writer, request, "An ObjectShare account already uses this email. Log in with its password, then link this provider from My account.", false)
+		existing, emailErr := handler.users.UserByEmail(request.Context(), email)
+		if emailErr == nil {
+			// The provider vouches for this address. If the account holding it
+			// never verified it, that account was registered by someone who may
+			// not own the address, so the verified owner takes it over instead of
+			// being locked out of their own email.
+			if existing.EmailVerifiedAt != nil || existing.Role != db.RoleUser || !existing.CanAuthenticate() {
+				handler.renderOAuthError(writer, request, "An ObjectShare account already uses this email. Log in with its password, then link this provider from My account.", false)
+				return
+			}
+			identity.Email = email
+			claimed, claimErr := handler.users.ClaimUnverifiedAccountForOAuth(request.Context(), existing.ID, identity, time.Now().UTC())
+			if claimErr != nil {
+				if errors.Is(claimErr, db.ErrConflict) || errors.Is(claimErr, db.ErrNotFound) {
+					handler.renderOAuthError(writer, request, "An ObjectShare account already uses this email. Log in with its password, then link this provider from My account.", false)
+					return
+				}
+				handler.internalError(writer, request, "claim unverified account for OAuth", claimErr)
+				return
+			}
+			handler.logger.Warn("unverified account claimed by verified OAuth email", "user_id", claimed.ID, "provider", identity.Provider)
+			handler.finishOAuthUser(writer, request, flow, claimed)
 			return
 		} else if !errors.Is(emailErr, db.ErrNotFound) {
 			handler.internalError(writer, request, "check OAuth email", emailErr)
@@ -242,6 +262,11 @@ func (handler *Handler) finishOAuthLogin(writer http.ResponseWriter, request *ht
 		handler.internalError(writer, request, "look up OAuth identity", err)
 		return
 	}
+	handler.finishOAuthUser(writer, request, flow, user)
+}
+
+// finishOAuthUser signs in the account an OAuth login resolved to.
+func (handler *Handler) finishOAuthUser(writer http.ResponseWriter, request *http.Request, flow oauthFlow, user *db.User) {
 	if !user.CanAuthenticate() {
 		handler.renderOAuthError(writer, request, "This ObjectShare account is disabled.", false)
 		return

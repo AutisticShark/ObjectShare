@@ -83,7 +83,8 @@ func TestOAuthLoginCreatesJWTAccountWithoutPersistingProviderToken(t *testing.T)
 func TestOAuthRejectsStateTamperingAndAutomaticEmailLinking(t *testing.T) {
 	repository := newAuthMemoryRepository()
 	hash, _ := appauth.HashPassword("a sufficiently long password")
-	existing := &db.User{ID: "60c628c1-85cb-4463-b895-a629c31bfa55", Email: "user@example.com", DisplayName: "Existing", PasswordHash: hash, Role: db.RoleUser, Active: true, TokenVersion: 1}
+	verifiedAt := time.Now().Add(-time.Hour)
+	existing := &db.User{ID: "60c628c1-85cb-4463-b895-a629c31bfa55", Email: "user@example.com", DisplayName: "Existing", PasswordHash: hash, Role: db.RoleUser, Active: true, TokenVersion: 1, EmailVerifiedAt: &verifiedAt}
 	repository.users[existing.ID] = existing
 	handler := newAuthTestHandler(t, repository, false)
 	provider := &fakeOAuthProvider{key: "github", label: "GitHub", profile: &appauth.OAuthProfile{Subject: "12345", Email: existing.Email, EmailVerified: true, DisplayName: "GitHub User"}}
@@ -355,5 +356,48 @@ func TestOAuthLinkChangesRequireAFreshSignIn(t *testing.T) {
 	}
 	if !strings.Contains(start.Body.String(), "sign in again") {
 		t.Fatalf("a stale session started a provider link: status=%d body=%q", start.Code, start.Body.String())
+	}
+}
+
+func TestVerifiedOAuthEmailReclaimsAnUnverifiedSquattedAccount(t *testing.T) {
+	repository := newAuthMemoryRepository()
+	squatterHash, _ := appauth.HashPassword("the squatter's password")
+	squatted := &db.User{ID: "60c628c1-85cb-4463-b895-a629c31bfa55", Email: "owner@example.com", DisplayName: "Squatter", PasswordHash: squatterHash, Role: db.RoleUser, Active: true, TokenVersion: 3,
+		MFA: db.MFAState{Method: "totp"}}
+	repository.users[squatted.ID] = squatted
+	repository.identities["github\x00attackers-account"] = &db.OAuthIdentity{UserID: squatted.ID, Provider: "github", Subject: "attackers-account", Email: "attacker@example.net"}
+	handler := newAuthTestHandler(t, repository, false)
+	oldToken, _ := issueTestJWT(t, handler, squatted)
+	provider := &fakeOAuthProvider{key: "google", label: "Google", profile: &appauth.OAuthProfile{Subject: "real-owner", Email: squatted.Email, EmailVerified: true, DisplayName: "Real Owner"}}
+	handler.oauthProviders = map[string]appauth.OAuthProvider{"google": provider}
+
+	_, cookie := startOAuth(t, handler, "google", "", nil)
+	callback := oauthRouteRequest(http.MethodGet, "/oauth/google/callback?code=code&state="+url.QueryEscape(provider.state), "google")
+	callback.AddCookie(cookie)
+	response := httptest.NewRecorder()
+	handler.OAuthCallback(response, callback)
+	if response.Code != http.StatusSeeOther || response.Header().Get("Location") != "/account" {
+		t.Fatalf("verified owner was not signed in: status=%d location=%q body=%q", response.Code, response.Header().Get("Location"), response.Body.String())
+	}
+	claimed := repository.users[squatted.ID]
+	if len(repository.users) != 1 || claimed.EmailVerifiedAt == nil || claimed.PasswordHash != "" || claimed.MFA.Method != "" || claimed.TokenVersion != 4 {
+		t.Fatalf("squatter kept access: %#v", claimed)
+	}
+	if len(repository.identities) != 1 || repository.identities["google\x00real-owner"] == nil {
+		t.Fatalf("the squatter's linked identity survived: %#v", repository.identities)
+	}
+	if appauth.VerifyPassword("the squatter's password", claimed.PasswordHash) {
+		t.Fatal("the squatter's password still works")
+	}
+	if _, err := handler.jwt.Parse(oldToken); err != nil {
+		t.Fatalf("test setup: %v", err)
+	}
+	// The squatter's outstanding JWT now carries a stale token version and is refused.
+	request := httptest.NewRequest(http.MethodGet, "/account", nil)
+	request.AddCookie(&http.Cookie{Name: "objectshare_jwt", Value: oldToken})
+	var served *identity
+	handler.Authenticate(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) { served = currentIdentity(r) })).ServeHTTP(httptest.NewRecorder(), request)
+	if served != nil {
+		t.Fatal("a JWT issued before the takeover still authenticates")
 	}
 }

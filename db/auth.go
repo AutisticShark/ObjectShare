@@ -102,6 +102,40 @@ func (repo *GormRepository) LinkOAuthIdentity(ctx context.Context, identity *OAu
 	return translateConflict(repo.connection.WithContext(ctx).Create(identity).Error)
 }
 
+// ClaimUnverifiedAccountForOAuth hands an account whose email address was never
+// verified to the person who just proved, through an OAuth provider, that they
+// control that address. Anyone can register an address they do not own, so the
+// unverified holder must not keep a way in: the password, MFA enrolment, and
+// every linked login are removed and all issued JWTs are invalidated before the
+// provider identity is attached and the address is marked verified.
+func (repo *GormRepository) ClaimUnverifiedAccountForOAuth(ctx context.Context, userID string, identity *OAuthIdentity, now time.Time) (*User, error) {
+	var claimed User
+	err := repo.connection.WithContext(ctx).Transaction(func(transaction *gorm.DB) error {
+		if err := transaction.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ?", userID).First(&claimed).Error; errors.Is(err, gorm.ErrRecordNotFound) {
+			return ErrNotFound
+		} else if err != nil {
+			return err
+		}
+		if claimed.EmailVerifiedAt != nil || claimed.Role != RoleUser || !claimed.CanAuthenticate() {
+			return ErrConflict
+		}
+		if err := transaction.Where("user_id = ?", claimed.ID).Delete(&OAuthIdentity{}).Error; err != nil {
+			return err
+		}
+		claimed.PasswordHash, claimed.MFA, claimed.TokenVersion = "", MFAState{}, claimed.TokenVersion+1
+		claimed.EmailVerifiedAt, claimed.EmailVerificationHash, claimed.EmailVerificationExpiresAt = &now, "", nil
+		if err := transaction.Model(&claimed).Select("PasswordHash", "MFA", "TokenVersion", "EmailVerifiedAt", "EmailVerificationHash", "EmailVerificationExpiresAt").Updates(&claimed).Error; err != nil {
+			return err
+		}
+		identity.UserID = claimed.ID
+		return translateConflict(transaction.Create(identity).Error)
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &claimed, nil
+}
+
 func (repo *GormRepository) UnlinkOAuthIdentity(ctx context.Context, userID, provider string) error {
 	return repo.connection.WithContext(ctx).Transaction(func(transaction *gorm.DB) error {
 		var user User

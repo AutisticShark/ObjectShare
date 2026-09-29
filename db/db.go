@@ -83,6 +83,7 @@ type AuthRepository interface {
 	OAuthUser(context.Context, string, string) (*User, error)
 	OAuthIdentities(context.Context, string) ([]OAuthIdentity, error)
 	LinkOAuthIdentity(context.Context, *OAuthIdentity) error
+	ClaimUnverifiedAccountForOAuth(context.Context, string, *OAuthIdentity, time.Time) (*User, error)
 	UnlinkOAuthIdentity(context.Context, string, string) error
 	ListUsers(context.Context) ([]User, error)
 	AdminUserDirectory(context.Context, string, string, int) (AdminDirectory, error)

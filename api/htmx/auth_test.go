@@ -136,6 +136,25 @@ func (repository *authMemoryRepository) OAuthIdentities(_ context.Context, userI
 	}
 	return identities, nil
 }
+func (repository *authMemoryRepository) ClaimUnverifiedAccountForOAuth(_ context.Context, userID string, identity *db.OAuthIdentity, now time.Time) (*db.User, error) {
+	user, ok := repository.users[userID]
+	if !ok {
+		return nil, db.ErrNotFound
+	}
+	if user.EmailVerifiedAt != nil || user.Role != db.RoleUser || !user.CanAuthenticate() {
+		return nil, db.ErrConflict
+	}
+	for key, existing := range repository.identities {
+		if existing.UserID == userID {
+			delete(repository.identities, key)
+		}
+	}
+	user.PasswordHash, user.MFA, user.TokenVersion, user.EmailVerifiedAt = "", db.MFAState{}, user.TokenVersion+1, &now
+	identity.UserID = userID
+	copy := *identity
+	repository.identities[identity.Provider+"\x00"+identity.Subject] = &copy
+	return user, nil
+}
 func (repository *authMemoryRepository) LinkOAuthIdentity(_ context.Context, identity *db.OAuthIdentity) error {
 	key := identity.Provider + "\x00" + identity.Subject
 	if _, exists := repository.identities[key]; exists {

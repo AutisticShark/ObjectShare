@@ -1,9 +1,12 @@
 package db
 
 import (
+	"errors"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 func TestPostgresReserveLoginAttemptIsAtomicAndClearsOnSuccess(t *testing.T) {
@@ -56,5 +59,34 @@ func TestPostgresReserveLoginAttemptIsAtomicAndClearsOnSuccess(t *testing.T) {
 	}
 	if allowed, _, err = repo.ReserveLoginAttempt(t.Context(), key, now.Add(loginLockout+time.Second)); err != nil || !allowed {
 		t.Fatalf("lockout did not expire: %v %v", allowed, err)
+	}
+}
+
+func TestPostgresClaimUnverifiedAccountRemovesTheSquattersAccess(t *testing.T) {
+	repo := creditTestRepository(t)
+	suffix := uuid.NewString()
+	squatted := &User{ID: uuid.NewString(), Email: "owner-" + suffix + "@example.com", DisplayName: "Squatter", PasswordHash: "$argon2id$squatter", Role: RoleUser, Active: true, TokenVersion: 2, MFA: MFAState{Method: "totp"}}
+	if err := repo.CreateUser(t.Context(), squatted); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.LinkOAuthIdentity(t.Context(), &OAuthIdentity{UserID: squatted.ID, Provider: "github", Subject: "attacker-" + suffix, Email: "attacker@example.net"}); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	owner := &OAuthIdentity{Provider: "google", Subject: "owner-" + suffix, Email: squatted.Email}
+	claimed, err := repo.ClaimUnverifiedAccountForOAuth(t.Context(), squatted.ID, owner, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if claimed.PasswordHash != "" || claimed.MFA.Method != "" || claimed.TokenVersion != 3 || claimed.EmailVerifiedAt == nil {
+		t.Fatalf("claimed account kept the squatter's credentials: %#v", claimed)
+	}
+	identities, err := repo.OAuthIdentities(t.Context(), squatted.ID)
+	if err != nil || len(identities) != 1 || identities[0].Provider != "google" {
+		t.Fatalf("identities after claim: %#v %v", identities, err)
+	}
+	// A verified account can no longer be claimed.
+	if _, err = repo.ClaimUnverifiedAccountForOAuth(t.Context(), squatted.ID, &OAuthIdentity{Provider: "github", Subject: "later-" + suffix, Email: squatted.Email}, now); !errors.Is(err, ErrConflict) {
+		t.Fatalf("second claim = %v, want ErrConflict", err)
 	}
 }
