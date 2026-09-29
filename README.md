@@ -740,6 +740,8 @@ receipt. Canceled, failed, or ambiguous gateway attempts must be reconciled by a
 operator before releasing a reservation; do not clear a reservation while it can
 still be charged. ObjectShare does not automatically void or refund these attempts.
 
+When a gateway confirms a captured top-up payment that ObjectShare cannot apply (an unknown, mismatched or already-settled top-up), it logs an `ERROR` entry, "captured payment could not be applied; manual reconciliation required", with the gateway, payment ID, top-up ID, amount and currency. It also stores one row per gateway payment in the `payment_reconciliations` table, so the payment survives log rotation and webhook retries do not duplicate it. The customer sees the payment reference and is told not to pay again. Resolve each row at the provider (apply, refund or void) and then delete it.
+
 Payments, wallet ledger entries, invoice status, and plan activation commit in
 one PostgreSQL transaction. Repeated or concurrent receipts cannot charge the
 wallet or activate the plan twice. Later catalog edits do not alter an already

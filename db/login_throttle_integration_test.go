@@ -132,3 +132,18 @@ func TestPostgresReserveGuestUploadEnforcesTheGlobalPendingCap(t *testing.T) {
 		t.Fatalf("%d parallel 300-byte reservations were granted under a 1000-byte cap, want 3", granted)
 	}
 }
+
+func TestPostgresPaymentReconciliationIsIdempotentPerGatewayPayment(t *testing.T) {
+	repo := creditTestRepository(t)
+	suffix := uuid.NewString()
+	record := PaymentReconciliation{Gateway: "stripe", GatewayPaymentID: "pi_" + suffix, TopUpID: uuid.NewString(), AmountMinor: 2500, Currency: "usd", Reason: "conflict"}
+	for range 3 {
+		if err := repo.RecordPaymentReconciliation(t.Context(), record); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var count int64
+	if err := repo.connection.Model(&PaymentReconciliation{}).Where("gateway = ? AND gateway_payment_id = ?", "stripe", "pi_"+suffix).Count(&count).Error; err != nil || count != 1 {
+		t.Fatalf("reconciliation rows = %d, err %v", count, err)
+	}
+}

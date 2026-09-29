@@ -384,9 +384,11 @@ func (handler *Handler) PayPalWebhook(writer http.ResponseWriter, request *http.
 			http.Error(writer, "Invalid PayPal top-up metadata.", http.StatusUnprocessableEntity)
 			return
 		}
-		_, applyErr := handler.billing.ApplyCreditTopUp(request.Context(), db.CreditPayment{TopUpID: event.Resource.CustomID,
-			Gateway: db.BillingGatewayPayPal, GatewayPaymentID: event.Resource.ID, Currency: event.Resource.Amount.Currency, AmountMinor: amountMinor}, time.Now().UTC())
+		paypalPayment := db.CreditPayment{TopUpID: event.Resource.CustomID,
+			Gateway: db.BillingGatewayPayPal, GatewayPaymentID: event.Resource.ID, Currency: event.Resource.Amount.Currency, AmountMinor: amountMinor}
+		_, applyErr := handler.billing.ApplyCreditTopUp(request.Context(), paypalPayment, time.Now().UTC())
 		if errors.Is(applyErr, db.ErrNotFound) || errors.Is(applyErr, db.ErrInvalidCredit) || errors.Is(applyErr, db.ErrConflict) {
+			handler.recordUnappliedPayment(request, paypalPayment, applyErr)
 			http.Error(writer, "PayPal top-up did not match a pending account payment.", http.StatusUnprocessableEntity)
 			return
 		}

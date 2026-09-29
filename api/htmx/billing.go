@@ -1,6 +1,7 @@
 package htmx
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"math"
@@ -156,22 +157,60 @@ func (handler *Handler) PayPalTopUpReturn(writer http.ResponseWriter, request *h
 		handler.internalError(writer, request, "capture PayPal credit top-up", err)
 		return
 	}
-	amountMinor, err := parseMinorAmount(capture.Amount.Value)
-	if err != nil || capture.CustomID != topUp.ID || capture.ID == "" || capture.Status != "COMPLETED" {
+	amountMinor, amountErr := parseMinorAmount(capture.Amount.Value)
+	captured := capture.Status == "COMPLETED" && capture.ID != ""
+	payment := db.CreditPayment{TopUpID: topUp.ID, Gateway: db.BillingGatewayPayPal,
+		GatewayPaymentID: capture.ID, Currency: capture.Amount.Currency, AmountMinor: amountMinor}
+	if amountErr != nil || capture.CustomID != topUp.ID || !captured {
+		if captured {
+			// The customer was charged; never tell them the capture is invalid.
+			handler.recordUnappliedPayment(request, payment, errors.New("PayPal capture does not match the top-up"))
+			handler.paymentReceivedButUnapplied(writer, capture.ID)
+			return
+		}
 		http.Error(writer, "PayPal capture does not match this top-up.", http.StatusUnprocessableEntity)
 		return
 	}
-	_, err = handler.billing.ApplyCreditTopUp(request.Context(), db.CreditPayment{TopUpID: topUp.ID, Gateway: db.BillingGatewayPayPal,
-		GatewayPaymentID: capture.ID, Currency: capture.Amount.Currency, AmountMinor: amountMinor}, time.Now().UTC())
+	_, err = handler.billing.ApplyCreditTopUp(request.Context(), payment, time.Now().UTC())
 	if err != nil {
-		if errors.Is(err, db.ErrInvalidCredit) || errors.Is(err, db.ErrConflict) {
-			http.Error(writer, "PayPal capture does not match this top-up.", http.StatusUnprocessableEntity)
+		if errors.Is(err, db.ErrNotFound) || errors.Is(err, db.ErrInvalidCredit) || errors.Is(err, db.ErrConflict) {
+			handler.recordUnappliedPayment(request, payment, err)
+			handler.paymentReceivedButUnapplied(writer, capture.ID)
 			return
 		}
+		handler.logger.Error("apply captured PayPal top-up failed; the webhook or a retry may still settle it", "payment_id", capture.ID, "top_up_id", topUp.ID, "error", err)
 		handler.internalError(writer, request, "apply PayPal credit top-up", err)
 		return
 	}
 	http.Redirect(writer, request, "/invoices/"+topUp.ID, http.StatusSeeOther)
+}
+
+// recordUnappliedPayment is called when a gateway has confirmed a captured
+// payment that could not be applied to an account. It logs at error level with
+// the payment identifiers and stores a reconciliation record, so the money is
+// never silently lost behind a bare HTTP error.
+func (handler *Handler) recordUnappliedPayment(request *http.Request, payment db.CreditPayment, cause error) {
+	handler.logger.Error("captured payment could not be applied; manual reconciliation required",
+		"gateway", payment.Gateway, "payment_id", payment.GatewayPaymentID, "top_up_id", payment.TopUpID,
+		"amount_minor", payment.AmountMinor, "currency", payment.Currency, "error", cause)
+	reconciler, ok := handler.billing.(db.PaymentReconciler)
+	if !ok {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(request.Context()), 5*time.Second)
+	defer cancel()
+	if err := reconciler.RecordPaymentReconciliation(ctx, db.PaymentReconciliation{
+		Gateway: payment.Gateway, GatewayPaymentID: payment.GatewayPaymentID, TopUpID: payment.TopUpID,
+		AmountMinor: payment.AmountMinor, Currency: payment.Currency, Reason: cause.Error(),
+	}); err != nil {
+		handler.logger.Error("store payment reconciliation record", "gateway", payment.Gateway, "payment_id", payment.GatewayPaymentID, "error", err)
+	}
+}
+
+// paymentReceivedButUnapplied tells a customer whose payment was captured that
+// it has been recorded, instead of claiming the payment is invalid.
+func (handler *Handler) paymentReceivedButUnapplied(writer http.ResponseWriter, paymentID string) {
+	http.Error(writer, "Your payment was received but could not be applied to your account automatically. It has been recorded for review (reference "+paymentID+"). Contact the site administrator with this reference; do not pay again.", http.StatusUnprocessableEntity)
 }
 
 // Legacy forms now generate an invoice without taking payment.

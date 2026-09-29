@@ -29,6 +29,8 @@ type entitlementRepository struct {
 	transactions  []db.CreditTransaction
 	purchaseErr   error
 	adjustment    *creditAdjustment
+	applyErr      error
+	reconciled    []db.PaymentReconciliation
 }
 
 type creditAdjustment struct {
@@ -97,7 +99,14 @@ func (repo *entitlementRepository) CreditTopUpByID(_ context.Context, id string)
 }
 func (repo *entitlementRepository) ApplyCreditTopUp(_ context.Context, payment db.CreditPayment, _ time.Time) (bool, error) {
 	repo.creditPayment = &payment
+	if repo.applyErr != nil {
+		return false, repo.applyErr
+	}
 	return true, nil
+}
+func (repo *entitlementRepository) RecordPaymentReconciliation(_ context.Context, record db.PaymentReconciliation) error {
+	repo.reconciled = append(repo.reconciled, record)
+	return nil
 }
 func (repo *entitlementRepository) CreditTransactions(context.Context, string, int) ([]db.CreditTransaction, error) {
 	return repo.transactions, nil

@@ -204,9 +204,11 @@ func (handler *Handler) StripeWebhook(writer http.ResponseWriter, request *http.
 			http.Error(writer, "Invalid Stripe top-up metadata.", http.StatusUnprocessableEntity)
 			return
 		}
-		_, err = handler.billing.ApplyCreditTopUp(request.Context(), db.CreditPayment{TopUpID: topUpID, Gateway: db.BillingGatewayStripe,
-			GatewayPaymentID: session.PaymentIntent, Currency: session.Currency, AmountMinor: session.AmountTotal}, time.Now().UTC())
+		stripePayment := db.CreditPayment{TopUpID: topUpID, Gateway: db.BillingGatewayStripe,
+			GatewayPaymentID: session.PaymentIntent, Currency: session.Currency, AmountMinor: session.AmountTotal}
+		_, err = handler.billing.ApplyCreditTopUp(request.Context(), stripePayment, time.Now().UTC())
 		if errors.Is(err, db.ErrNotFound) || errors.Is(err, db.ErrInvalidCredit) || errors.Is(err, db.ErrConflict) {
+			handler.recordUnappliedPayment(request, stripePayment, err)
 			http.Error(writer, "Stripe top-up did not match a pending account payment.", http.StatusUnprocessableEntity)
 			return
 		}

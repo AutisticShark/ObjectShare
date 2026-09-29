@@ -254,7 +254,7 @@ func openPostgres(ctx context.Context, cfg *config.DatabaseConfig, pgxConfig *pg
 			return nil, fmt.Errorf("migrate billing events: %w", err)
 		}
 	}
-	if err := migration.AutoMigrate(&User{}, &ClientKeyVault{}, &OAuthIdentity{}, &RevokedToken{}, &LoginThrottle{}, &RateLimitBucket{}, &FileList{}, &ApplicationSetting{}, &PaidPlan{}, &Subscription{}, &BillingEvent{}, &BillingCheckout{}, &CreditTopUp{}, &CreditTransaction{}, &Invoice{}); err != nil {
+	if err := migration.AutoMigrate(&User{}, &ClientKeyVault{}, &OAuthIdentity{}, &RevokedToken{}, &LoginThrottle{}, &RateLimitBucket{}, &FileList{}, &ApplicationSetting{}, &PaidPlan{}, &Subscription{}, &BillingEvent{}, &BillingCheckout{}, &CreditTopUp{}, &CreditTransaction{}, &Invoice{}, &PaymentReconciliation{}); err != nil {
 		_ = migration.Rollback().Error
 		_ = sqlDB.Close()
 		return nil, fmt.Errorf("migrate PostgreSQL: %w", err)
