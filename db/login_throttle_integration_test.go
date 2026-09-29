@@ -195,3 +195,22 @@ func TestPostgresLegacySessionsCleanupOnlyDropsTheSessionShape(t *testing.T) {
 }
 
 var errRollbackSessionsTest = errors.New("roll back the scratch schema")
+
+func TestPostgresRehashPasswordOnlyReplacesTheVerifiedHash(t *testing.T) {
+	repo := creditTestRepository(t)
+	user := &User{ID: uuid.NewString(), Email: uuid.NewString() + "@example.com", PasswordHash: "old-hash", Role: RoleUser, Active: true, TokenVersion: 3}
+	if err := repo.CreateUser(t.Context(), user); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.RehashPassword(t.Context(), user.ID, "old-hash", "new-hash"); err != nil {
+		t.Fatal(err)
+	}
+	// A hash changed in the meantime (for example a password change) must not be overwritten.
+	if err := repo.RehashPassword(t.Context(), user.ID, "old-hash", "stale-upgrade"); err != nil {
+		t.Fatal(err)
+	}
+	stored, err := repo.UserByID(t.Context(), user.ID)
+	if err != nil || stored.PasswordHash != "new-hash" || stored.TokenVersion != 3 {
+		t.Fatalf("stored = %#v, err %v", stored, err)
+	}
+}

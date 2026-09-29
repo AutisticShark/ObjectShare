@@ -425,7 +425,27 @@ func (handler *Handler) authenticateCredentials(request *http.Request, emailValu
 	if err := handler.users.ClearLoginFailures(request.Context(), throttleKey); err != nil {
 		handler.logger.Error("clear login failures", "error", err)
 	}
+	handler.upgradePasswordHash(request, user, password)
 	return user, false, time.Time{}, nil
+}
+
+// upgradePasswordHash replaces a hash made with older Argon2id parameters after a
+// successful login, when the plaintext is available. It is best effort: a
+// failure is logged and never blocks the login.
+func (handler *Handler) upgradePasswordHash(request *http.Request, user *db.User, password string) {
+	if !appauth.NeedsRehash(user.PasswordHash) {
+		return
+	}
+	upgraded, err := appauth.HashPassword(password)
+	if err != nil {
+		handler.logger.Warn("rehash password with current parameters", "user_id", user.ID, "error", err)
+		return
+	}
+	if err := handler.users.RehashPassword(request.Context(), user.ID, user.PasswordHash, upgraded); err != nil {
+		handler.logger.Warn("store upgraded password hash", "user_id", user.ID, "error", err)
+		return
+	}
+	user.PasswordHash = upgraded
 }
 
 func (handler *Handler) SignupPage(writer http.ResponseWriter, request *http.Request) {

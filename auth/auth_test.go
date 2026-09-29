@@ -1,11 +1,16 @@
 package auth
 
 import (
+	"bytes"
+	"encoding/base64"
+	"fmt"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"golang.org/x/crypto/argon2"
 )
 
 func TestPasswordHashRoundTrip(t *testing.T) {
@@ -126,6 +131,38 @@ func TestParallelHashingAndVerificationStillWorkThroughTheGate(t *testing.T) {
 	for ok := range results {
 		if !ok {
 			t.Fatal("parallel verification returned a wrong answer")
+		}
+	}
+}
+
+// legacyHash builds a valid Argon2id hash with weaker parameters than the
+// current ones, as an earlier release could have stored.
+func legacyHash(t *testing.T, password string, memory, iterations uint32, threads uint8) string {
+	t.Helper()
+	salt := bytes.Repeat([]byte{7}, 16)
+	key := argon2.IDKey([]byte(password), salt, iterations, memory, threads, 32)
+	return fmt.Sprintf("$argon2id$v=%d$m=%d,t=%d,p=%d$%s$%s", argon2.Version, memory, iterations, threads,
+		base64.RawStdEncoding.EncodeToString(salt), base64.RawStdEncoding.EncodeToString(key))
+}
+
+func TestNeedsRehashDetectsOutdatedParameters(t *testing.T) {
+	current, err := HashPassword("a sufficiently long password")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if NeedsRehash(current) {
+		t.Fatal("a hash made with the current parameters wants a rehash")
+	}
+	weaker := legacyHash(t, "a sufficiently long password", 19*1024, 2, 1)
+	if !VerifyPassword("a sufficiently long password", weaker) {
+		t.Fatal("test setup: the legacy hash does not verify")
+	}
+	if !NeedsRehash(weaker) {
+		t.Fatal("a hash with weaker parameters was not flagged")
+	}
+	for _, unparsable := range []string{"", "plain", "$bcrypt$x$y$z$w", "$argon2id$v=19$m=1$x"} {
+		if NeedsRehash(unparsable) {
+			t.Errorf("%q cannot verify, so it must not be reported as upgradable", unparsable)
 		}
 	}
 }

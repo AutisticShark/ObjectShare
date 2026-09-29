@@ -3,8 +3,10 @@ package htmx
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"mime/multipart"
@@ -23,6 +25,7 @@ import (
 	"github.com/AutisticShark/ObjectShare/db"
 	"github.com/AutisticShark/ObjectShare/service"
 	"github.com/go-chi/chi/v5"
+	"golang.org/x/crypto/argon2"
 )
 
 type authMemoryRepository struct {
@@ -393,6 +396,12 @@ func (repository *authMemoryRepository) LoginAllowed(_ context.Context, key stri
 		return false, time.Now().Add(15 * time.Minute), nil
 	}
 	return true, time.Time{}, nil
+}
+func (repository *authMemoryRepository) RehashPassword(_ context.Context, id, oldHash, newHash string) error {
+	if user, ok := repository.users[id]; ok && user.PasswordHash == oldHash {
+		user.PasswordHash = newHash
+	}
+	return nil
 }
 func (repository *authMemoryRepository) ReserveLoginAttempt(_ context.Context, key string, _ time.Time) (bool, time.Time, error) {
 	repository.throttleMu.Lock()
@@ -1331,5 +1340,40 @@ func TestSetupRequiresTheConfiguredTokenWhenOneIsSet(t *testing.T) {
 	}
 	if response := submit("a-sufficiently-long-setup-token"); response.Code != http.StatusSeeOther || len(repository.users) != 1 {
 		t.Fatalf("setup with the right token: status=%d users=%d body=%q", response.Code, len(repository.users), response.Body.String())
+	}
+}
+
+func TestLoginUpgradesAnOutdatedPasswordHashWithoutEndingSessions(t *testing.T) {
+	repository := newAuthMemoryRepository()
+	password := "a sufficiently long password"
+	salt := bytes.Repeat([]byte{9}, 16)
+	weak := fmt.Sprintf("$argon2id$v=%d$m=%d,t=%d,p=%d$%s$%s", argon2.Version, 19*1024, 2, 1,
+		base64.RawStdEncoding.EncodeToString(salt), base64.RawStdEncoding.EncodeToString(argon2.IDKey([]byte(password), salt, 2, 19*1024, 1, 32)))
+	user := &db.User{ID: "60c628c1-85cb-4463-b895-a629c31bfa55", Email: "user@example.com", DisplayName: "User", PasswordHash: weak, Role: db.RoleUser, Active: true, TokenVersion: 4}
+	repository.users[user.ID] = user
+	handler := newAuthTestHandler(t, repository, false)
+
+	login := func(candidate string) int {
+		request := httptest.NewRequest(http.MethodPost, "/api/v1/auth/login", strings.NewReader(`{"email":"user@example.com","password":"`+candidate+`"}`))
+		request.Header.Set("Content-Type", "application/json")
+		response := httptest.NewRecorder()
+		handler.APILogin(response, request)
+		return response.Code
+	}
+	if code := login("a completely different password"); code != http.StatusUnauthorized || repository.users[user.ID].PasswordHash != weak {
+		t.Fatalf("a failed login changed the stored hash or was accepted: %d", code)
+	}
+	if code := login(password); code != http.StatusOK {
+		t.Fatalf("login status = %d", code)
+	}
+	stored := repository.users[user.ID]
+	if stored.PasswordHash == weak || appauth.NeedsRehash(stored.PasswordHash) || !appauth.VerifyPassword(password, stored.PasswordHash) {
+		t.Fatalf("the hash was not upgraded to the current parameters: %q", stored.PasswordHash)
+	}
+	if stored.TokenVersion != 4 {
+		t.Fatalf("rehashing ended existing sessions: token version %d", stored.TokenVersion)
+	}
+	if code := login(password); code != http.StatusOK {
+		t.Fatalf("login with the upgraded hash = %d", code)
 	}
 }

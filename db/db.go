@@ -111,6 +111,10 @@ type AuthRepository interface {
 	UpdateProfile(context.Context, string, string, string) error
 	UpdateDarkMode(context.Context, string, bool) error
 	UpdatePassword(context.Context, string, string) (*User, error)
+	// RehashPassword replaces a password hash with an upgraded hash of the same
+	// password, only if the stored hash is still the one that was verified. It
+	// does not change the token version, so existing sessions stay valid.
+	RehashPassword(ctx context.Context, id, oldHash, newHash string) error
 	AdminUpdateUser(context.Context, string, string, bool) error
 	AdminModerateUser(context.Context, string, string) error
 	UpdateUploadQuota(context.Context, string, int64) error

@@ -127,6 +127,21 @@ func VerifyPassword(password, encoded string) bool {
 	return subtle.ConstantTimeCompare(got, want) == 1
 }
 
+// NeedsRehash reports whether a stored password hash was made with different
+// Argon2id parameters than HashPassword uses now, so a successful login can
+// upgrade it. Hashes that cannot be parsed report false: they never verify, so
+// there is nothing to upgrade.
+func NeedsRehash(encoded string) bool {
+	parts := strings.Split(encoded, "$")
+	if len(parts) != 6 || parts[1] != "argon2id" {
+		return false
+	}
+	if parts[2] != fmt.Sprintf("v=%d", argon2.Version) {
+		return true
+	}
+	return parts[3] != fmt.Sprintf("m=%d,t=%d,p=%d", argonMemory, argonTime, argonThreads)
+}
+
 // DummyPasswordHash returns an Argon2id hash of a random, never-disclosed
 // password. It gives callers a real verification to run for unknown or
 // passwordless accounts so timing does not reveal them. The password is random

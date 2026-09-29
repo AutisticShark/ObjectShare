@@ -236,6 +236,11 @@ func (repo *GormRepository) UpdatePassword(ctx context.Context, id, passwordHash
 	return &updated, err
 }
 
+func (repo *GormRepository) RehashPassword(ctx context.Context, id, oldHash, newHash string) error {
+	return repo.connection.WithContext(ctx).Model(&User{}).Where("id = ? AND password_hash = ?", id, oldHash).
+		Update("password_hash", newHash).Error
+}
+
 func (repo *GormRepository) AdminUpdateUser(ctx context.Context, id, role string, active bool) error {
 	return repo.connection.WithContext(ctx).Transaction(func(transaction *gorm.DB) error {
 		if err := transaction.Exec("LOCK TABLE users IN EXCLUSIVE MODE").Error; err != nil {
