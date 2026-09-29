@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"github.com/AutisticShark/ObjectShare/config"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
@@ -13,6 +12,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/AutisticShark/ObjectShare/config"
 
 	appauth "github.com/AutisticShark/ObjectShare/auth"
 	"github.com/AutisticShark/ObjectShare/db"
@@ -335,5 +336,50 @@ func TestModerationUploadResultsDoNotLeakFileNames(t *testing.T) {
 				t.Fatal("results can be cached")
 			}
 		}
+	}
+}
+
+// countingUserRepository counts owner lookups made through UserByID.
+type countingUserRepository struct {
+	*authMemoryRepository
+	lookups int
+}
+
+func (repository *countingUserRepository) UserByID(ctx context.Context, id string) (*db.User, error) {
+	repository.lookups++
+	return repository.authMemoryRepository.UserByID(ctx, id)
+}
+
+func TestOwnerModerationIsLookedUpOncePerRequest(t *testing.T) {
+	handler, repo, _, file, owner := sharingTestHandler(t)
+	owner.ModerationStatus = db.ModerationShadowbanned
+	counting := &countingUserRepository{authMemoryRepository: repo}
+	handler.users = counting
+
+	request := httptest.NewRequest(http.MethodGet, "/file/"+file.FileID, nil)
+	request = request.WithContext(withRequestMemo(request.Context()))
+	for range 3 {
+		if got := handler.fileModeration(request, file); got != db.ModerationShadowbanned {
+			t.Fatalf("moderation = %q", got)
+		}
+	}
+	if counting.lookups != 1 {
+		t.Fatalf("owner looked up %d times within one request, want once", counting.lookups)
+	}
+
+	// A different request must see the current state, not a cached one.
+	owner.ModerationStatus = db.ModerationNone
+	fresh := httptest.NewRequest(http.MethodGet, "/file/"+file.FileID, nil)
+	fresh = fresh.WithContext(withRequestMemo(fresh.Context()))
+	if got := handler.fileModeration(fresh, file); got != db.ModerationNone || counting.lookups != 2 {
+		t.Fatalf("second request: moderation=%q lookups=%d", got, counting.lookups)
+	}
+
+	// Without a memo (a handler called outside the router) it still works.
+	bare := httptest.NewRequest(http.MethodGet, "/file/"+file.FileID, nil)
+	handler.fileModeration(bare, file)
+	handler.fileModeration(bare, file)
+	if counting.lookups != 4 {
+		t.Fatalf("lookups without a memo = %d, want one per call", counting.lookups-2)
 	}
 }

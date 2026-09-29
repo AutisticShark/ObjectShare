@@ -70,6 +70,7 @@ const adminExistsCacheTTL = time.Minute
 
 func (handler *Handler) Authenticate(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		request = request.WithContext(withRequestMemo(request.Context()))
 		if handler.users == nil {
 			next.ServeHTTP(writer, request)
 			return
