@@ -674,7 +674,7 @@ func retentionEligibilitySQLAt(now time.Time, guestBefore, unpaidBefore *time.Ti
 		eligibilityArgs = append(eligibilityArgs, *guestBefore)
 	}
 	if unpaidBefore != nil {
-		eligibility = append(eligibility, `(f.file_owner IS NOT NULL AND EXISTS (SELECT 1 FROM users AS u WHERE u.id = f.file_owner AND u.is_paid = FALSE) AND ((EXISTS (SELECT 1 FROM subscriptions AS s JOIN paid_plans AS p ON p.id = s.plan_id WHERE s.user_id = f.file_owner AND s.status IN ('active','trialing') AND s.current_period_end > ? AND p.retention_days > 0 AND f.created_at <= ? - (p.retention_days * INTERVAL '1 day'))) OR (NOT EXISTS (SELECT 1 FROM subscriptions AS s WHERE s.user_id = f.file_owner AND s.status IN ('active','trialing') AND s.current_period_end > ?) AND f.created_at <= ?)))`)
+		eligibility = append(eligibility, `(f.file_owner IS NOT NULL AND EXISTS (SELECT 1 FROM users AS u WHERE u.id = f.file_owner AND u.is_paid = FALSE) AND ((EXISTS (SELECT 1 FROM subscriptions AS s JOIN paid_plans AS p ON p.id = s.plan_id WHERE s.user_id = f.file_owner AND s.status IN ('active','trialing') AND s.current_period_end > ? AND p.retention_days > 0 AND f.created_at <= CAST(? AS timestamptz) - (p.retention_days * INTERVAL '1 day'))) OR (NOT EXISTS (SELECT 1 FROM subscriptions AS s WHERE s.user_id = f.file_owner AND s.status IN ('active','trialing') AND s.current_period_end > ?) AND f.created_at <= ?)))`)
 		eligibilityArgs = append(eligibilityArgs, now, now, now, *unpaidBefore)
 	}
 	eligibleSQL := "FALSE"
