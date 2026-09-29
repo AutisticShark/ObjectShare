@@ -251,3 +251,33 @@ func TestPostgresLegacyRenewalRequiresPaidInvoice(t *testing.T) {
 		t.Fatal("cancellation was not preserved")
 	}
 }
+
+func TestPostgresExpiredGatewayInvoiceDoesNotBlockLaterPlanPurchases(t *testing.T) {
+	repo := creditTestRepository(t)
+	user := creditTestUser(t, repo, 50)
+	plan := invoiceTestPlan(t, repo)
+	now := time.Now().UTC()
+	abandoned, err := repo.CreatePlanInvoice(t.Context(), user.ID, plan.ID, uuid.NewString(), "USD", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = repo.ReserveInvoiceGateway(t.Context(), user.ID, abandoned.ID, BillingGatewayStripe, now); err != nil {
+		t.Fatal(err)
+	}
+	next, err := repo.CreatePlanInvoice(t.Context(), user.ID, plan.ID, uuid.NewString(), "USD", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = repo.PayInvoiceCredit(t.Context(), user.ID, next.ID, now); !errors.Is(err, ErrConflict) {
+		t.Fatalf("open gateway checkout must still block another plan purchase: %v", err)
+	}
+	// After the abandoned invoice's payment window closes it no longer blocks.
+	later := abandoned.ExpiresAt.Add(time.Minute)
+	afterWindow, err := repo.CreatePlanInvoice(t.Context(), user.ID, plan.ID, uuid.NewString(), "USD", later)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = repo.PayInvoiceCredit(t.Context(), user.ID, afterWindow.ID, later); err != nil {
+		t.Fatalf("expired gateway invoice still blocks plan purchases: %v", err)
+	}
+}

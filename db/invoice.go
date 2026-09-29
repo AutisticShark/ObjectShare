@@ -126,8 +126,12 @@ func (repo *GormRepository) InvoicesForUser(ctx context.Context, userID string, 
 
 // checkInvoicePlan runs under the account lock, before taking any payment.
 func checkInvoicePlan(tx *gorm.DB, invoice *Invoice, now time.Time) error {
+	// A gateway checkout only blocks other plan purchases while its payment
+	// window is open. Otherwise an abandoned checkout, or a provider failure
+	// after the gateway was reserved, would pin the account forever because no
+	// job moves stale pending invoices out of that state.
 	var count int64
-	if err := tx.Model(&Invoice{}).Where("user_id = ? AND id <> ? AND kind = 'plan' AND status = 'pending' AND gateway <> ''", invoice.UserID, invoice.ID).Count(&count).Error; err != nil {
+	if err := tx.Model(&Invoice{}).Where("user_id = ? AND id <> ? AND kind = 'plan' AND status = 'pending' AND gateway <> '' AND expires_at > ?", invoice.UserID, invoice.ID, now).Count(&count).Error; err != nil {
 		return err
 	}
 	if count > 0 {
