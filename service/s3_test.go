@@ -299,3 +299,60 @@ func TestStorageFactoryBuildsOCI(t *testing.T) {
 		t.Fatalf("the OCI store does not support direct uploads: %T", store)
 	}
 }
+
+func TestGCSDefaultsItsEndpointAndRegionAndUsesPathStyle(t *testing.T) {
+	store, err := NewGCS(&config.GCSConfig{
+		BucketName: "my.dotted.bucket", AccessKeyID: "GOOG1EXAMPLE", SecretAccessKey: "hmac-secret",
+		PresignLinkTimeout: config.Duration(10 * time.Minute), PresignUploadTimeout: config.Duration(time.Hour),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	upload, err := store.PresignPut(context.Background(), "pending/object-id", 42, "application/octet-stream")
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsed, err := url.Parse(upload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if parsed.Host != "storage.googleapis.com" || parsed.Path != "/my.dotted.bucket/pending/object-id" {
+		t.Fatalf("GCS must default to https://storage.googleapis.com with the bucket in the path, got %s", upload)
+	}
+	if !strings.Contains(parsed.Query().Get("X-Amz-Credential"), "/auto/s3/") || !strings.Contains(parsed.Query().Get("X-Amz-SignedHeaders"), "content-length") {
+		t.Fatalf("presigned upload is not signed for region auto and bound to its size: %s", upload)
+	}
+	if sources := store.DirectUploadPolicy().ConnectSources; len(sources) != 1 || sources[0] != "https://storage.googleapis.com" {
+		t.Fatalf("GCS direct upload CSP sources = %v", sources)
+	}
+	custom, err := NewGCS(&config.GCSConfig{
+		BucketName: "bucket", Region: "us", Endpoint: "https://private.googleapis.example", AccessKeyID: "GOOG1EXAMPLE", SecretAccessKey: "hmac-secret",
+		PresignLinkTimeout: config.Duration(time.Minute), PresignUploadTimeout: config.Duration(time.Hour),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	download, err := custom.PresignGet(context.Background(), "object-id", "a.txt")
+	if err != nil || !strings.HasPrefix(download, "https://private.googleapis.example/bucket/object-id") {
+		t.Fatalf("a configured GCS endpoint was not honoured: %q %v", download, err)
+	}
+	if parsedDownload, parseErr := url.Parse(download); parseErr != nil || !strings.Contains(parsedDownload.Query().Get("X-Amz-Credential"), "/us/s3/") {
+		t.Fatalf("a configured GCS region was not used for signing: %q %v", download, parseErr)
+	}
+	if _, err := NewGCS(nil); err == nil {
+		t.Fatal("a nil GCS configuration was accepted")
+	}
+}
+
+func TestStorageFactoryBuildsGCS(t *testing.T) {
+	store, err := New(&config.ServiceConfig{StorageService: "gcs", GCS: &config.GCSConfig{
+		BucketName: "bucket", AccessKeyID: "GOOG1EXAMPLE", SecretAccessKey: "hmac-secret",
+		PresignLinkTimeout: config.Duration(time.Minute), PresignUploadTimeout: config.Duration(time.Hour),
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if uploader, ok := store.(DirectUploader); !ok || uploader.DirectUploadPolicy().MaxSize != MaxSinglePartUploadSize {
+		t.Fatalf("the GCS store does not support direct uploads: %T", store)
+	}
+}

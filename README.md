@@ -11,7 +11,7 @@ ObjectShare is a small self-hosted file sharing service written in Go. Files use
 - Single-file and multiple-file, size-limited uploads with SHA-256 and SHA3-256 checksums
 - Tabler UI with HTMX progressive enhancement and native-form fallbacks
 - Administrator-managed site name, logo, header banner, favicon, tagline, and footer
-- Filesystem, Cloudflare R2, AWS S3, Backblaze B2, Alibaba Cloud OSS, Tencent Cloud COS, or Oracle Cloud Object Storage object storage
+- Filesystem, Cloudflare R2, AWS S3, Backblaze B2, Alibaba Cloud OSS, Tencent Cloud COS, Oracle Cloud Object Storage, or Google Cloud Storage object storage
 - Direct-to-object-storage uploads that avoid reverse-proxy request-body limits
 - PostgreSQL metadata with bounded connection pools
 - Optional per-upload browser encryption and decryption with passphrase-protected account keys, encrypted backups, and per-file sharing keys
@@ -81,9 +81,9 @@ HTMX is intentionally part of the frontend architecture. The native forms are ac
 - [x] AWS S3
 - [x] Backblaze B2
 - [x] Cloudflare R2
+- [x] Google Cloud Storage
 - [x] Oracle Cloud Object Storage
 - [x] Tencent Cloud COS
-- [ ] Google Cloud Storage
 - [ ] Microsoft Azure Blob Storage
 
 ### Website workspace
@@ -1020,7 +1020,7 @@ Grant the configured identity only read, write, and delete access to the selecte
 
 Use the provider console's equivalent fields when it does not accept S3 CORS JSON directly. Add a separate localhost origin for local browser testing. Avoid wildcard origins for private buckets.
 
-Presigned download timeouts default to `10m`; upload timeouts default to `1h`. Configure them per provider in the dashboard. The legacy first-import variables are `OBJECTSHARE_<PROVIDER>_PRESIGN_TIMEOUT` and `OBJECTSHARE_<PROVIDER>_UPLOAD_PRESIGN_TIMEOUT`, replacing `<PROVIDER>` with `R2`, `S3`, `B2`, `OSS`, `COS`, or `OCI`. Both support a maximum of `168h`. Each direct object upload is a single PUT and is capped at 5 GiB; the UI can upload several such files as a batch, but larger individual objects require S3 multipart-object upload support, which ObjectShare does not currently implement.
+Presigned download timeouts default to `10m`; upload timeouts default to `1h`. Configure them per provider in the dashboard. The legacy first-import variables are `OBJECTSHARE_<PROVIDER>_PRESIGN_TIMEOUT` and `OBJECTSHARE_<PROVIDER>_UPLOAD_PRESIGN_TIMEOUT`, replacing `<PROVIDER>` with `R2`, `S3`, `B2`, `OSS`, `COS`, `OCI`, or `GCS`. Both support a maximum of `168h`. Each direct object upload is a single PUT and is capped at 5 GiB; the UI can upload several such files as a batch, but larger individual objects require S3 multipart-object upload support, which ObjectShare does not currently implement.
 
 Direct uploads are staged. The presigned `PUT` targets a `pending/<file-id>` key, never the key the finished file is served from, so a presigned URL that is replayed after completion or abort cannot replace a finalized file. Finalizing verifies the staged object's size and content type, copies it server-side to the file's real key (the existing read and write permissions cover `CopyObject`), re-checks the size, and deletes the staged copy; aborting or expiring an upload deletes both keys. A replayed `PUT` can still leave an orphan staged object that no file record references, so add a bucket lifecycle rule that expires objects under the `pending/` prefix after a day or two. Uploads authorized before this change were presigned for the final key and are still accepted at completion. Because a direct upload stores the `Content-Type` the browser declared (ObjectShare never sees the bytes to sniff them, unlike proxied uploads), presigned downloads always force `Content-Disposition: attachment` and a neutral `application/octet-stream` response type.
 
@@ -1074,6 +1074,18 @@ Select **Oracle Cloud Object Storage** in the dashboard and provide its bucket, 
 - **Bucket CORS:** Oracle configures CORS through the console or CLI (for example `oci os bucket update --namespace-name <namespace> --name <bucket> --cors-rules ...`) rather than the S3 CORS JSON above; allow the exact ObjectShare origin, the `PUT` method, and the `Content-Type` header.
 
 ObjectShare requests optional S3 checksums only when an operation requires them, which keeps requests within what S3-compatible services commonly accept. See Oracle's [Amazon S3 Compatibility API documentation](https://docs.oracle.com/en-us/iaas/Content/Object/Tasks/s3compatibleapi.htm) for the supported operations and any differences from Amazon S3.
+
+#### Google Cloud Storage
+
+Select **Google Cloud Storage** in the dashboard and provide its bucket and write-only HMAC credentials. The matching legacy seeds use the `OBJECTSHARE_GCS_*` prefix. ObjectShare uses Google's [S3-compatible interoperability API](https://cloud.google.com/storage/docs/interoperability) through the same S3-compatible client as the other providers.
+
+- **Credentials:** create an [HMAC key](https://cloud.google.com/storage/docs/authentication/managing-hmackeys) for a service account that can read, write, and delete objects in the bucket (for example with the `Storage Object Admin` role on that bucket only). Its access ID and secret are `access_key_id` and `secret_access_key`; they are write-only in the dashboard.
+- **Endpoint:** defaults to `https://storage.googleapis.com`; override it only for a private or regional endpoint.
+- **Region:** defaults to `auto`, the value Google's interoperability API expects when signing requests. Leave it as is unless Google documents otherwise for your setup.
+- **Addressing:** requests use path-style URLs (`https://storage.googleapis.com/<bucket>/<object>`), which also works for bucket names that contain dots. Direct-upload CORS only needs to allow the exact ObjectShare origin.
+- **Bucket CORS:** Google takes a JSON CORS file rather than the S3 CORS XML above. For example, save a file with `origin` set to your ObjectShare origin, `method` set to `PUT`, `responseHeader` set to `Content-Type`, and a `maxAgeSeconds`, then apply it with `gcloud storage buckets update gs://<bucket> --cors-file=cors.json`.
+
+See Google's [interoperability documentation](https://cloud.google.com/storage/docs/interoperability) and [CORS configuration guide](https://cloud.google.com/storage/docs/configuring-cors).
 
 ## Production checklist
 

@@ -16,7 +16,7 @@ import (
 )
 
 // S3Compatible implements ObjectStore and DirectUploader through the Amazon S3
-// API. It is shared by S3, R2, B2, OSS, COS, and OCI while retaining provider names
+// API. It is shared by S3, R2, B2, OSS, COS, OCI, and GCS while retaining provider names
 // in operational errors.
 type S3Compatible struct {
 	provider        string
@@ -80,6 +80,27 @@ func NewOCI(settings *config.OCIConfig) (*S3Compatible, error) {
 		return nil, fmt.Errorf("OCI endpoint is required")
 	}
 	return newS3Compatible("OCI", cloneS3Settings(settings), "", true)
+}
+
+// GCSEndpoint is Google Cloud Storage's S3-compatible interoperability endpoint.
+const GCSEndpoint = "https://storage.googleapis.com"
+
+// NewGCS opens Google Cloud Storage through its S3 interoperability API using
+// HMAC keys. Requests are signed for the region "auto" unless another region is
+// configured and use path-style addressing, which also works for bucket names
+// that contain dots.
+func NewGCS(settings *config.GCSConfig) (*S3Compatible, error) {
+	if settings == nil {
+		return nil, fmt.Errorf("GCS configuration is required")
+	}
+	settings = cloneS3Settings(settings)
+	if settings.Endpoint == "" {
+		settings.Endpoint = GCSEndpoint
+	}
+	if settings.Region == "" {
+		settings.Region = "auto"
+	}
+	return newS3Compatible("GCS", settings, "", true)
 }
 
 func cloneS3Settings(settings *config.S3CompatibleConfig) *config.S3CompatibleConfig {

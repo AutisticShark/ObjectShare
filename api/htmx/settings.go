@@ -28,6 +28,7 @@ type settingsSecretState struct {
 	OSSAccess, OSSSecret                               bool
 	COSAccess, COSSecret                               bool
 	OCIAccess, OCISecret                               bool
+	GCSAccess, GCSSecret                               bool
 }
 
 type adminSettingsPageData struct {
@@ -145,6 +146,7 @@ func (handler *Handler) renderSettings(writer http.ResponseWriter, identity *ide
 		OSSAccess: runtime.OSS.AccessKeyID != "", OSSSecret: runtime.OSS.SecretAccessKey != "",
 		COSAccess: runtime.COS.AccessKeyID != "", COSSecret: runtime.COS.SecretAccessKey != "",
 		OCIAccess: runtime.OCI.AccessKeyID != "", OCISecret: runtime.OCI.SecretAccessKey != "",
+		GCSAccess: runtime.GCS.AccessKeyID != "", GCSSecret: runtime.GCS.SecretAccessKey != "",
 	}
 	redactRuntimeSecrets(&runtime)
 	data := adminSettingsPageData{
@@ -182,6 +184,7 @@ func redactRuntimeSecrets(runtime *config.RuntimeConfig) {
 	runtime.OSS.AccessKeyID, runtime.OSS.SecretAccessKey = "", ""
 	runtime.COS.AccessKeyID, runtime.COS.SecretAccessKey = "", ""
 	runtime.OCI.AccessKeyID, runtime.OCI.SecretAccessKey = "", ""
+	runtime.GCS.AccessKeyID, runtime.GCS.SecretAccessKey = "", ""
 }
 
 func (handler *Handler) parseSettingsForm(writer http.ResponseWriter, request *http.Request) bool {
@@ -269,6 +272,7 @@ func updateRuntimeFromForm(runtime *config.RuntimeConfig, request *http.Request)
 	updateCompatible(request, "oss", &runtime.OSS, &problems)
 	updateCompatible(request, "cos", &runtime.COS, &problems)
 	updateCompatible(request, "oci", &runtime.OCI, &problems)
+	updateCompatible(request, "gcs", &runtime.GCS, &problems)
 
 	runtime.Encryption.Enabled = checked(request, "encryption_enabled")
 	runtime.Encryption.Method = strings.TrimSpace(request.FormValue("encryption_method"))

@@ -174,8 +174,13 @@ func defaults() *ServiceConfig {
 		OSS: defaultS3CompatibleConfig(""),
 		COS: defaultS3CompatibleConfig(""),
 		OCI: defaultS3CompatibleConfig(""),
+		GCS: defaultS3CompatibleConfig(defaultGCSRegion),
 	}
 }
+
+// defaultGCSRegion is the region Google's S3-compatible interoperability API
+// expects requests to be signed for when no real region applies.
+const defaultGCSRegion = "auto"
 
 func defaultS3CompatibleConfig(region string) *S3CompatibleConfig {
 	return &S3CompatibleConfig{
@@ -365,6 +370,10 @@ func applyEnvironment(cfg *ServiceConfig) error {
 		cfg.OCI = defaultS3CompatibleConfig("")
 	}
 	applyS3Environment("OCI", cfg.OCI, &problems)
+	if cfg.GCS == nil {
+		cfg.GCS = defaultS3CompatibleConfig(defaultGCSRegion)
+	}
+	applyS3Environment("GCS", cfg.GCS, &problems)
 	return errors.Join(problems...)
 }
 
@@ -602,6 +611,13 @@ func (cfg *ServiceConfig) Validate() error {
 		// namespace, so it cannot be derived from the region alone.
 		if cfg.OCI.Endpoint == "" {
 			return errors.New("oci endpoint is required (https://<namespace>.compat.objectstorage.<region>.oraclecloud.com)")
+		}
+	case "gcs":
+		if cfg.GCS != nil && cfg.GCS.Region == "" {
+			cfg.GCS.Region = defaultGCSRegion
+		}
+		if err := validateS3Compatible("gcs", cfg.GCS, true); err != nil {
+			return err
 		}
 	default:
 		return fmt.Errorf("unsupported storage service %q", cfg.StorageService)

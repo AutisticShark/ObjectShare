@@ -70,6 +70,8 @@ func New(cfg *config.ServiceConfig) (ObjectStore, error) {
 		return NewCOS(cfg.COS)
 	case "oci":
 		return NewOCI(cfg.OCI)
+	case "gcs":
+		return NewGCS(cfg.GCS)
 	default:
 		return nil, fmt.Errorf("unsupported storage service %q", cfg.StorageService)
 	}

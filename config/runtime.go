@@ -39,6 +39,7 @@ type RuntimeConfig struct {
 	OSS            OSSConfig         `json:"oss"`
 	COS            COSConfig         `json:"cos"`
 	OCI            OCIConfig         `json:"oci"`
+	GCS            GCSConfig         `json:"gcs"`
 }
 
 type RuntimeAuthConfig struct {
@@ -105,6 +106,9 @@ func RuntimeFromService(cfg *ServiceConfig) RuntimeConfig {
 	}
 	if cfg.OCI != nil {
 		runtime.OCI = *cfg.OCI
+	}
+	if cfg.GCS != nil {
+		runtime.GCS = *cfg.GCS
 	}
 	return runtime
 }
@@ -174,6 +178,7 @@ func applyRuntimeUnchecked(cfg *ServiceConfig, runtime RuntimeConfig) {
 	cfg.OSS = &runtime.OSS
 	cfg.COS = &runtime.COS
 	cfg.OCI = &runtime.OCI
+	cfg.GCS = &runtime.GCS
 }
 
 func cloneService(cfg *ServiceConfig) (*ServiceConfig, error) {
@@ -246,13 +251,16 @@ func OpenRuntime(value, settingsKey string) (RuntimeConfig, error) {
 // usable presign timeouts instead of zero values. Documents that already carry
 // the provider are left untouched.
 func fillNewProviderDefaults(runtime *RuntimeConfig) {
-	for _, provider := range []*S3CompatibleConfig{&runtime.OCI} {
+	for _, provider := range []*S3CompatibleConfig{&runtime.OCI, &runtime.GCS} {
 		if provider.PresignLinkTimeout == 0 {
 			provider.PresignLinkTimeout = Duration(10 * time.Minute)
 		}
 		if provider.PresignUploadTimeout == 0 {
 			provider.PresignUploadTimeout = Duration(time.Hour)
 		}
+	}
+	if runtime.GCS.Region == "" {
+		runtime.GCS.Region = defaultGCSRegion
 	}
 }
 

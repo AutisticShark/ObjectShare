@@ -71,6 +71,7 @@ type ServiceConfig struct {
 	OSS                *OSSConfig         `json:"oss,omitempty"`
 	COS                *COSConfig         `json:"cos,omitempty"`
 	OCI                *OCIConfig         `json:"oci,omitempty"`
+	GCS                *GCSConfig         `json:"gcs,omitempty"`
 }
 
 // UploadConfig controls whether people without an account may upload. Account
@@ -265,3 +266,8 @@ type COSConfig = S3CompatibleConfig
 // the OCI region identifier such as us-ashburn-1, and the credentials are a
 // Customer Secret Key pair.
 type OCIConfig = S3CompatibleConfig
+
+// GCSConfig configures Google Cloud Storage through its S3-compatible
+// interoperability API with HMAC keys. Endpoint defaults to
+// https://storage.googleapis.com and Region to "auto".
+type GCSConfig = S3CompatibleConfig

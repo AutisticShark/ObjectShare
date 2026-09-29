@@ -50,7 +50,7 @@ func TestS3SessionTokenRequiresExplicitCredentials(t *testing.T) {
 }
 
 func TestSupportedObjectStorageConfigurations(t *testing.T) {
-	for _, storage := range []string{"s3", "b2", "oss", "cos", "oci"} {
+	for _, storage := range []string{"s3", "b2", "oss", "cos", "oci", "gcs"} {
 		t.Run(storage, func(t *testing.T) {
 			cfg := testDefaults()
 			cfg.StorageService = storage
@@ -70,6 +70,8 @@ func TestSupportedObjectStorageConfigurations(t *testing.T) {
 			case "oci":
 				settings.Endpoint = "https://namespace.compat.objectstorage.us-ashburn-1.oraclecloud.com"
 				cfg.OCI = settings
+			case "gcs":
+				cfg.GCS = settings
 			}
 			if err := cfg.Validate(); err != nil {
 				t.Fatal(err)
@@ -872,5 +874,88 @@ func TestRuntimeDocumentsSavedBeforeOCIGainDefaults(t *testing.T) {
 	sealed, _ = SealRuntime(configured, cfg.SettingsKey)
 	if reopened, err := OpenRuntime(sealed, cfg.SettingsKey); err != nil || reopened.OCI.PresignLinkTimeout != Duration(3*time.Minute) || reopened.OCI.PresignUploadTimeout != Duration(2*time.Hour) {
 		t.Fatalf("configured OCI values were overwritten: %#v %v", reopened.OCI, err)
+	}
+}
+
+func TestGCSDefaultsRegionAndEndpointAndValidatesCredentials(t *testing.T) {
+	defaults := testDefaults()
+	if defaults.GCS == nil || defaults.GCS.Region != "auto" || defaults.GCS.Endpoint != "" || defaults.GCS.PresignLinkTimeout != Duration(10*time.Minute) || defaults.GCS.PresignUploadTimeout != Duration(time.Hour) {
+		t.Fatalf("GCS defaults = %#v", defaults.GCS)
+	}
+	valid := func() *S3CompatibleConfig {
+		return &S3CompatibleConfig{BucketName: "bucket", Region: "auto", AccessKeyID: "GOOG1EXAMPLE", SecretAccessKey: "secret",
+			PresignLinkTimeout: Duration(10 * time.Minute), PresignUploadTimeout: Duration(time.Hour)}
+	}
+	cfg := testDefaults()
+	cfg.StorageService = "gcs"
+	cfg.GCS = valid()
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("a GCS configuration without an endpoint (the default is built in) was rejected: %v", err)
+	}
+	blankRegion := testDefaults()
+	blankRegion.StorageService = "gcs"
+	blankRegion.GCS = valid()
+	blankRegion.GCS.Region = ""
+	if err := blankRegion.Validate(); err != nil || blankRegion.GCS.Region != "auto" {
+		t.Fatalf("an empty GCS region must default to auto: region=%q err=%v", blankRegion.GCS.Region, err)
+	}
+	for name, test := range map[string]struct {
+		mutate   func(*S3CompatibleConfig)
+		contains string
+	}{
+		"missing bucket":      {func(c *S3CompatibleConfig) { c.BucketName = "" }, "bucket_name and region are required"},
+		"missing credentials": {func(c *S3CompatibleConfig) { c.AccessKeyID, c.SecretAccessKey = "", "" }, "access_key_id and secret_access_key are required"},
+		"partial credentials": {func(c *S3CompatibleConfig) { c.SecretAccessKey = "" }, "provided together"},
+		"insecure endpoint":   {func(c *S3CompatibleConfig) { c.Endpoint = "http://storage.googleapis.com" }, "absolute HTTPS URL"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			bad := testDefaults()
+			bad.StorageService = "gcs"
+			bad.GCS = valid()
+			test.mutate(bad.GCS)
+			if err := bad.Validate(); err == nil || !strings.Contains(err.Error(), test.contains) {
+				t.Fatalf("error = %v, want text %q", err, test.contains)
+			}
+		})
+	}
+}
+
+func TestGCSEnvironmentOverrides(t *testing.T) {
+	t.Setenv("OBJECTSHARE_STORAGE_SERVICE", "gcs")
+	t.Setenv("OBJECTSHARE_GCS_BUCKET_NAME", "objectshare")
+	t.Setenv("OBJECTSHARE_GCS_ENDPOINT", "https://storage.googleapis.com")
+	t.Setenv("OBJECTSHARE_GCS_ACCESS_KEY_ID", "GOOG1EXAMPLE")
+	t.Setenv("OBJECTSHARE_GCS_SECRET_ACCESS_KEY", "hmac-secret")
+	t.Setenv("OBJECTSHARE_GCS_PRESIGN_TIMEOUT", "5m")
+	t.Setenv("OBJECTSHARE_GCS_UPLOAD_PRESIGN_TIMEOUT", "2h")
+	cfg := testDefaults()
+	if err := applyEnvironment(cfg); err != nil {
+		t.Fatal(err)
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	if cfg.GCS.BucketName != "objectshare" || cfg.GCS.Region != "auto" || cfg.GCS.AccessKeyID != "GOOG1EXAMPLE" || cfg.GCS.PresignLinkTimeout.Duration() != 5*time.Minute || cfg.GCS.PresignUploadTimeout.Duration() != 2*time.Hour {
+		t.Fatalf("GCS environment was not applied: %#v", cfg.GCS)
+	}
+}
+
+func TestRuntimeDocumentsSavedBeforeGCSGainDefaults(t *testing.T) {
+	cfg := testDefaults()
+	if err := cfg.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	runtime := RuntimeFromService(cfg)
+	runtime.GCS = GCSConfig{} // a document sealed by a release without GCS support
+	sealed, err := SealRuntime(runtime, cfg.SettingsKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	opened, err := OpenRuntime(sealed, cfg.SettingsKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if opened.GCS.Region != "auto" || opened.GCS.PresignLinkTimeout != Duration(10*time.Minute) || opened.GCS.PresignUploadTimeout != Duration(time.Hour) {
+		t.Fatalf("missing GCS defaults were not filled: %#v", opened.GCS)
 	}
 }

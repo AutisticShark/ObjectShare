@@ -245,6 +245,7 @@ func runtimeFormValues(runtime config.RuntimeConfig) url.Values {
 		"oss_bucket_name": {runtime.OSS.BucketName}, "oss_endpoint": {runtime.OSS.Endpoint}, "oss_region": {runtime.OSS.Region}, "oss_presign_timeout": {runtime.OSS.PresignLinkTimeout.String()}, "oss_upload_presign_timeout": {runtime.OSS.PresignUploadTimeout.String()},
 		"cos_bucket_name": {runtime.COS.BucketName}, "cos_endpoint": {runtime.COS.Endpoint}, "cos_region": {runtime.COS.Region}, "cos_presign_timeout": {runtime.COS.PresignLinkTimeout.String()}, "cos_upload_presign_timeout": {runtime.COS.PresignUploadTimeout.String()},
 		"oci_bucket_name": {runtime.OCI.BucketName}, "oci_endpoint": {runtime.OCI.Endpoint}, "oci_region": {runtime.OCI.Region}, "oci_presign_timeout": {runtime.OCI.PresignLinkTimeout.String()}, "oci_upload_presign_timeout": {runtime.OCI.PresignUploadTimeout.String()},
+		"gcs_bucket_name": {runtime.GCS.BucketName}, "gcs_endpoint": {runtime.GCS.Endpoint}, "gcs_region": {runtime.GCS.Region}, "gcs_presign_timeout": {runtime.GCS.PresignLinkTimeout.String()}, "gcs_upload_presign_timeout": {runtime.GCS.PresignUploadTimeout.String()},
 		"encryption_method": {runtime.Encryption.Method},
 	}
 	for name, enabled := range map[string]bool{
@@ -402,5 +403,43 @@ func TestDashboardFormUpdatesOracleCloudObjectStorage(t *testing.T) {
 	redactRuntimeSecrets(&redacted)
 	if redacted.OCI.AccessKeyID != "" || redacted.OCI.SecretAccessKey != "" {
 		t.Fatal("OCI credentials are shown back to the dashboard")
+	}
+}
+
+func TestDashboardFormUpdatesGoogleCloudStorage(t *testing.T) {
+	runtime := config.RuntimeFromService(&config.ServiceConfig{})
+	runtime.GCS = config.GCSConfig{AccessKeyID: "stored-access", SecretAccessKey: "stored-secret", PresignLinkTimeout: config.Duration(10 * time.Minute), PresignUploadTimeout: config.Duration(time.Hour)}
+	form := url.Values{
+		"storage_service": {"GCS"}, "gcs_bucket_name": {"objectshare"}, "gcs_region": {"auto"},
+		"gcs_endpoint":        {"https://storage.googleapis.com"},
+		"gcs_presign_timeout": {"15m"}, "gcs_upload_presign_timeout": {"2h"},
+		"max_file_size": {"10"}, "rate_limit_window": {"1m"},
+	}
+	submit := func() {
+		request := httptest.NewRequest(http.MethodPost, "/admin/settings", strings.NewReader(form.Encode()))
+		request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		if err := request.ParseForm(); err != nil {
+			t.Fatal(err)
+		}
+		_ = updateRuntimeFromForm(&runtime, request)
+	}
+	submit()
+	if runtime.StorageService != "gcs" || runtime.GCS.BucketName != "objectshare" || runtime.GCS.Region != "auto" || runtime.GCS.Endpoint != "https://storage.googleapis.com" ||
+		runtime.GCS.PresignLinkTimeout.Duration() != 15*time.Minute || runtime.GCS.PresignUploadTimeout.Duration() != 2*time.Hour {
+		t.Fatalf("GCS form values were not applied: %#v", runtime.GCS)
+	}
+	if runtime.GCS.AccessKeyID != "stored-access" || runtime.GCS.SecretAccessKey != "stored-secret" {
+		t.Fatal("leaving the write-only credential fields empty must preserve the stored values")
+	}
+	form.Set("gcs_access_key_id", "GOOG1NEW")
+	form.Set("clear_gcs_secret_key", "on")
+	submit()
+	if runtime.GCS.AccessKeyID != "GOOG1NEW" || runtime.GCS.SecretAccessKey != "" {
+		t.Fatalf("credential replace/clear = %q / %q", runtime.GCS.AccessKeyID, runtime.GCS.SecretAccessKey)
+	}
+	redacted := runtime
+	redactRuntimeSecrets(&redacted)
+	if redacted.GCS.AccessKeyID != "" || redacted.GCS.SecretAccessKey != "" {
+		t.Fatal("GCS credentials are shown back to the dashboard")
 	}
 }
