@@ -12,8 +12,12 @@ import (
 const (
 	jwtIssuer   = "objectshare"
 	jwtAudience = "objectshare"
-	jwtLeeway   = 30 * time.Second
 )
+
+// JWTLeeway is the clock skew the parser tolerates on exp, nbf and iat. A
+// token keeps authenticating until exp+JWTLeeway, so revocations must persist
+// at least that long.
+const JWTLeeway = 30 * time.Second
 
 type Claims struct {
 	Purpose      string `json:"purpose,omitempty"`
@@ -72,7 +76,7 @@ func newJWTParser(audience string) *jwt.Parser {
 		jwt.WithAudience(audience),
 		jwt.WithExpirationRequired(),
 		jwt.WithIssuedAt(),
-		jwt.WithLeeway(jwtLeeway),
+		jwt.WithLeeway(JWTLeeway),
 		jwt.WithStrictDecoding(),
 	)
 }

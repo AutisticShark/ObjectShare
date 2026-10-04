@@ -158,3 +158,29 @@ func TestInvalidBearerTokenDoesNotBecomeGuestUpload(t *testing.T) {
 		t.Fatalf("invalid bearer upload status=%d files=%d", response.Code, len(repository.files))
 	}
 }
+
+// The parser accepts a JWT until exp+JWTLeeway, so a logged-out token must
+// stay revoked for that whole window.
+func TestRevokedJWTStaysRevokedThroughExpiryLeeway(t *testing.T) {
+	repository := newAuthMemoryRepository()
+	user := &db.User{ID: "60c628c1-85cb-4463-b895-a629c31bfa55", Email: "user@example.com", DisplayName: "User", Role: db.RoleUser, Active: true, TokenVersion: 1}
+	repository.users[user.ID] = user
+	handler := newAuthTestHandler(t, repository, false)
+	// Issued so that exp was 10s ago: still inside the parser leeway.
+	token, claims, err := handler.jwt.Issue(user.ID, user.Role, user.TokenVersion, time.Now().UTC().Add(-12*time.Hour-10*time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := handler.jwt.Parse(token); err != nil {
+		t.Fatalf("token inside the leeway should still parse: %v", err)
+	}
+	// The user logged out an hour before the token expired.
+	if err := repository.RevokeToken(context.Background(), appauth.TokenHash(claims.ID), claims.ExpiresAt.Time, claims.ExpiresAt.Time.Add(-time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodGet, "/account", nil)
+	request.AddCookie(&http.Cookie{Name: handler.jwtCookieName(), Value: token})
+	if _, served, _ := serveAuthenticated(handler, request); served != nil {
+		t.Fatal("a revoked JWT authenticated again inside the expiry leeway")
+	}
+}

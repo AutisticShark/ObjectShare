@@ -5,6 +5,7 @@ import (
 	"errors"
 	"time"
 
+	appauth "github.com/AutisticShark/ObjectShare/auth"
 	"github.com/jackc/pgx/v5/pgconn"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
@@ -349,9 +350,12 @@ func (repo *GormRepository) RecordLogin(ctx context.Context, userID string, now 
 	return nil
 }
 
+// RevokeToken records a revoked JWT whose exp claim is expiresAt. The parser
+// accepts a token until exp+JWTLeeway, so the revocation is honored and kept
+// until then rather than lapsing at exp.
 func (repo *GormRepository) RevokeToken(ctx context.Context, jtiHash string, expiresAt, now time.Time) error {
 	return repo.connection.WithContext(ctx).Transaction(func(transaction *gorm.DB) error {
-		if err := transaction.Where("expires_at <= ?", now).Delete(&RevokedToken{}).Error; err != nil {
+		if err := transaction.Where("expires_at <= ?", now.Add(-appauth.JWTLeeway)).Delete(&RevokedToken{}).Error; err != nil {
 			return err
 		}
 		return transaction.Clauses(clause.OnConflict{DoNothing: true}).Create(&RevokedToken{
@@ -363,7 +367,7 @@ func (repo *GormRepository) RevokeToken(ctx context.Context, jtiHash string, exp
 func (repo *GormRepository) TokenRevoked(ctx context.Context, jtiHash string, now time.Time) (bool, error) {
 	var count int64
 	err := repo.connection.WithContext(ctx).Model(&RevokedToken{}).
-		Where("jti_hash = ? AND expires_at > ?", jtiHash, now).Count(&count).Error
+		Where("jti_hash = ? AND expires_at > ?", jtiHash, now.Add(-appauth.JWTLeeway)).Count(&count).Error
 	return count != 0, err
 }
 

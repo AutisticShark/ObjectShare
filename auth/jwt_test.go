@@ -148,12 +148,12 @@ func TestJWTClockLeewayAcceptsSmallSkewOnly(t *testing.T) {
 		return value
 	}
 	if _, err := manager.Parse(sign(func(c *Claims) { c.ExpiresAt = jwt.NewNumericDate(now.Add(-10 * time.Second)) })); err != nil {
-		t.Fatalf("a token that expired 10s ago (inside the %v leeway) was refused: %v", jwtLeeway, err)
+		t.Fatalf("a token that expired 10s ago (inside the %v leeway) was refused: %v", JWTLeeway, err)
 	}
 	if _, err := manager.Parse(sign(func(c *Claims) { c.NotBefore = jwt.NewNumericDate(now.Add(10 * time.Second)) })); err != nil {
 		t.Fatalf("a token valid from 10s in the future (inside the leeway) was refused: %v", err)
 	}
-	if _, err := manager.Parse(sign(func(c *Claims) { c.ExpiresAt = jwt.NewNumericDate(now.Add(-2 * jwtLeeway)) })); err == nil {
+	if _, err := manager.Parse(sign(func(c *Claims) { c.ExpiresAt = jwt.NewNumericDate(now.Add(-2 * JWTLeeway)) })); err == nil {
 		t.Fatal("a token that expired well outside the leeway was accepted")
 	}
 }

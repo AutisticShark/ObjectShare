@@ -389,7 +389,7 @@ func (repository *authMemoryRepository) RevokeToken(_ context.Context, jtiHash s
 }
 func (repository *authMemoryRepository) TokenRevoked(_ context.Context, jtiHash string, now time.Time) (bool, error) {
 	expiresAt, ok := repository.revoked[jtiHash]
-	return ok && expiresAt.After(now), nil
+	return ok && expiresAt.Add(appauth.JWTLeeway).After(now), nil
 }
 func (repository *authMemoryRepository) LoginAllowed(_ context.Context, key string, _ time.Time) (bool, time.Time, error) {
 	if repository.throttles[key] >= 5 {
