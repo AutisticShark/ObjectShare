@@ -807,7 +807,8 @@ still be paid. Reopening the invoice reuses the saved checkout URL until the
 checkout expires. PayPal allows an order to be captured for only three hours, so
 after three hours an unpaid PayPal checkout stops blocking other plan purchases,
 and paying the invoice again within its payment window creates a new PayPal
-order. If the first gateway response is lost, creating the same
+order; the invoice page then reports that the earlier checkout expired instead
+of asking the user to complete it. If the first gateway response is lost, creating the same
 checkout may be retried only within five minutes, within both providers'
 idempotency windows. The payment window does not invalidate a genuine delayed
 receipt. Canceled, failed, or ambiguous gateway attempts must be reconciled by an

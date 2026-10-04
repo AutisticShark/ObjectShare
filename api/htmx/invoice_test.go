@@ -380,3 +380,60 @@ func TestTopUpRetryFromInvoiceRepeatsTheOriginalCheckoutRequest(t *testing.T) {
 		})
 	}
 }
+
+// A PayPal order expires after three hours, and paying the invoice again then
+// opens a new checkout, so the page must not keep sending the buyer back to the
+// checkout that can no longer be completed.
+func TestInvoicePageDescribesWhetherTheGatewayCheckoutIsLive(t *testing.T) {
+	const owner = "11111111-1111-4111-8111-111111111111"
+	const id = "22222222-2222-4222-8222-222222222222"
+	now := time.Now().UTC()
+	repo := &invoiceTestRepository{entitlementRepository: &entitlementRepository{memoryRepository: &memoryRepository{files: make(map[string]*db.FileList)}}}
+	handler := newTestHandler(t, repo, &memoryStorage{objects: make(map[string][]byte)})
+	handler.billingGateways = map[string]billingGateway{db.BillingGatewayPayPal: &paypalGatewayStub{}}
+	var err error
+	handler.templates, err = parseTemplates(os.DirFS("../.."), config.BrandingConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	router := chi.NewRouter()
+	router.Get("/invoices/{id}", handler.Invoice)
+	const original, expired, again = "Complete the original checkout", "has expired without a confirmed payment", "Pay again below to open a new checkout."
+	for _, test := range []struct {
+		name             string
+		invoiceExpires   time.Time
+		checkoutExpires  *time.Time
+		want, wantAbsent []string
+	}{
+		{"live checkout", now.Add(20 * time.Hour), new(now.Add(time.Hour)), []string{original, "Pay with PayPal"}, []string{expired}},
+		{"expired checkout", now.Add(20 * time.Hour), new(now.Add(-time.Minute)), []string{expired, again, "Pay with PayPal"}, []string{original}},
+		{"expired checkout and payment window", now.Add(-time.Minute), new(now.Add(-time.Hour)), []string{expired, "payment window has ended"}, []string{original, again, "Pay with PayPal"}},
+		{"no stored checkout", now.Add(20 * time.Hour), nil, []string{original}, []string{expired}},
+	} {
+		repo.invoice = db.Invoice{ID: id, UserID: owner, Kind: "plan", Status: "pending", Name: "Plus", Email: "buyer@example.com", Credits: 10, AmountMinor: 1000, Currency: "USD",
+			Gateway: db.BillingGatewayPayPal, CreatedAt: now.Add(-4 * time.Hour), ExpiresAt: test.invoiceExpires}
+		repo.topUp = nil
+		if test.checkoutExpires != nil {
+			repo.topUp = &db.CreditTopUp{ID: id, UserID: owner, Gateway: db.BillingGatewayPayPal, Status: db.CreditTopUpPending, CreatedAt: now.Add(-4 * time.Hour),
+				ExpiresAt: test.invoiceExpires, CheckoutExpiresAt: test.checkoutExpires}
+		}
+		request := httptest.NewRequest(http.MethodGet, "/invoices/"+id, nil)
+		request = request.WithContext(context.WithValue(request.Context(), identityContextKey{}, &identity{User: &db.User{ID: owner}, Transport: transportCookie, Claims: &appauth.Claims{CSRF: "expected"}}))
+		response := httptest.NewRecorder()
+		router.ServeHTTP(response, request)
+		body := response.Body.String()
+		if response.Code != http.StatusOK {
+			t.Fatalf("%s: status %d %s", test.name, response.Code, body)
+		}
+		for _, text := range test.want {
+			if !strings.Contains(body, text) {
+				t.Errorf("%s: page does not say %q", test.name, text)
+			}
+		}
+		for _, text := range test.wantAbsent {
+			if strings.Contains(body, text) {
+				t.Errorf("%s: page says %q", test.name, text)
+			}
+		}
+	}
+}

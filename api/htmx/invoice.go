@@ -30,6 +30,10 @@ type invoicePageData struct {
 	CanPay                       bool
 	Page, NextPage, PreviousPage int
 	HasNext                      bool
+
+	// CheckoutExpired reports that the provider checkout bound to a pending
+	// invoice can no longer be paid; paying again opens a new checkout.
+	CheckoutExpired bool
 }
 
 type billingProblemPageData struct {
@@ -193,7 +197,18 @@ func (handler *Handler) Invoice(writer http.ResponseWriter, request *http.Reques
 	}
 	verificationRequired := invoice.Kind == "plan" && handler.verificationSettings().RequireForPurchases && identityUser(request).EmailVerifiedAt == nil
 	receiptEnabled := handler.config.Email != nil && handler.config.Email.Provider != "" && handler.config.Email.Provider != "none"
-	handler.render(writer, "invoice.html", invoicePageData{ReceiptEnabled: receiptEnabled, Version: config.GetVersion(), User: identityUser(request), CSRF: identityCSRF(request), Invoice: invoice, Gateways: gateways, VerificationRequired: verificationRequired, CanPay: !verificationRequired && invoice.Status == "pending" && invoice.ExpiresAt.After(time.Now().UTC())})
+	now := time.Now().UTC()
+	checkoutExpired := false
+	if invoice.Status == "pending" && invoice.Gateway != "" {
+		payment, err := handler.billing.CreditTopUpByID(request.Context(), invoice.ID)
+		if err != nil && !errors.Is(err, db.ErrNotFound) {
+			handler.internalError(writer, request, "get invoice checkout", err)
+			return
+		}
+		checkoutExpired = err == nil && !payment.CheckoutDeadline().After(now)
+	}
+	handler.render(writer, "invoice.html", invoicePageData{ReceiptEnabled: receiptEnabled, Version: config.GetVersion(), User: identityUser(request), CSRF: identityCSRF(request), Invoice: invoice, Gateways: gateways, VerificationRequired: verificationRequired,
+		CanPay: !verificationRequired && invoice.Status == "pending" && invoice.ExpiresAt.After(now), CheckoutExpired: checkoutExpired})
 }
 
 func (handler *Handler) InvoicePDF(writer http.ResponseWriter, request *http.Request) {
