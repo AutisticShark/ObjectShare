@@ -146,6 +146,54 @@ func TestPostgresInvoiceGatewaySettlementAndPaymentLock(t *testing.T) {
 	}
 }
 
+// An early renewal is stacked after the current period. Until that period
+// ends, access must keep the terms of the invoice that paid for it, even if
+// the catalog changed before the renewal was bought.
+func TestPostgresEarlyRenewalKeepsCurrentPeriodBenefits(t *testing.T) {
+	repo := creditTestRepository(t)
+	user := creditTestUser(t, repo, 100)
+	plan := invoiceTestPlan(t, repo) // 2048 bytes, 30 days, direct links
+	now := time.Now().UTC()
+	first, err := repo.CreatePlanInvoice(t.Context(), user.ID, plan.ID, uuid.NewString(), "USD", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = repo.PayInvoiceCredit(t.Context(), user.ID, first.ID, now); err != nil {
+		t.Fatal(err)
+	}
+	plan.StorageQuotaBytes, plan.DirectLinks = 1024, false
+	if err = repo.UpdatePlan(t.Context(), &plan); err != nil {
+		t.Fatal(err)
+	}
+	renewed := now.Add(24 * time.Hour)
+	second, err := repo.CreatePlanInvoice(t.Context(), user.ID, plan.ID, uuid.NewString(), "USD", renewed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = repo.PayInvoiceCredit(t.Context(), user.ID, second.ID, renewed); err != nil {
+		t.Fatal(err)
+	}
+	firstEnd := now.AddDate(0, 0, 30)
+	for _, check := range []struct {
+		at        time.Time
+		quota     int64
+		direct    bool
+		described string
+	}{
+		{renewed.Add(time.Hour), 2048, true, "during the first paid period"},
+		{firstEnd.Add(-time.Minute), 2048, true, "at the end of the first paid period"},
+		{firstEnd.Add(time.Minute), 1024, false, "during the renewal period"},
+	} {
+		ent, err := repo.Entitlements(t.Context(), user.ID, check.at)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !ent.Active || ent.StorageQuotaBytes != check.quota || ent.DirectLinks != check.direct || ent.CurrentPeriodEnd.Sub(now.AddDate(0, 0, 60)).Abs() > time.Millisecond {
+			t.Errorf("%s: %#v; want quota %d, direct links %v, access until the renewal ends", check.described, ent, check.quota, check.direct)
+		}
+	}
+}
+
 func TestPostgresInvoiceOutboxLeaseRecovery(t *testing.T) {
 	repo := creditTestRepository(t)
 	user := creditTestUser(t, repo, 20)

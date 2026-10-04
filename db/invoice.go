@@ -43,6 +43,10 @@ type Invoice struct {
 	EmailLease        string    `gorm:"type:varchar(36);not null;default:''"`
 	EmailAttempts     int       `gorm:"not null;default:0"`
 	User              User      `gorm:"foreignKey:UserID;constraint:OnDelete:CASCADE"`
+
+	// PeriodStart is when a paid plan invoice's access begins. An early renewal
+	// starts when the period paid for by the previous invoice ends.
+	PeriodStart *time.Time
 }
 
 type InvoiceRepository interface {
@@ -194,7 +198,29 @@ func activateInvoicePlan(tx *gorm.DB, invoice *Invoice, now time.Time) error {
 	sub.GatewaySubscriptionID, sub.Status = "invoice:"+invoice.ID, "active"
 	sub.CurrentPeriodEnd, sub.CancelAtPeriodEnd, sub.LastEventCreated = start.AddDate(0, 0, invoice.DurationDays), true, now.Unix()
 	sub.InvoiceID = invoice.ID
+	if err := tx.Model(invoice).Update("period_start", start).Error; err != nil {
+		return err
+	}
 	return tx.Save(&sub).Error
+}
+
+// currentPeriodInvoice returns the paid invoice whose terms apply now. An early
+// renewal becomes the subscription's latest invoice when it is paid, but its
+// snapshot applies only once the period paid for by the earlier invoice ends.
+func currentPeriodInvoice(connection *gorm.DB, sub *Subscription, now time.Time) (Invoice, error) {
+	if sub.Gateway == BillingGatewayCredit {
+		var started Invoice
+		if err := connection.Where("user_id = ? AND kind = 'plan' AND status = 'paid' AND period_start <= ?", sub.UserID, now).
+			Order("period_start DESC").Limit(1).Find(&started).Error; err != nil {
+			return started, err
+		}
+		if started.PeriodStart != nil && started.PeriodStart.UTC().AddDate(0, 0, started.DurationDays).After(now) {
+			return started, nil
+		}
+	}
+	var latest Invoice
+	err := connection.Where("id = ? AND status = 'paid'", sub.InvoiceID).First(&latest).Error
+	return latest, err
 }
 
 func paidInvoice(tx *gorm.DB, invoice *Invoice, gateway, paymentID string, now time.Time) error {
@@ -245,6 +271,12 @@ var billingBackfillSQL = []string{
 		WHEN gateway = 'paypal' THEN LEAST(expires_at, created_at + INTERVAL '3 hours')
 		WHEN gateway = 'stripe' THEN LEAST(expires_at, created_at + INTERVAL '23 hours 55 minutes') ELSE expires_at END
 		WHERE status = 'pending' AND checkout_expires_at IS NULL`,
+	// Paid plan invoices from before period starts were stored. The invoice a
+	// local subscription points to ends with it; earlier ones began when paid.
+	`UPDATE invoices AS i SET period_start = s.current_period_end - i.duration_days * INTERVAL '1 day'
+		FROM subscriptions AS s WHERE s.invoice_id = CAST(i.id AS text) AND s.gateway = 'credit'
+		AND i.kind = 'plan' AND i.status = 'paid' AND i.period_start IS NULL`,
+	`UPDATE invoices SET period_start = paid_at WHERE kind = 'plan' AND status = 'paid' AND period_start IS NULL AND paid_at IS NOT NULL`,
 }
 
 // PayPalCheckoutLifetime is how long a PayPal order can be paid: PayPal allows

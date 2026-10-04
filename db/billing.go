@@ -441,8 +441,8 @@ func entitlementsWithDB(connection *gorm.DB, userID string, now time.Time) (Enti
 		return Entitlements{}, nil
 	}
 	if subscription.InvoiceID != "" {
-		var invoice Invoice
-		if err := connection.Where("id = ? AND status = 'paid'", subscription.InvoiceID).First(&invoice).Error; err != nil {
+		invoice, err := currentPeriodInvoice(connection, &subscription, now)
+		if err != nil {
 			return Entitlements{}, err
 		}
 		subscription.Plan.ID = invoice.PlanID
