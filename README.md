@@ -893,7 +893,7 @@ OBJECTSHARE_RATE_LIMIT_DOWNLOAD=60
 
 Older JSON configuration uses the top-level `rate_limit` object as `enabled`, `window`, `api_limit`, `login_limit`, `signup_limit`, `upload_limit`, and `download_limit`. A limit of `0` disables that scope; the window may be from one second to 24 hours. Rejected requests return HTTP `429`, `Retry-After`, `X-RateLimit-Limit`, and `X-RateLimit-Scope`. This application control complements—not replaces—connection, bandwidth, and request-body limits at the public reverse proxy.
 
-Forwarded IP headers are ignored unless the TCP peer belongs to a trusted proxy CIDR configured in the dashboard. The legacy seed is `OBJECTSHARE_TRUSTED_PROXY_CIDRS`, a comma-separated list; its older JSON equivalent is `rate_limit.trusted_proxy_cidrs`, an array. ObjectShare walks `X-Forwarded-For` from the trusted side and selects the first untrusted address. Do not add broad public networks merely to make a header work; an incorrect trust boundary lets clients choose their own limiter key.
+Forwarded IP headers are ignored unless the TCP peer belongs to a trusted proxy CIDR configured in the dashboard. The legacy seed is `OBJECTSHARE_TRUSTED_PROXY_CIDRS`, a comma-separated list; its older JSON equivalent is `rate_limit.trusted_proxy_cidrs`, an array. ObjectShare joins every `X-Forwarded-For` header line in order (proxies such as HAProxy with `option forwardfor` add their own line after any the client sent), walks the list from the trusted side, and selects the first untrusted address. Do not add broad public networks merely to make a header work; an incorrect trust boundary lets clients choose their own limiter key.
 
 ### Google, GitHub, and Discord OAuth login
 

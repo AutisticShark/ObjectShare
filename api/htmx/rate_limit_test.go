@@ -180,3 +180,21 @@ func TestBillingAndWebhookRoutesAreRateLimited(t *testing.T) {
 		})
 	}
 }
+
+// Proxies such as HAProxy ("option forwardfor") append their own
+// X-Forwarded-For line after any the client sent. Reading only the first line
+// would let the client choose its rate-limit and login-throttle identity.
+func TestClientIPReadsEveryForwardedForLine(t *testing.T) {
+	networks, err := parseTrustedProxies([]string{"10.0.0.0/8"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := &Handler{trustedProxies: networks}
+	request := httptest.NewRequest(http.MethodPost, "/login", nil)
+	request.RemoteAddr = "10.0.0.5:4000"
+	request.Header.Add("X-Forwarded-For", "198.51.100.77")         // spoofed by the client
+	request.Header.Add("X-Forwarded-For", "203.0.113.9, 10.0.0.6") // appended by trusted proxies
+	if got := handler.clientIP(request); got != "203.0.113.9" {
+		t.Fatalf("clientIP = %q, want the proxy-reported client 203.0.113.9", got)
+	}
+}

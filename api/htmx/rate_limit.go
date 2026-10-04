@@ -124,7 +124,9 @@ func (handler *Handler) clientIP(request *http.Request) string {
 	if !ipInNetworks(remoteIP, handler.trustedProxies) {
 		return remoteIP.String()
 	}
-	chain := strings.Split(request.Header.Get("X-Forwarded-For"), ",")
+	// A proxy may append its own X-Forwarded-For line after one the client sent,
+	// so every line is read in order rather than only the client-controlled first.
+	chain := strings.Split(strings.Join(request.Header.Values("X-Forwarded-For"), ","), ",")
 	for index := len(chain) - 1; index >= 0; index-- {
 		candidate := net.ParseIP(strings.TrimSpace(chain[index]))
 		if candidate == nil {
