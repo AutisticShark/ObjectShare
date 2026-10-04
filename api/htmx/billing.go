@@ -298,10 +298,17 @@ func (handler *Handler) renderAdminPlans(writer http.ResponseWriter, request *ht
 	}
 	rows := make([]adminPlanRow, 0, len(plans))
 	for _, plan := range plans {
-		rows = append(rows, adminPlanRow{PaidPlan: plan, StorageQuotaGiB: strconv.FormatFloat(float64(plan.StorageQuotaBytes)/(1024*1024*1024), 'f', -1, 64)})
+		rows = append(rows, adminPlanRow{PaidPlan: plan, StorageQuotaGiB: planQuotaGiB(plan.StorageQuotaBytes)})
 	}
 	identity := currentIdentity(request)
 	handler.render(writer, "admin_plans.html", adminPlansPageData{Version: config.GetVersion(), CSRF: identity.Claims.CSRF, User: identity.User, Plans: rows, Error: formError})
+}
+
+// planQuotaGiB renders a stored quota for the edit form, whose input accepts
+// steps of 0.01 GiB. Quotas entered there round-trip exactly; full precision
+// (0.29999999981…) would make the browser refuse to submit the form.
+func planQuotaGiB(bytes int64) string {
+	return strconv.FormatFloat(math.Round(float64(bytes)/(1024*1024*1024)*100)/100, 'f', -1, 64)
 }
 
 func (handler *Handler) AdminSavePlan(writer http.ResponseWriter, request *http.Request) {
@@ -362,7 +369,7 @@ func paidPlanFromForm(request *http.Request) (*db.PaidPlan, error) {
 		return nil, errors.New("Sort order must be between -10000 and 10000.")
 	}
 	return &db.PaidPlan{Name: name, Description: description,
-		StorageQuotaBytes: int64(quotaGiB * 1024 * 1024 * 1024), RetentionDays: retention,
+		StorageQuotaBytes: int64(math.Round(quotaGiB * 1024 * 1024 * 1024)), RetentionDays: retention,
 		DirectLinks: checked(request, "direct_links"), Price: price, DurationDays: duration,
 		Active: checked(request, "active"), SortOrder: sortOrder}, nil
 }

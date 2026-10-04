@@ -436,3 +436,28 @@ func TestPlansPageGivesEachPlanItsOwnRequestID(t *testing.T) {
 		t.Fatalf("status=%d request IDs=%q", response.Code, ids)
 	}
 }
+
+// Truncating a GiB quota to bytes and re-rendering it at full precision made
+// the edit form show values such as 0.29999999981, which fail its step="0.01"
+// validation, so administrators could not save unrelated plan edits.
+func TestAdminPlanQuotaRoundTripsThroughTheEditForm(t *testing.T) {
+	for _, entered := range []string{"0.01", "0.3", "1.5", "2.7", "10240"} {
+		form := url.Values{"name": {"P"}, "storage_quota_gib": {entered}, "retention_days": {"0"}, "price": {"1"}, "duration_days": {"30"}, "sort_order": {"0"}}
+		parse := func() *db.PaidPlan {
+			t.Helper()
+			request := httptest.NewRequest(http.MethodPost, "/admin/plans", strings.NewReader(form.Encode()))
+			request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+			plan, err := paidPlanFromForm(request)
+			if err != nil {
+				t.Fatalf("quota %s: %v", entered, err)
+			}
+			return plan
+		}
+		plan := parse()
+		shown := planQuotaGiB(plan.StorageQuotaBytes)
+		form.Set("storage_quota_gib", shown)
+		if again := parse(); shown != entered || again.StorageQuotaBytes != plan.StorageQuotaBytes {
+			t.Errorf("entered %s GiB, stored %d bytes, edit form shows %s, re-saved as %d bytes", entered, plan.StorageQuotaBytes, shown, again.StorageQuotaBytes)
+		}
+	}
+}
