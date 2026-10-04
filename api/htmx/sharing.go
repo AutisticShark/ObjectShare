@@ -168,6 +168,12 @@ func (handler *Handler) UpdateSharing(writer http.ResponseWriter, request *http.
 			fail("Account sharing is unavailable.")
 			return
 		}
+		// The reply reveals whether the addresses belong to accounts, and guest
+		// owners need no account, so recipient lookups are throttled per account
+		// or, for guests, per client address.
+		if !handler.allowRequest(writer, request, "sharing-recipients", sharingRecipientLookupLimit) {
+			return
+		}
 		seen := map[string]bool{}
 		for _, email := range emails {
 			user, err := handler.users.UserByEmail(request.Context(), strings.ToLower(strings.TrimSpace(email)))
@@ -200,6 +206,9 @@ func (handler *Handler) UpdateSharing(writer http.ResponseWriter, request *http.
 	}
 	handler.redirect(writer, request, "/file/"+file.FileID+"/sharing?saved=1")
 }
+
+// sharingRecipientLookupLimit caps selected-account saves per rate-limit window.
+const sharingRecipientLookupLimit = 10
 
 // Uploads may start private and be shared with selected accounts after completion.
 func uploadShareMode(value string) (string, bool) {

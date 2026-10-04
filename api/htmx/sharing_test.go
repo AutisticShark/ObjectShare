@@ -226,6 +226,51 @@ func TestSharingCSRFAndGuestOwnership(t *testing.T) {
 	}
 }
 
+// Selected-account sharing tells the owner whether each address belongs to an
+// account. Guest owners need no account, so the lookup must not become an
+// unthrottled account-enumeration oracle.
+func TestSelectedAccountLookupsAreRateLimited(t *testing.T) {
+	h, _, _, file, owner := sharingTestHandler(t)
+	h.config.RateLimit = &config.RateLimitConfig{Enabled: true, Window: config.Duration(time.Minute)}
+	token, hash, err := newOwnerToken()
+	if err != nil {
+		t.Fatal(err)
+	}
+	accountFile := *file
+	file.FileOwner, file.AnonymousSessionToken = nil, hash // a guest upload
+	guestProbe := func(mode, email string) int {
+		form := url.Values{"share_mode": {mode}, "recipients": {email}, "csrf_token": {guestSharingCSRF(file)}}
+		request := sharingRequest("POST", file.FileID, form.Encode(), nil)
+		request.AddCookie(ownerCookie(file.FileID, token, false, 0))
+		response := httptest.NewRecorder()
+		h.UpdateSharing(response, request)
+		return response.Code
+	}
+	for attempt := range sharingRecipientLookupLimit {
+		email, want := "owner@example.com", http.StatusSeeOther
+		if attempt%2 == 1 {
+			email, want = "nobody@example.com", http.StatusBadRequest
+		}
+		if status := guestProbe(db.ShareSelected, email); status != want {
+			t.Fatalf("lookup %d for %s = %d, want %d", attempt, email, status, want)
+		}
+	}
+	if status := guestProbe(db.ShareSelected, "owner@example.com"); status != http.StatusTooManyRequests {
+		t.Fatalf("guest recipient lookups are not throttled: status %d", status)
+	}
+	if status := guestProbe(db.ShareLink, ""); status != http.StatusSeeOther {
+		t.Fatalf("throttled lookups blocked a change without recipients: status %d", status)
+	}
+
+	// Account owners have their own budget, keyed by account.
+	h.repository.(*authMemoryRepository).files[accountFile.FileID] = &accountFile
+	response := httptest.NewRecorder()
+	h.UpdateSharing(response, sharingRequest("POST", accountFile.FileID, url.Values{"share_mode": {db.ShareSelected}, "recipients": {"owner@example.com"}}.Encode(), owner))
+	if response.Code != http.StatusSeeOther {
+		t.Fatalf("account owner shared by the guest's budget: status %d", response.Code)
+	}
+}
+
 func TestAccountOwnerCookieCannotBypassJWT(t *testing.T) {
 	h, _, storage, file, owner := sharingTestHandler(t)
 	file.ShareMode = db.SharePrivate
