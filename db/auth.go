@@ -49,15 +49,26 @@ func (repo *GormRepository) BootstrapAdmin(ctx context.Context, user *User) erro
 		}
 		user.Role = RoleAdmin
 		user.Active = true
+		recordVerificationHistory(user)
 		return translateConflict(transaction.Create(user).Error)
 	})
 }
 
+// recordVerificationHistory keeps EmailEverVerified set for an account created
+// with an already verified address.
+func recordVerificationHistory(user *User) {
+	if user.EmailVerifiedAt != nil {
+		user.EmailEverVerified = true
+	}
+}
+
 func (repo *GormRepository) CreateUser(ctx context.Context, user *User) error {
+	recordVerificationHistory(user)
 	return translateConflict(repo.connection.WithContext(ctx).Create(user).Error)
 }
 
 func (repo *GormRepository) CreateOAuthUser(ctx context.Context, user *User, identity *OAuthIdentity) error {
+	recordVerificationHistory(user)
 	return repo.connection.WithContext(ctx).Transaction(func(transaction *gorm.DB) error {
 		if err := translateConflict(transaction.Create(user).Error); err != nil {
 			return err
@@ -110,9 +121,14 @@ func (repo *GormRepository) LinkOAuthIdentity(ctx context.Context, identity *OAu
 // ClaimUnverifiedAccountForOAuth hands an account whose email address was never
 // verified to the person who just proved, through an OAuth provider, that they
 // control that address. Anyone can register an address they do not own, so the
-// unverified holder must not keep a way in: the password, MFA enrolment, and
-// every linked login are removed and all issued JWTs are invalidated before the
-// provider identity is attached and the address is marked verified.
+// unverified holder must not keep a way in: the password and every linked login
+// are removed and all issued JWTs are invalidated before the provider identity
+// is attached and the address is marked verified.
+//
+// Only accounts that have never verified any address qualify. An account that
+// verified an address once is established, and changing its email clears only
+// the current verification, so it is never claimable. Accounts with MFA
+// enrolled are refused as well.
 func (repo *GormRepository) ClaimUnverifiedAccountForOAuth(ctx context.Context, userID string, identity *OAuthIdentity, now time.Time) (*User, error) {
 	var claimed User
 	err := repo.connection.WithContext(ctx).Transaction(func(transaction *gorm.DB) error {
@@ -121,15 +137,15 @@ func (repo *GormRepository) ClaimUnverifiedAccountForOAuth(ctx context.Context, 
 		} else if err != nil {
 			return err
 		}
-		if claimed.EmailVerifiedAt != nil || claimed.Role != RoleUser || !claimed.CanAuthenticate() {
+		if !claimed.OAuthClaimable() {
 			return ErrConflict
 		}
 		if err := transaction.Where("user_id = ?", claimed.ID).Delete(&OAuthIdentity{}).Error; err != nil {
 			return err
 		}
 		claimed.PasswordHash, claimed.MFA, claimed.TokenVersion = "", MFAState{}, claimed.TokenVersion+1
-		claimed.EmailVerifiedAt, claimed.EmailVerificationHash, claimed.EmailVerificationExpiresAt = &now, "", nil
-		if err := transaction.Model(&claimed).Select("PasswordHash", "MFA", "TokenVersion", "EmailVerifiedAt", "EmailVerificationHash", "EmailVerificationExpiresAt").Updates(&claimed).Error; err != nil {
+		claimed.EmailVerifiedAt, claimed.EmailEverVerified, claimed.EmailVerificationHash, claimed.EmailVerificationExpiresAt = &now, true, "", nil
+		if err := transaction.Model(&claimed).Select("PasswordHash", "MFA", "TokenVersion", "EmailVerifiedAt", "EmailEverVerified", "EmailVerificationHash", "EmailVerificationExpiresAt").Updates(&claimed).Error; err != nil {
 			return err
 		}
 		identity.UserID = claimed.ID

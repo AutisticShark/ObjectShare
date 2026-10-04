@@ -44,6 +44,7 @@ type User struct {
 	EmailVerificationHash      string     `gorm:"column:email_verification_hash;type:varchar(64);not null;default:''" json:"-"`
 	EmailVerificationExpiresAt *time.Time `gorm:"column:email_verification_expires_at" json:"-"`
 	EmailVerificationSentAt    *time.Time `gorm:"column:email_verification_sent_at" json:"-"`
+	EmailEverVerified          bool       `gorm:"column:email_ever_verified;not null;default:false" json:"-"`
 	ID                         string     `gorm:"column:id;type:uuid;primaryKey"`
 	Email                      string     `gorm:"column:email;type:varchar(320);uniqueIndex;not null"`
 	DisplayName                string     `gorm:"column:display_name;type:varchar(100);not null"`
@@ -64,6 +65,16 @@ func (User) TableName() string { return "users" }
 
 func (user *User) CanAuthenticate() bool {
 	return user != nil && user.Active && user.ModerationStatus != ModerationBanned
+}
+
+// OAuthClaimable reports whether a verified OAuth login for this account's email
+// may take the account over (see ClaimUnverifiedAccountForOAuth): only an
+// active normal account that has never verified any email address and has no
+// MFA enrolled. EmailEverVerified records that some address was verified at
+// least once; unlike EmailVerifiedAt it survives email changes, so an
+// established account is never mistaken for an unverified squatter.
+func (user *User) OAuthClaimable() bool {
+	return user.CanAuthenticate() && user.Role == RoleUser && user.EmailVerifiedAt == nil && !user.EmailEverVerified && user.MFA.Method == ""
 }
 
 func (user *User) IsAvailableAdmin() bool {

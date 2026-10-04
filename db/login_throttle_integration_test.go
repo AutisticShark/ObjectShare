@@ -88,7 +88,7 @@ func TestPostgresAccountLoginAttemptsLockAtTheHigherThresholdAndExpire(t *testin
 func TestPostgresClaimUnverifiedAccountRemovesTheSquattersAccess(t *testing.T) {
 	repo := creditTestRepository(t)
 	suffix := uuid.NewString()
-	squatted := &User{ID: uuid.NewString(), Email: "owner-" + suffix + "@example.com", DisplayName: "Squatter", PasswordHash: "$argon2id$squatter", Role: RoleUser, Active: true, TokenVersion: 2, MFA: MFAState{Method: "totp"}}
+	squatted := &User{ID: uuid.NewString(), Email: "owner-" + suffix + "@example.com", DisplayName: "Squatter", PasswordHash: "$argon2id$squatter", Role: RoleUser, Active: true, TokenVersion: 2}
 	if err := repo.CreateUser(t.Context(), squatted); err != nil {
 		t.Fatal(err)
 	}
@@ -111,6 +111,85 @@ func TestPostgresClaimUnverifiedAccountRemovesTheSquattersAccess(t *testing.T) {
 	// A verified account can no longer be claimed.
 	if _, err = repo.ClaimUnverifiedAccountForOAuth(t.Context(), squatted.ID, &OAuthIdentity{Provider: "github", Subject: "later-" + suffix, Email: squatted.Email}, now); !errors.Is(err, ErrConflict) {
 		t.Fatalf("second claim = %v, want ErrConflict", err)
+	}
+}
+
+// Changing the email of an established account clears its current
+// verification. That must not make it claimable, which would wipe its password
+// and MFA; neither may an MFA-enrolled account ever be claimed.
+func TestPostgresOAuthClaimRefusesEstablishedAndMFAAccounts(t *testing.T) {
+	repo := creditTestRepository(t)
+	verified := time.Now().UTC().Add(-30 * 24 * time.Hour)
+	create := func(verifiedAt *time.Time, mfa MFAState) *User {
+		t.Helper()
+		user := &User{ID: uuid.NewString(), Email: uuid.NewString() + "@example.com", DisplayName: "Owner", PasswordHash: "$argon2id$placeholder",
+			Role: RoleUser, Active: true, TokenVersion: 1, EmailVerifiedAt: verifiedAt, MFA: mfa}
+		if err := repo.CreateUser(t.Context(), user); err != nil {
+			t.Fatal(err)
+		}
+		return user
+	}
+	claim := func(user *User, email string) error {
+		_, err := repo.ClaimUnverifiedAccountForOAuth(t.Context(), user.ID, &OAuthIdentity{Provider: "google", Subject: uuid.NewString(), Email: email}, time.Now().UTC())
+		return err
+	}
+	changeEmail := func(user *User) string {
+		t.Helper()
+		address := uuid.NewString() + "@evil.test"
+		if err := repo.UpdateProfile(t.Context(), user.ID, address, "Owner"); err != nil {
+			t.Fatal(err)
+		}
+		return address
+	}
+	assertIntact := func(user *User) {
+		t.Helper()
+		current, err := repo.UserByID(t.Context(), user.ID)
+		if err != nil || current.PasswordHash != user.PasswordHash || current.MFA.Method != user.MFA.Method || current.TokenVersion != user.TokenVersion {
+			t.Fatalf("a refused claim changed the account: %#v %v", current, err)
+		}
+	}
+
+	withMFA := create(&verified, MFAState{Method: "totp", Secret: "mfa:v1:x"})
+	if err := claim(withMFA, changeEmail(withMFA)); !errors.Is(err, ErrConflict) {
+		t.Fatalf("claim of a verified MFA account after an email change = %v, want ErrConflict", err)
+	}
+	assertIntact(withMFA)
+
+	established := create(&verified, MFAState{})
+	if err := claim(established, changeEmail(established)); !errors.Is(err, ErrConflict) {
+		t.Fatalf("claim of a once-verified account after an email change = %v, want ErrConflict", err)
+	}
+	assertIntact(established)
+
+	// Verifying through the email link marks the account as established too.
+	linkVerified := create(nil, MFAState{})
+	hash := strings.Repeat("d", 64)
+	now := time.Now().UTC()
+	if ok, err := repo.ReserveEmailVerification(t.Context(), linkVerified.ID, linkVerified.Email, hash, now, now.Add(time.Hour)); err != nil || !ok {
+		t.Fatal("reserve verification", err)
+	}
+	if ok, err := repo.VerifyEmail(t.Context(), linkVerified.ID, hash, now); err != nil || !ok {
+		t.Fatal("verify email", err)
+	}
+	if err := claim(linkVerified, changeEmail(linkVerified)); !errors.Is(err, ErrConflict) {
+		t.Fatalf("claim of a link-verified account after an email change = %v, want ErrConflict", err)
+	}
+
+	squatterWithMFA := create(nil, MFAState{Method: "totp", Secret: "mfa:v1:x"})
+	if err := claim(squatterWithMFA, squatterWithMFA.Email); !errors.Is(err, ErrConflict) {
+		t.Fatalf("claim of a never-verified MFA account = %v, want ErrConflict", err)
+	}
+	assertIntact(squatterWithMFA)
+
+	// A never-verified account without MFA can still be reclaimed after its
+	// holder changed its email.
+	squatter := create(nil, MFAState{})
+	if err := claim(squatter, changeEmail(squatter)); err != nil {
+		t.Fatalf("a never-verified account could not be reclaimed: %v", err)
+	}
+	current, err := repo.UserByID(t.Context(), squatter.ID)
+	if err != nil || !current.EmailEverVerified || current.EmailVerifiedAt == nil {
+		t.Fatalf("a claimed account is not marked verified: %#v %v", current, err)
 	}
 }
 

@@ -51,6 +51,49 @@ func TestPostgresEmailVerificationUpgradePreservesExistingUsers(t *testing.T) {
 	}
 }
 
+// Upgrading adds email_ever_verified and backfills it from email_verified_at, on
+// every start, without touching unverified accounts.
+func TestPostgresEmailVerificationHistoryIsBackfilled(t *testing.T) {
+	settings := creditTestSettings(t)
+	cfg := &config.DatabaseConfig{MaxOpenConns: 1, MaxIdleConns: 1}
+	open := func() *GormRepository {
+		t.Helper()
+		repo, err := openPostgres(t.Context(), cfg, settings, time.UTC)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = repo.Close() })
+		return repo
+	}
+	repo := open()
+	verified := creditTestUser(t, repo, 0)
+	unverified := creditTestUser(t, repo, 0)
+	if err := repo.connection.Model(&User{}).Where("id = ?", verified.ID).Update("email_verified_at", time.Now().UTC()).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.Close(); err != nil {
+		t.Fatal(err)
+	}
+	pool := stdlib.OpenDB(*settings)
+	_, err := pool.ExecContext(t.Context(), "ALTER TABLE users DROP COLUMN email_ever_verified")
+	_ = pool.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		repo = open()
+		for id, want := range map[string]bool{verified.ID: true, unverified.ID: false} {
+			current, err := repo.UserByID(t.Context(), id)
+			if err != nil || current.EmailEverVerified != want {
+				t.Fatalf("email_ever_verified for %s = %v, want %v (%v)", id, current.EmailEverVerified, want, err)
+			}
+		}
+		if err := repo.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
 func TestPostgresEmailVerificationLifecycleAndConcurrency(t *testing.T) {
 	repo := creditTestRepository(t)
 	user := creditTestUser(t, repo, 0)

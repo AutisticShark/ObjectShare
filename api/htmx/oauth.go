@@ -227,10 +227,10 @@ func (handler *Handler) finishOAuthLogin(writer http.ResponseWriter, request *ht
 		existing, emailErr := handler.users.UserByEmail(request.Context(), email)
 		if emailErr == nil {
 			// The provider vouches for this address. If the account holding it
-			// never verified it, that account was registered by someone who may
-			// not own the address, so the verified owner takes it over instead of
-			// being locked out of their own email.
-			if existing.EmailVerifiedAt != nil || existing.Role != db.RoleUser || !existing.CanAuthenticate() {
+			// never verified any address, that account was registered by someone
+			// who may not own the address, so the verified owner takes it over
+			// instead of being locked out of their own email.
+			if !existing.OAuthClaimable() {
 				handler.renderOAuthError(writer, request, "An ObjectShare account already uses this email. Log in with its password, then link this provider from My account.", false)
 				return
 			}
@@ -253,7 +253,7 @@ func (handler *Handler) finishOAuthLogin(writer http.ResponseWriter, request *ht
 		}
 		user = &db.User{ID: uuid.NewString(), Email: email, DisplayName: displayName, PasswordHash: "", Role: db.RoleUser, Active: true, TokenVersion: 1}
 		verifiedAt := time.Now().UTC()
-		user.EmailVerifiedAt = &verifiedAt
+		user.EmailVerifiedAt, user.EmailEverVerified = &verifiedAt, true
 		identity.UserID = user.ID
 		if createErr := handler.users.CreateOAuthUser(request.Context(), user, identity); createErr != nil {
 			if !errors.Is(createErr, db.ErrConflict) {

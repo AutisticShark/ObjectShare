@@ -90,6 +90,7 @@ func (repository *authMemoryRepository) CreateUser(_ context.Context, user *db.U
 	if copy.TokenVersion < 1 {
 		copy.TokenVersion = 1
 	}
+	copy.EmailEverVerified = copy.EmailEverVerified || copy.EmailVerifiedAt != nil
 	copy.CreatedAt = time.Now().UTC()
 	repository.users[user.ID] = &copy
 	repository.quotaBytes[user.ID] = copy.UploadQuotaBytes
@@ -144,7 +145,7 @@ func (repository *authMemoryRepository) ClaimUnverifiedAccountForOAuth(_ context
 	if !ok {
 		return nil, db.ErrNotFound
 	}
-	if user.EmailVerifiedAt != nil || user.Role != db.RoleUser || !user.CanAuthenticate() {
+	if !user.OAuthClaimable() {
 		return nil, db.ErrConflict
 	}
 	for key, existing := range repository.identities {
@@ -152,7 +153,7 @@ func (repository *authMemoryRepository) ClaimUnverifiedAccountForOAuth(_ context
 			delete(repository.identities, key)
 		}
 	}
-	user.PasswordHash, user.MFA, user.TokenVersion, user.EmailVerifiedAt = "", db.MFAState{}, user.TokenVersion+1, &now
+	user.PasswordHash, user.MFA, user.TokenVersion, user.EmailVerifiedAt, user.EmailEverVerified = "", db.MFAState{}, user.TokenVersion+1, &now, true
 	identity.UserID = userID
 	copy := *identity
 	repository.identities[identity.Provider+"\x00"+identity.Subject] = &copy

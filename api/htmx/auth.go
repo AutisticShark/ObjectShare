@@ -669,6 +669,9 @@ func (handler *Handler) UpdateProfile(writer http.ResponseWriter, request *http.
 		handler.renderAccount(writer, request, identity, err.Error(), "")
 		return
 	}
+	if email != identity.User.Email && !handler.confirmEmailChange(writer, request, identity) {
+		return
+	}
 	err = handler.users.UpdateProfile(request.Context(), identity.User.ID, email, displayName)
 	if errors.Is(err, db.ErrMFAEmailChange) {
 		handler.renderAccount(writer, request, identity, "Disable email MFA using a current code or recovery code before changing your email address. You can enable it again after verifying the new address.", "")
@@ -692,6 +695,35 @@ func (handler *Handler) UpdateProfile(writer http.ResponseWriter, request *http.
 		return
 	}
 	handler.redirect(writer, request, "/account?message=profile")
+}
+
+// confirmEmailChange requires fresh proof before the account email changes: the
+// current password, or a recent sign-in for an account without one. The email
+// is where account recovery and OAuth sign-in lead, so an old or stolen session
+// alone must not be able to redirect it. It renders the refusal itself.
+func (handler *Handler) confirmEmailChange(writer http.ResponseWriter, request *http.Request, identity *identity) bool {
+	if identity.User.PasswordHash == "" {
+		if recentlyAuthenticated(identity) {
+			return true
+		}
+		handler.renderAccount(writer, request, identity, "To change your email address, sign out and sign in again, then change it within five minutes.", "")
+		return false
+	}
+	ok, lockedUntil, err := handler.verifyCurrentPassword(request, identity.User, request.FormValue("current_password"))
+	if err != nil {
+		handler.internalError(writer, request, "verify current password for email change", err)
+		return false
+	}
+	if !lockedUntil.IsZero() {
+		writer.Header().Set("Retry-After", fmt.Sprint(max(1, int(time.Until(lockedUntil).Seconds()))))
+		handler.renderAccountPageStatus(writer, request, identity, http.StatusTooManyRequests, "Too many incorrect password attempts. Try again later.", "", "account.html")
+		return false
+	}
+	if !ok {
+		handler.renderAccount(writer, request, identity, "Enter your current password to change your email address.", "")
+		return false
+	}
+	return true
 }
 
 func (handler *Handler) UpdateTheme(writer http.ResponseWriter, request *http.Request) {

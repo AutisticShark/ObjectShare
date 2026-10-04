@@ -26,6 +26,6 @@ func (repo *GormRepository) VerifyEmail(ctx context.Context, id, hash string, no
 	}
 	result := repo.connection.WithContext(ctx).Model(&User{}).
 		Where("id = ? AND active = ? AND email_verified_at IS NULL AND email_verification_hash = ? AND email_verification_expires_at > ?", id, true, hash, now).
-		Updates(map[string]any{"email_verified_at": now, "email_verification_hash": "", "email_verification_expires_at": nil})
+		Updates(map[string]any{"email_verified_at": now, "email_ever_verified": true, "email_verification_hash": "", "email_verification_expires_at": nil})
 	return result.RowsAffected == 1, result.Error
 }

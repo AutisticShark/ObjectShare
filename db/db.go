@@ -282,6 +282,15 @@ func openPostgres(ctx context.Context, cfg *config.DatabaseConfig, pgxConfig *pg
 		_ = sqlDB.Close()
 		return nil, fmt.Errorf("correct anonymous upload flags: %w", err)
 	}
+	// Every account that has a verified address has verified one at least
+	// once. This backfills rows from before email_ever_verified existed and
+	// rows verified by an older replica during a rolling upgrade; it changes
+	// nothing once they agree.
+	if err := migration.Exec("UPDATE users SET email_ever_verified = TRUE WHERE email_verified_at IS NOT NULL AND NOT email_ever_verified").Error; err != nil {
+		_ = migration.Rollback().Error
+		_ = sqlDB.Close()
+		return nil, fmt.Errorf("backfill email verification history: %w", err)
+	}
 	if err := migration.Exec(dropLegacySessionsSQL).Error; err != nil {
 		_ = migration.Rollback().Error
 		_ = sqlDB.Close()

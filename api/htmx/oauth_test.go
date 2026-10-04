@@ -453,8 +453,7 @@ func TestOAuthLinkChangesRequireAFreshSignIn(t *testing.T) {
 func TestVerifiedOAuthEmailReclaimsAnUnverifiedSquattedAccount(t *testing.T) {
 	repository := newAuthMemoryRepository()
 	squatterHash, _ := appauth.HashPassword("the squatter's password")
-	squatted := &db.User{ID: "60c628c1-85cb-4463-b895-a629c31bfa55", Email: "owner@example.com", DisplayName: "Squatter", PasswordHash: squatterHash, Role: db.RoleUser, Active: true, TokenVersion: 3,
-		MFA: db.MFAState{Method: "totp"}}
+	squatted := &db.User{ID: "60c628c1-85cb-4463-b895-a629c31bfa55", Email: "owner@example.com", DisplayName: "Squatter", PasswordHash: squatterHash, Role: db.RoleUser, Active: true, TokenVersion: 3}
 	repository.users[squatted.ID] = squatted
 	repository.identities["github\x00attackers-account"] = &db.OAuthIdentity{UserID: squatted.ID, Provider: "github", Subject: "attackers-account", Email: "attacker@example.net"}
 	handler := newAuthTestHandler(t, repository, false)
@@ -490,5 +489,116 @@ func TestVerifiedOAuthEmailReclaimsAnUnverifiedSquattedAccount(t *testing.T) {
 	handler.Authenticate(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) { served = currentIdentity(r) })).ServeHTTP(httptest.NewRecorder(), request)
 	if served != nil {
 		t.Fatal("a JWT issued before the takeover still authenticates")
+	}
+}
+
+// oauthLoginAs completes an OAuth login whose provider vouches for email and
+// returns the account the session JWT it set belongs to ("" when none).
+func oauthLoginAs(t *testing.T, handler *Handler, subject, email string) (*httptest.ResponseRecorder, string) {
+	t.Helper()
+	provider := &fakeOAuthProvider{key: "google", label: "Google", profile: &appauth.OAuthProfile{Subject: subject, Email: email, EmailVerified: true, DisplayName: "Google User"}}
+	handler.oauthProviders = map[string]appauth.OAuthProvider{"google": provider}
+	_, flowCookie := startOAuth(t, handler, "google", "", nil)
+	callback := oauthRouteRequest(http.MethodGet, "/oauth/google/callback?code=code&state="+url.QueryEscape(provider.state), "google")
+	callback.AddCookie(flowCookie)
+	response := httptest.NewRecorder()
+	handler.OAuthCallback(response, callback)
+	subjectID := ""
+	if raw := responseJWT(response); raw != "" {
+		if claims, err := handler.jwt.Parse(raw); err == nil {
+			subjectID = claims.Subject
+		}
+	}
+	return response, subjectID
+}
+
+// A session alone (here one signed in two hours ago) must not repoint an
+// established account's email, and even a legitimate email change must not
+// let an OAuth login for the new address claim the account and wipe its
+// password, MFA, and linked logins.
+func TestEmailChangeRequiresReauthenticationAndNeverMakesAnAccountClaimable(t *testing.T) {
+	repository := newAuthMemoryRepository()
+	hash, _ := appauth.HashPassword("the owner's real password")
+	verifiedAt := time.Now().Add(-30 * 24 * time.Hour)
+	owner := &db.User{ID: "60c628c1-85cb-4463-b895-a629c31bfa55", Email: "owner@example.com", DisplayName: "Owner", PasswordHash: hash,
+		Role: db.RoleUser, Active: true, TokenVersion: 1, EmailVerifiedAt: &verifiedAt}
+	if err := repository.CreateUser(t.Context(), owner); err != nil {
+		t.Fatal(err)
+	}
+	owner = repository.users[owner.ID]
+	handler := newAuthTestHandler(t, repository, false)
+	stale, claims, err := handler.jwt.Issue(owner.ID, owner.Role, owner.TokenVersion, time.Now().UTC().Add(-2*time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	updateProfile := func(values url.Values) *httptest.ResponseRecorder {
+		values.Set("csrf_token", claims.CSRF)
+		request := formRequest("/account/profile", values)
+		request.AddCookie(&http.Cookie{Name: "objectshare_jwt", Value: stale})
+		response := httptest.NewRecorder()
+		handler.Authenticate(handler.RequireUser(http.HandlerFunc(handler.UpdateProfile))).ServeHTTP(response, request)
+		return response
+	}
+
+	for _, password := range []string{"", "a wrong password"} {
+		response := updateProfile(url.Values{"email": {"attacker@evil.test"}, "display_name": {"Owner"}, "current_password": {password}})
+		if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "current password") || owner.Email != "owner@example.com" || owner.EmailVerifiedAt == nil {
+			t.Fatalf("email changed without the current password %q: status=%d email=%q body=%q", password, response.Code, owner.Email, response.Body.String())
+		}
+	}
+	if response, subject := oauthLoginAs(t, handler, "attacker-google", "attacker@evil.test"); subject == owner.ID || owner.PasswordHash != hash {
+		t.Fatalf("an OAuth login for an unrelated address took over the account: status=%d", response.Code)
+	}
+	// Display-name edits stay password-free.
+	if response := updateProfile(url.Values{"email": {"owner@example.com"}, "display_name": {"Renamed"}}); response.Code != http.StatusSeeOther || owner.DisplayName != "Renamed" {
+		t.Fatalf("display-name change status=%d body=%q", response.Code, response.Body.String())
+	}
+
+	// With the password the change succeeds and clears the current verification,
+	// but the account has verified an address before, so it stays established.
+	if response := updateProfile(url.Values{"email": {"new@example.net"}, "display_name": {"Renamed"}, "current_password": {"the owner's real password"}}); response.Code != http.StatusSeeOther || owner.Email != "new@example.net" || owner.EmailVerifiedAt != nil {
+		t.Fatalf("email change with the password status=%d email=%q body=%q", response.Code, owner.Email, response.Body.String())
+	}
+	response, subject := oauthLoginAs(t, handler, "someone-google", "new@example.net")
+	if subject == owner.ID || response.Code != http.StatusBadRequest || owner.PasswordHash != hash || owner.TokenVersion != 1 || repository.identities["google\x00someone-google"] != nil {
+		t.Fatalf("an OAuth login claimed an account that had verified an email: status=%d subject=%q password kept=%v", response.Code, subject, owner.PasswordHash == hash)
+	}
+}
+
+func TestPasswordlessEmailChangeRequiresARecentSignIn(t *testing.T) {
+	repository := newAuthMemoryRepository()
+	user := &db.User{ID: "60c628c1-85cb-4463-b895-a629c31bfa55", Email: "owner@example.com", DisplayName: "Owner", Role: db.RoleUser, Active: true, TokenVersion: 1}
+	repository.users[user.ID] = user
+	handler := newAuthTestHandler(t, repository, false)
+	change := func(issued time.Time, email string) *httptest.ResponseRecorder {
+		token, claims, err := handler.jwt.Issue(user.ID, user.Role, user.TokenVersion, issued)
+		if err != nil {
+			t.Fatal(err)
+		}
+		request := formRequest("/account/profile", url.Values{"csrf_token": {claims.CSRF}, "email": {email}, "display_name": {"Owner"}})
+		request.AddCookie(&http.Cookie{Name: "objectshare_jwt", Value: token})
+		response := httptest.NewRecorder()
+		handler.Authenticate(handler.RequireUser(http.HandlerFunc(handler.UpdateProfile))).ServeHTTP(response, request)
+		return response
+	}
+	if response := change(time.Now().UTC().Add(-time.Hour), "attacker@evil.test"); response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "sign in again") || user.Email != "owner@example.com" {
+		t.Fatalf("a stale passwordless session changed the email: status=%d body=%q", response.Code, response.Body.String())
+	}
+	if response := change(time.Now().UTC(), "new@example.com"); response.Code != http.StatusSeeOther || user.Email != "new@example.com" {
+		t.Fatalf("a recent passwordless session could not change the email: status=%d body=%q", response.Code, response.Body.String())
+	}
+}
+
+// Only accounts that never verified any address and have no MFA are handed to
+// a verified OAuth email; an MFA-enrolled squatter is refused.
+func TestOAuthEmailDoesNotReclaimAccountsWithMFA(t *testing.T) {
+	repository := newAuthMemoryRepository()
+	hash, _ := appauth.HashPassword("a sufficiently long password")
+	user := &db.User{ID: "60c628c1-85cb-4463-b895-a629c31bfa55", Email: "owner@example.com", DisplayName: "Holder", PasswordHash: hash, Role: db.RoleUser, Active: true, TokenVersion: 1, MFA: db.MFAState{Method: "totp"}}
+	repository.users[user.ID] = user
+	handler := newAuthTestHandler(t, repository, false)
+	response, subject := oauthLoginAs(t, handler, "google-owner", user.Email)
+	if response.Code != http.StatusBadRequest || subject != "" || user.PasswordHash != hash || user.MFA.Method != "totp" || user.TokenVersion != 1 || len(repository.identities) != 0 {
+		t.Fatalf("an MFA account was claimed: status=%d user=%#v", response.Code, user)
 	}
 }

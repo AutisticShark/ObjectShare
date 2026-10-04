@@ -32,7 +32,7 @@ func (repo *authMemoryRepository) VerifyEmail(_ context.Context, id, hash string
 	if user == nil || !user.Active || user.EmailVerifiedAt != nil || hash == "" || user.EmailVerificationHash != hash || user.EmailVerificationExpiresAt == nil || !user.EmailVerificationExpiresAt.After(now) {
 		return false, nil
 	}
-	user.EmailVerifiedAt, user.EmailVerificationExpiresAt, user.EmailVerificationHash = &now, nil, ""
+	user.EmailVerifiedAt, user.EmailEverVerified, user.EmailVerificationExpiresAt, user.EmailVerificationHash = &now, true, nil, ""
 	return true, nil
 }
 

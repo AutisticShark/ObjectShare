@@ -435,7 +435,9 @@ Under **Configuration → Email verification**, set **Public site URL** to the
 browser-visible origin (for example, `https://files.example.com`) and configure
 **Outgoing email**. Save; the saving replica activates it at once. Password signup then signs the
 user in and sends a verification link; **My account** shows verification status and
-lets the user resend it. Email changes clear verification and send a new link.
+lets the user resend it. Changing the account email requires the current
+password, or a sign-in within the last five minutes for an account without one;
+the change clears verification and sends a new link.
 Delivery failures leave the account usable and unverified, with a retry message.
 No email credentials or actual configuration values are changed by upgrading.
 
@@ -458,7 +460,13 @@ settings follow the existing encrypted database configuration and activation lif
   can still access Configuration and request verification from My account.
   New OAuth accounts start verified because creation already requires a provider
   verified email. Existing accounts are never merged or verified by matching an
-  OAuth email; they can use the verification link.
+  OAuth email; they can use the verification link. The only exception is an
+  account that has never verified any email address and has no MFA enrolled:
+  a provider-verified login for its address reclaims it from a possible
+  squatter, removing its password and linked logins and invalidating its JWTs.
+  Once an account has verified an address, changing its email never makes it
+  reclaimable. Startup adds and backfills `users.email_ever_verified`, which
+  records this, from existing verification timestamps.
 - Links use 256-bit random tokens, store only a SHA-256 hash, expire after 24 hours,
   and are consumed atomically once. A confirmation POST with CSRF protection
   prevents mail scanners from consuming links on GET. A new link invalidates the
@@ -931,7 +939,7 @@ For older JSON configuration, the equivalent settings belong under `auth.oauth`:
 
 OAuth uses the authorization-code flow with a fresh signed state value and PKCE challenge for every attempt. ObjectShare requests only identity/profile scopes, accepts only a provider's stable account ID plus verified email, does not store provider access or refresh tokens, and issues the same hardened ObjectShare JWT used by password login.
 
-A new verified OAuth identity creates a normal user only while public signup is enabled. If its email already belongs to an ObjectShare account, automatic email-based merging is refused: log in with the existing password and link Google, GitHub, or Discord from **My account**. OAuth-only users can set a password there within five minutes of signing in. ObjectShare also prevents removing the final login method. Disabling public signup does not stop already-linked identities from signing in.
+A new verified OAuth identity creates a normal user only while public signup is enabled. If its email already belongs to an ObjectShare account, automatic email-based merging is refused: log in with the existing password and link Google, GitHub, or Discord from **My account**. (An account that has never verified any email address and has no MFA is instead reclaimed by the provider-verified owner of that address, as described under signup email verification.) OAuth-only users can set a password there within five minutes of signing in. ObjectShare also prevents removing the final login method. Disabling public signup does not stop already-linked identities from signing in.
 
 Account authentication uses signed HS256 JWTs only; there is no server-side login-session table. Tokens require the ObjectShare issuer and audience plus `sub`, `jti`, `iat`, `nbf`, `exp`, role, token-version, and CSRF claims. An `auth_time` claim records when the user last proved a login factor (password, OAuth, completed login MFA, or signup). Tokens re-issued after a password or MFA change, or after linking a provider, keep the original `auth_time`, and it alone decides whether a session signed in recently enough (five minutes) for login-method changes; tokens issued before this claim existed never count as recent. Browser login stores the JWT in an `HttpOnly`, `SameSite=Strict` cookie (and a `Secure` `__Host-` cookie when `OBJECTSHARE_SECURE_COOKIES=true`). Cookie-authenticated mutations require the CSRF value embedded in the signed token. Passwords are hashed with Argon2id, and login attempts are throttled after repeated failures.
 
