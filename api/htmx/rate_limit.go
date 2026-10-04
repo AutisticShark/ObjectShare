@@ -80,7 +80,7 @@ func (handler *Handler) allowRequest(writer http.ResponseWriter, request *http.R
 		return true
 	}
 	identityKey := "ip:" + handler.clientNetwork(request)
-	if identity := currentIdentity(request); identity != nil {
+	if identity := currentIdentity(request); identity != nil && !preAuthRateLimitScopes[scope] {
 		identityKey = "user:" + identity.User.ID
 	}
 	digest := sha256.Sum256([]byte(identityKey))
@@ -107,6 +107,14 @@ func (handler *Handler) allowRequest(writer http.ResponseWriter, request *http.R
 	writer.Header().Set("X-RateLimit-Scope", scope)
 	http.Error(writer, "Too many requests. Try again later.", http.StatusTooManyRequests)
 	return false
+}
+
+// preAuthRateLimitScopes guard steps that run before, or instead of, proving
+// who the caller is. They are always keyed by client network: a JWT the caller
+// already holds (for example one returned by the previous signup) must not open
+// a fresh bucket.
+var preAuthRateLimitScopes = map[string]bool{
+	"login": true, "signup": true, "mfa-verify": true, "mfa-send": true, "email-verify": true,
 }
 
 func (handler *Handler) rateLimitSettings() config.RateLimitConfig {

@@ -2,6 +2,8 @@ package htmx
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -220,6 +222,65 @@ func TestClientNetworkBucketsIPv6By64(t *testing.T) {
 	}
 	if other := network("[2001:db8:1:3::1]:1234"); other == first {
 		t.Fatal("a different /64 shares the bucket")
+	}
+}
+
+func TestPreAuthScopesKeyOnClientNetworkEvenWithIdentity(t *testing.T) {
+	repository := &recordingRateLimitRepository{allowed: true}
+	handler := &Handler{
+		config:     &config.ServiceConfig{RateLimit: &config.RateLimitConfig{Enabled: true, Window: config.Duration(time.Minute)}},
+		rateLimits: repository, localRateLimits: newLocalRateLimiter(),
+	}
+	hash := func(value string) string {
+		digest := sha256.Sum256([]byte(value))
+		return hex.EncodeToString(digest[:])
+	}
+	network, user := hash("ip:2001:db8:1:2::/64"), hash("user:user-id")
+	for scope, want := range map[string]string{
+		"signup": network, "login": network, "mfa-verify": network, "mfa-send": network, "email-verify": network, "upload": user,
+	} {
+		request := httptest.NewRequest(http.MethodPost, "/", nil)
+		request.RemoteAddr = "[2001:db8:1:2::7]:8080"
+		request = request.WithContext(context.WithValue(request.Context(), identityContextKey{}, &identity{User: &db.User{ID: "user-id"}}))
+		if !handler.allowRequest(httptest.NewRecorder(), request, scope, 5) || repository.keyHash != want {
+			t.Fatalf("scope %q keyed as %q, want %q", scope, repository.keyHash, want)
+		}
+	}
+}
+
+// Each signup returns a JWT for the new account. Presenting it on the next
+// signup must not open a fresh rate-limit bucket.
+func TestSignupRateLimitIgnoresPresentedJWT(t *testing.T) {
+	repository := newAuthMemoryRepository()
+	handler := newAuthTestHandler(t, repository, false)
+	handler.config.RateLimit = &config.RateLimitConfig{Enabled: true, Window: config.Duration(time.Hour), SignupLimit: 1, LoginLimit: 1, APILimit: 1000}
+	page := httptest.NewRecorder()
+	handler.SignupPage(page, httptest.NewRequest(http.MethodGet, "/signup", nil))
+	csrf, preAuthCookie := strings.TrimSpace(page.Body.String()), page.Result().Cookies()[0]
+	signup := func(n int, jwt *http.Cookie) *httptest.ResponseRecorder {
+		request := formRequest("/signup", url.Values{"csrf_token": {csrf}, "email": {fmt.Sprintf("bot%d@example.com", n)}, "display_name": {"Bot"},
+			"password": {"a sufficiently long password"}, "password_confirm": {"a sufficiently long password"}})
+		request.RemoteAddr = "198.51.100.7:4000"
+		request.AddCookie(preAuthCookie)
+		if jwt != nil {
+			request.AddCookie(jwt)
+		}
+		response := httptest.NewRecorder()
+		handler.Authenticate(http.HandlerFunc(handler.Signup)).ServeHTTP(response, request)
+		return response
+	}
+	first := signup(0, nil)
+	var jwt *http.Cookie
+	for _, cookie := range first.Result().Cookies() {
+		if cookie.Name == "objectshare_jwt" && cookie.Value != "" {
+			jwt = cookie
+		}
+	}
+	if first.Code != http.StatusSeeOther || jwt == nil {
+		t.Fatalf("first signup: %d %q", first.Code, first.Body.String())
+	}
+	if response := signup(1, jwt); response.Code != http.StatusTooManyRequests {
+		t.Fatalf("second signup from the same IP with the new account's JWT: %d, want 429", response.Code)
 	}
 }
 
