@@ -355,6 +355,37 @@ func (repo *GormRepository) ReserveInvoiceGateway(ctx context.Context, userID, i
 	return &payment, err
 }
 
+// InvoicePaymentChecker is implemented by repositories that can confirm,
+// before a gateway captures money, that a pending invoice could still settle.
+type InvoicePaymentChecker interface {
+	CheckInvoicePayment(context.Context, string, time.Time) error
+}
+
+// CheckInvoicePayment returns ErrConflict when the invoice's payment window has
+// ended or, for a plan, when paying it now could not activate that plan.
+func (repo *GormRepository) CheckInvoicePayment(ctx context.Context, id string, now time.Time) error {
+	return repo.connection.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var invoice Invoice
+		if err := tx.Where("id = ?", id).First(&invoice).Error; errors.Is(err, gorm.ErrRecordNotFound) {
+			// Top-ups issued before invoices existed gain one when they settle.
+			return nil
+		} else if err != nil {
+			return err
+		}
+		var user User
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Select("id").Where("id = ?", invoice.UserID).First(&user).Error; err != nil {
+			return invoiceError(err)
+		}
+		if invoice.Status != "pending" || !invoice.ExpiresAt.After(now) {
+			return ErrConflict
+		}
+		if invoice.Kind == "plan" {
+			return checkInvoicePlan(tx, &invoice, now)
+		}
+		return nil
+	})
+}
+
 // ensureTopUpInvoice also covers previously issued top-ups settling after upgrade.
 func ensureTopUpInvoice(tx *gorm.DB, topUp *CreditTopUp) (*Invoice, error) {
 	var invoice Invoice

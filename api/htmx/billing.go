@@ -149,6 +149,24 @@ func (handler *Handler) PayPalTopUpReturn(writer http.ResponseWriter, request *h
 		http.Error(writer, "This top-up can no longer be captured.", http.StatusConflict)
 		return
 	}
+	// Capturing charges the customer, so first make sure the payment can still
+	// be applied: the payment window is open and, for a plan, no other purchase
+	// has made it inapplicable since checkout started.
+	now := time.Now().UTC()
+	var paymentErr error
+	if !topUp.ExpiresAt.IsZero() && !topUp.ExpiresAt.After(now) {
+		paymentErr = db.ErrConflict
+	} else if checker, ok := handler.billing.(db.InvoicePaymentChecker); ok {
+		paymentErr = checker.CheckInvoicePayment(request.Context(), topUp.ID, now)
+	}
+	if errors.Is(paymentErr, db.ErrConflict) || errors.Is(paymentErr, db.ErrNotFound) {
+		http.Error(writer, "This invoice can no longer be paid: its payment window has ended or another purchase now prevents it. PayPal has not charged you for this order. Return to your invoices to review it.", http.StatusConflict)
+		return
+	}
+	if paymentErr != nil {
+		handler.internalError(writer, request, "check PayPal invoice before capture", paymentErr)
+		return
+	}
 	capture, err := gateway.CaptureTopUp(request.Context(), orderID)
 	if err != nil {
 		handler.internalError(writer, request, "capture PayPal credit top-up", err)

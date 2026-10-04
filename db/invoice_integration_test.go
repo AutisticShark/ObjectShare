@@ -340,6 +340,47 @@ func TestPostgresExpiredPayPalCheckoutStopsBlockingAndIsReplaced(t *testing.T) {
 	}
 }
 
+// The PayPal return captures (charges) an approved order. Before that, the
+// invoice must still be inside its payment window and its plan still
+// applicable; otherwise the customer would be charged for a payment that
+// settlement rejects.
+func TestPostgresInvoicePaymentCheckBeforeCapture(t *testing.T) {
+	repo := creditTestRepository(t)
+	user := creditTestUser(t, repo, 50)
+	planX := invoiceTestPlan(t, repo)
+	planY := PaidPlan{Name: "Pro", Description: "other", Price: 20, DurationDays: 30, StorageQuotaBytes: 4096, Active: true}
+	if err := repo.CreatePlan(t.Context(), &planY); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	invoice, err := repo.CreatePlanInvoice(t.Context(), user.ID, planX.ID, uuid.NewString(), "USD", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = repo.ReserveInvoiceGateway(t.Context(), user.ID, invoice.ID, BillingGatewayPayPal, now); err != nil {
+		t.Fatal(err)
+	}
+	if err = repo.CheckInvoicePayment(t.Context(), invoice.ID, now.Add(time.Hour)); err != nil {
+		t.Fatalf("payable invoice refused: %v", err)
+	}
+	if err = repo.CheckInvoicePayment(t.Context(), invoice.ID, invoice.ExpiresAt.Add(time.Minute)); !errors.Is(err, ErrConflict) {
+		t.Fatalf("expired invoice accepted: %v", err)
+	}
+	// After the PayPal order's own lifetime another plan can be bought; the old
+	// order must not then be captured.
+	later := now.Add(PayPalCheckoutLifetime + time.Minute)
+	other, err := repo.CreatePlanInvoice(t.Context(), user.ID, planY.ID, uuid.NewString(), "USD", later)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = repo.PayInvoiceCredit(t.Context(), user.ID, other.ID, later); err != nil {
+		t.Fatal(err)
+	}
+	if err = repo.CheckInvoicePayment(t.Context(), invoice.ID, later); !errors.Is(err, ErrConflict) {
+		t.Fatalf("inapplicable plan invoice accepted: %v", err)
+	}
+}
+
 func TestPostgresInvoiceEmailRetriesBackOffAndStopAtTheCap(t *testing.T) {
 	repo := creditTestRepository(t)
 	user := creditTestUser(t, repo, 0)

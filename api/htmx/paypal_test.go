@@ -125,6 +125,53 @@ func TestPayPalTopUpReturnCapturesMatchingPendingOrder(t *testing.T) {
 	}
 }
 
+type invoicePaymentCheckRepository struct {
+	*entitlementRepository
+	checkErr error
+	checked  []string
+}
+
+func (repo *invoicePaymentCheckRepository) CheckInvoicePayment(_ context.Context, id string, _ time.Time) error {
+	repo.checked = append(repo.checked, id)
+	return repo.checkErr
+}
+
+// Capturing an approved order charges the customer. It must not happen for an
+// invoice whose payment window has ended or whose plan can no longer be applied
+// (for example because another plan was bought after checkout started).
+func TestPayPalTopUpReturnChecksInvoiceBeforeCapture(t *testing.T) {
+	topUpID, orderID := "33333333-3333-4333-8333-333333333333", "ORDER-EXPECTED"
+	for name, test := range map[string]struct {
+		expires  time.Time
+		checkErr error
+		capture  bool
+	}{
+		"payment window ended":   {time.Now().UTC().Add(-48 * time.Hour), nil, false},
+		"plan no longer applies": {time.Now().UTC().Add(time.Hour), db.ErrConflict, false},
+		"invoice still payable":  {time.Now().UTC().Add(time.Hour), nil, true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			repository := &invoicePaymentCheckRepository{entitlementRepository: &entitlementRepository{memoryRepository: &memoryRepository{files: make(map[string]*db.FileList)}, topUp: &db.CreditTopUp{
+				ID: topUpID, Gateway: db.BillingGatewayPayPal, GatewayReference: &orderID, Status: db.CreditTopUpPending, ExpiresAt: test.expires,
+			}}, checkErr: test.checkErr}
+			gateway := &paypalGatewayStub{capture: paypalCapture{ID: "CAPTURE-1", CustomID: topUpID, Status: "COMPLETED", Amount: paypalAmount{Currency: "USD", Value: "25.00"}}}
+			handler := newTestHandler(t, repository, &memoryStorage{objects: make(map[string][]byte)})
+			handler.billingGateways = map[string]billingGateway{db.BillingGatewayPayPal: gateway}
+			response := httptest.NewRecorder()
+			handler.PayPalTopUpReturn(response, httptest.NewRequest(http.MethodGet, "/billing/paypal/topup/return?topup="+topUpID+"&token="+orderID, nil))
+			if test.capture {
+				if response.Code != http.StatusSeeOther || gateway.captureCalls != 1 || len(repository.checked) != 1 || repository.checked[0] != topUpID {
+					t.Fatalf("status=%d captureCalls=%d checked=%q", response.Code, gateway.captureCalls, repository.checked)
+				}
+				return
+			}
+			if response.Code != http.StatusConflict || gateway.captureCalls != 0 || repository.creditPayment != nil || len(repository.reconciled) != 0 {
+				t.Fatalf("status=%d captureCalls=%d payment=%#v body=%q", response.Code, gateway.captureCalls, repository.creditPayment, response.Body.String())
+			}
+		})
+	}
+}
+
 func TestPayPalPaymentFailureUsesCurrentSubscriptionState(t *testing.T) {
 	userID := "11111111-1111-4111-8111-111111111111"
 	now := time.Now().UTC().Truncate(time.Second)
