@@ -3,8 +3,8 @@
 <head>
   <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
   <title>User management · {{(branding).SiteName}}</title>{{template "tabler-head" .}}
-  <link rel="stylesheet" href="/assets/admin-users.css">
-  <script defer src="/assets/admin-users.js"></script>
+  <link rel="stylesheet" href="{{asset "/assets/admin-users.css"}}">
+  <script defer src="{{asset "/assets/admin-users.js"}}"></script>
 </head>
 <body><div class="page">{{template "app-nav" .}}<div class="page-wrapper">{{template "admin-nav" "users"}}
   <div class="page-header d-print-none"><div class="container-xl"><div class="row g-2 align-items-center"><div class="col"><div class="page-pretitle">Administration</div><h2 class="page-title">User management</h2></div></div></div></div>

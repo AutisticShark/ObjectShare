@@ -17,6 +17,7 @@ func parseTemplates(files fs.FS, branding config.BrandingConfig) (*template.Temp
 	return template.New("").Funcs(template.FuncMap{
 		"invoiceAmount": func(amount int64) float64 { return float64(amount) / 100 },
 		"branding":      func() config.BrandingConfig { return branding },
+		"asset":         assetURLFunc(files),
 	}).ParseFS(files, "template/*.html")
 }
 

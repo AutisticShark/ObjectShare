@@ -620,8 +620,8 @@ func TestAdministratorUserTemplateUsesStorageDisplayAndModalActions(t *testing.T
 		`<dialog class="admin-user-dialog"`,
 		`data-user-dialog-close`,
 		`data-user-dialog-form="user-actions-22222222-2222-4222-8222-222222222222"`,
-		`src="/assets/admin-users.js"`,
-		`href="/assets/admin-users.css"`,
+		`src="/assets/admin-users.js?v=`,
+		`href="/assets/admin-users.css?v=`,
 		`autocomplete="new-password"`,
 		`hx-target=".page" hx-select=".page" hx-swap="outerHTML"`,
 		`aria-live="polite"`,
@@ -674,7 +674,7 @@ func TestGuestEntryPagesUseAutomaticSystemTheme(t *testing.T) {
 			t.Fatalf("render %s: %v", render.name, err)
 		}
 		page := output.String()
-		if !strings.Contains(page, `<script src="/assets/theme.js"></script>`) {
+		if !strings.Contains(page, `<script src="/assets/theme.js?v=`) {
 			t.Errorf("%s does not load the automatic system theme before rendering", render.name)
 		}
 		if strings.Index(page, `/assets/theme.js`) > strings.Index(page, `tabler.min.css`) {
@@ -687,7 +687,7 @@ func TestGuestEntryPagesUseAutomaticSystemTheme(t *testing.T) {
 	if err := parsed.ExecuteTemplate(&authenticated, "index.html", map[string]any{"Version": "test", "MaxFileSize": int64(1), "User": user}); err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(authenticated.String(), `<script src="/assets/theme.js"></script>`) || !strings.Contains(authenticated.String(), `data-account-theme`) {
+	if strings.Contains(authenticated.String(), `<script src="/assets/theme.js?v=`) || !strings.Contains(authenticated.String(), `data-account-theme`) {
 		t.Fatal("authenticated upload page replaced the persisted account theme with the system theme")
 	}
 

@@ -5,8 +5,8 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{{.FileName}} · {{(branding).SiteName}}</title>
   {{if not .User}}{{template "auto-theme" .}}{{end}}{{template "tabler-head" .}}
-  {{if .ClientEncryption}}<script defer src="/assets/client-encryption.js?v=1"></script>{{end}}
-  {{if .Captcha}}<script defer src="/assets/captcha.js"></script><script defer src="https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit&amp;onload=objectShareTurnstileReady"></script>{{end}}
+  {{if .ClientEncryption}}<script defer src="{{asset "/assets/client-encryption.js"}}"></script>{{end}}
+  {{if .Captcha}}<script defer src="{{asset "/assets/captcha.js"}}"></script><script defer src="https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit&amp;onload=objectShareTurnstileReady"></script>{{end}}
 </head>
 <body>
   <div class="page">

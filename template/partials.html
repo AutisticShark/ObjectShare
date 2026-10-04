@@ -1,4 +1,4 @@
-{{define "auto-theme"}}<script src="/assets/theme.js"></script>{{end}}
+{{define "auto-theme"}}<script src="{{asset "/assets/theme.js"}}"></script>{{end}}
 
 {{define "brand"}}<span class="site-brand">{{with (branding).LogoURL}}<img class="site-logo" src="{{.}}" alt="" referrerpolicy="no-referrer">{{end}}<span>{{(branding).SiteName}}</span></span>{{end}}
 
@@ -11,7 +11,7 @@
         href="https://cdn.jsdelivr.net/npm/@tabler/core@1.4.0/dist/css/tabler.min.css"
         integrity="sha384-kz+I4+mczbNiZfLAJMxOlJaZmnbRYhARHNkR2k6tal4gz7OL33/0puDD3SvkiNX9"
         crossorigin="anonymous">
-  <link rel="stylesheet" href="/assets/branding.css">
+  <link rel="stylesheet" href="{{asset "/assets/branding.css"}}">
   <script defer src="https://cdn.jsdelivr.net/npm/htmx.org@2.0.10/dist/htmx.min.js"
           integrity="sha384-H5SrcfygHmAuTDZphMHqBJLc3FhssKjG7w/CeCpFReSfwBWDTKpkzPP8c+cLsK+V"
           crossorigin="anonymous"></script>
@@ -36,7 +36,7 @@
 {{end}}
 
 {{define "app-nav"}}
-<script defer src="/assets/theme.js?v=account-v2" data-account-theme></script>
+<script defer src="{{asset "/assets/theme.js"}}" data-account-theme></script>
 <header class="navbar navbar-expand-md d-print-none">
   <div class="container-xl workspace-nav">
     <div class="navbar-brand navbar-brand-autodark"><a href="/" class="text-decoration-none">{{template "brand" .}}</a></div>

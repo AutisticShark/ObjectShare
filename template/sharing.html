@@ -4,8 +4,8 @@
   <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Share {{.FileName}} · {{(branding).SiteName}}</title>
   {{if not .User}}{{template "auto-theme" .}}{{end}}{{template "tabler-head" .}}
-  {{if .ClientEncrypted}}<script defer src="/assets/client-encryption.js?v=1"></script>{{end}}
-  <script defer src="/assets/sharing.js?v=workspace-v2"></script>
+  {{if .ClientEncrypted}}<script defer src="{{asset "/assets/client-encryption.js"}}"></script>{{end}}
+  <script defer src="{{asset "/assets/sharing.js"}}"></script>
 </head>
 <body><div class="page">
   {{if .User}}{{template "app-nav" .}}{{else}}<header class="navbar"><div class="container-xl"><a class="navbar-brand text-decoration-none" href="/">{{template "brand" .}}</a><a class="btn" href="/login">Log in</a></div></header>{{end}}

@@ -52,7 +52,7 @@ func TestBrandingRendersAcrossFullPagesAndEscapesText(t *testing.T) {
 			}
 			page := output.String()
 			for _, want := range []string{"Cat &lt;script&gt;alert(1)&lt;/script&gt;", `rel="icon" href="https://cdn.example.com/icon.png"`,
-				`src="https://cdn.example.com/logo.png"`, `href="/assets/branding.css"`, "Welcome\n&lt;script&gt;alert(2)&lt;/script&gt;",
+				`src="https://cdn.example.com/logo.png"`, `href="/assets/branding.css?v=`, "Welcome\n&lt;script&gt;alert(2)&lt;/script&gt;",
 				`href="https://example.com/privacy"`, "&lt;b&gt;Privacy&lt;/b&gt;", "Made with", "by Cat", `aria-label="love"`,
 			} {
 				if !strings.Contains(page, want) {

@@ -421,7 +421,7 @@ func TestSharingWorkspaceShowsSavedAccessAndOwnerOnlyKeyControls(t *testing.T) {
 	if response.Code != http.StatusOK {
 		t.Fatalf("sharing page: %d %s", response.Code, response.Body.String())
 	}
-	for _, expected := range []string{`id="encrypted-sharing"`, `id="create-encrypted-link"`, `id="share-passphrase"`, `Only you can access this file.`, `sharing.js?v=workspace-v2`} {
+	for _, expected := range []string{`id="encrypted-sharing"`, `id="create-encrypted-link"`, `id="share-passphrase"`, `Only you can access this file.`, `src="/assets/sharing.js?v=`} {
 		if !strings.Contains(response.Body.String(), expected) {
 			t.Fatalf("sharing page missing %q", expected)
 		}
