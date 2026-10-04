@@ -53,6 +53,7 @@ type Handler struct {
 	captchaJS          []byte
 	adminUsersJS       []byte
 	adminUsersCSS      []byte
+	htmxErrorsJS       []byte
 	cipher             *appcrypto.Cipher // encrypts new uploads; nil while encryption is off
 	readCipher         *appcrypto.Cipher // decrypts stored objects whenever a key is configured
 	cipherSlot         chan struct{}
@@ -157,6 +158,10 @@ func New(cfg *config.ServiceConfig, repository db.Repository, storage service.Ob
 	if err != nil {
 		return nil, fmt.Errorf("read administrator user stylesheet: %w", err)
 	}
+	htmxErrorsJS, err := fs.ReadFile(templates, "template/htmx-errors.js")
+	if err != nil {
+		return nil, fmt.Errorf("read HTMX error script: %w", err)
+	}
 	csrfSecret, err := preAuthCSRFSecret(cfg)
 	if err != nil {
 		return nil, err
@@ -184,6 +189,7 @@ func New(cfg *config.ServiceConfig, repository db.Repository, storage service.Ob
 		captcha: newCaptchaVerifier(cfg.Captcha), rateLimits: rateLimits,
 		settings: settings, billing: billing, billingGateways: billingGateways,
 		localRateLimits: newLocalRateLimiter(), trustedProxies: trustedProxies,
+		htmxErrorsJS: htmxErrorsJS,
 	}
 	if cfg.Upload == nil || cfg.Upload.GuestEnabled {
 		if cfg.RateLimit == nil || !cfg.RateLimit.Enabled {

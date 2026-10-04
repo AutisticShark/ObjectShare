@@ -15,6 +15,7 @@
   <script defer src="https://cdn.jsdelivr.net/npm/htmx.org@2.0.10/dist/htmx.min.js"
           integrity="sha384-H5SrcfygHmAuTDZphMHqBJLc3FhssKjG7w/CeCpFReSfwBWDTKpkzPP8c+cLsK+V"
           crossorigin="anonymous"></script>
+  <script defer src="{{asset "/assets/htmx-errors.js"}}"></script>
 {{end}}
 
 {{define "captcha-widget"}}{{if .}}<div class="mb-3"><div class="objectshare-turnstile" data-sitekey="{{.SiteKey}}" data-action="{{.Action}}"></div><small class="form-hint">Complete the security check to continue.</small></div>{{end}}{{end}}

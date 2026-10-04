@@ -825,6 +825,7 @@ func newTestHandlerConfig(t *testing.T, cfg *config.ServiceConfig, repository db
 		"template/captcha.js":           {Data: []byte(`console.log("captcha test")`)},
 		"template/admin_users.js":       {Data: []byte(`console.log("admin users test")`)},
 		"template/admin_users.css":      {Data: []byte(`.admin-user-dialog { display: block; }`)},
+		"template/htmx-errors.js":       {Data: []byte(`// htmx errors`)},
 	}
 	handler, err := New(cfg, repository, storage, templates, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	if err != nil {

@@ -15,7 +15,7 @@
     {{if .ActivationPending}}<div class="alert alert-warning" role="alert"><strong>Activation pending.</strong> The saved database configuration differs from this replica&#39;s active configuration. Each replica activates the saved revision as one snapshot at its next configuration reload, on SIGHUP, or on restart.</div>{{end}}
     <div class="alert alert-info" role="status">Secrets are write-only. Empty secret fields preserve the stored value; use the adjacent clear checkbox to remove one. Last saved {{.UpdatedAt}} by {{.UpdatedBy}}.</div>
 
-    <form action="/admin/settings" method="post" hx-post="/admin/settings" hx-disabled-elt="button">
+    <form action="/admin/settings" method="post" hx-post="/admin/settings" hx-select=".page" hx-target=".page" hx-swap="outerHTML" hx-disabled-elt="button">
       <input type="hidden" name="csrf_token" value="{{.CSRF}}">
       <input type="hidden" name="revision" value="{{.Revision}}">
       <div class="row row-cards">

@@ -7,7 +7,7 @@
 <body class="d-flex flex-column">
   <div class="page page-center"><div class="container container-tight py-4">
     <div class="text-center mb-4"><span class="navbar-brand navbar-brand-autodark justify-content-center">{{template "brand" .}}</span></div>
-    <form class="card card-md" action="/setup" method="post" hx-post="/setup" hx-disabled-elt="button">
+    <form class="card card-md" action="/setup" method="post" hx-post="/setup" hx-select=".page" hx-target=".page" hx-swap="outerHTML" hx-disabled-elt="button">
       <input type="hidden" name="csrf_token" value="{{.CSRF}}">
       <div class="card-body">
         <div class="text-center mb-3"><span class="avatar avatar-lg bg-primary-lt">1</span></div>

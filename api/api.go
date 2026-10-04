@@ -33,6 +33,7 @@ func Router(handler *htmx.Handler, logger *slog.Logger) http.Handler {
 	router.Get("/assets/captcha.js", handler.CaptchaScript)
 	router.Get("/assets/admin-users.js", handler.AdminUsersScript)
 	router.Get("/assets/admin-users.css", handler.AdminUsersStyles)
+	router.Get("/assets/htmx-errors.js", handler.HTMXErrorsScript)
 	router.Get("/health/live", handler.Live)
 	router.Get("/health/ready", handler.Ready)
 	router.Get("/setup", handler.SetupPage)

@@ -1130,6 +1130,7 @@ func newAuthTestHandler(t *testing.T, repository *authMemoryRepository, secure b
 		"template/captcha.js":           {Data: []byte(`console.log("captcha test")`)},
 		"template/admin_users.js":       {Data: []byte(`console.log("admin users test")`)},
 		"template/admin_users.css":      {Data: []byte(`.admin-user-dialog { display: block; }`)},
+		"template/htmx-errors.js":       {Data: []byte(`// htmx errors`)},
 	}
 	cfg := &config.ServiceConfig{MaxFileSize: 1, StorageService: "filesystem", SecureCookies: secure, SettingsKey: "test-only-settings-key-with-at-least-32-bytes", Encryption: &config.EncryptionConfig{}, Auth: &config.AuthConfig{SignupEnabled: true, JWTSecret: "test-only-jwt-secret-with-at-least-32-bytes", TokenLifetime: config.Duration(12 * time.Hour)}}
 	handler, err := New(cfg, repository, &memoryStorage{objects: make(map[string][]byte)}, templates, slog.New(slog.NewTextHandler(io.Discard, nil)))

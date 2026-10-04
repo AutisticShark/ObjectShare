@@ -1,10 +1,13 @@
 package htmx
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
 	"io/fs"
+	"net/http"
+	"time"
 )
 
 // assetFiles maps each public asset URL to the embedded file that serves it.
@@ -13,6 +16,7 @@ var assetFiles = map[string]string{
 	"/assets/admin-users.js":       "template/admin_users.js",
 	"/assets/branding.css":         "template/branding.css",
 	"/assets/captcha.js":           "template/captcha.js",
+	"/assets/htmx-errors.js":       "template/htmx-errors.js",
 	"/assets/client-encryption.js": "template/client-encryption.js",
 	"/assets/sharing.js":           "template/sharing.js",
 	"/assets/theme.js":             "template/theme.js",
@@ -41,4 +45,12 @@ func assetURLFunc(files fs.FS) func(string) (string, error) {
 		}
 		return "", fmt.Errorf("unknown asset %q", path)
 	}
+}
+
+// HTMXErrorsScript serves the shared handler that displays rejected HTMX form
+// submissions.
+func (handler *Handler) HTMXErrorsScript(writer http.ResponseWriter, request *http.Request) {
+	writer.Header().Set("Content-Type", "text/javascript; charset=utf-8")
+	writer.Header().Set("Cache-Control", "public, max-age=86400")
+	http.ServeContent(writer, request, "htmx-errors.js", time.Time{}, bytes.NewReader(handler.htmxErrorsJS))
 }
