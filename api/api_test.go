@@ -2,9 +2,11 @@ package api
 
 import (
 	"bytes"
+	"encoding/json"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 
@@ -147,7 +149,7 @@ func TestSameOriginLogsLikelyHostRewrite(t *testing.T) {
 }
 
 func TestRequestIDIsEchoedAndRecordedByErrorLogs(t *testing.T) {
-	chain := middleware.RequestID(requestIDHeader(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+	chain := requestID(requestIDHeader(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		if middleware.GetReqID(request.Context()) == "" {
 			t.Error("no request id in the context")
 		}
@@ -159,11 +161,44 @@ func TestRequestIDIsEchoedAndRecordedByErrorLogs(t *testing.T) {
 	if generated == "" {
 		t.Fatal("responses do not carry X-Request-Id")
 	}
-	request := httptest.NewRequest(http.MethodGet, "/", nil)
-	request.Header.Set("X-Request-Id", "proxy-assigned-42")
+	hostname, _ := os.Hostname()
+	if hostname != "" && strings.Contains(generated, hostname) || strings.Contains(generated, "/") {
+		t.Fatalf("request id reveals the host: %q", generated)
+	}
 	response = httptest.NewRecorder()
-	chain.ServeHTTP(response, request)
-	if response.Header().Get("X-Request-Id") != "proxy-assigned-42" {
-		t.Fatalf("an upstream request id was not preserved: %q", response.Header().Get("X-Request-Id"))
+	chain.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/", nil))
+	if second := response.Header().Get("X-Request-Id"); second == generated || len(second) < 20 {
+		t.Fatalf("request ids are not unique random values: %q then %q", generated, second)
+	}
+}
+
+func TestRequestIDIgnoresClientSuppliedValue(t *testing.T) {
+	var logs bytes.Buffer
+	var contextID string
+	chain := requestID(requestIDHeader(accessLog(slog.New(slog.NewJSONHandler(&logs, nil)))(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		contextID = middleware.GetReqID(request.Context())
+		writer.WriteHeader(http.StatusNoContent)
+	}))))
+	for _, supplied := range []string{"proxy-assigned-42", "forged\"\nrequest_id=victim", strings.Repeat("a", 200)} {
+		logs.Reset()
+		request := httptest.NewRequest(http.MethodGet, "/", nil)
+		request.Header.Set("X-Request-Id", supplied)
+		response := httptest.NewRecorder()
+		chain.ServeHTTP(response, request)
+		echoed := response.Header().Get("X-Request-Id")
+		if echoed == supplied || contextID != echoed || echoed == "" {
+			t.Fatalf("client request id was adopted: header %q, context %q", echoed, contextID)
+		}
+		var entry map[string]any
+		if err := json.Unmarshal(logs.Bytes(), &entry); err != nil {
+			t.Fatal(err)
+		}
+		if entry["request_id"] != echoed {
+			t.Fatalf("access log request_id = %v, want %q", entry["request_id"], echoed)
+		}
+		// A well-formed proxy value is kept only as a separate, labelled field.
+		if want := supplied == "proxy-assigned-42"; (entry["upstream_request_id"] == supplied) != want || (!want && entry["upstream_request_id"] != nil) {
+			t.Fatalf("upstream_request_id = %v for %q", entry["upstream_request_id"], supplied)
+		}
 	}
 }

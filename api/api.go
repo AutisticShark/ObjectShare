@@ -1,6 +1,8 @@
 package api
 
 import (
+	"context"
+	"crypto/rand"
 	"log/slog"
 	"net/http"
 	"net/url"
@@ -15,7 +17,7 @@ import (
 func Router(handler *htmx.Handler, logger *slog.Logger) http.Handler {
 	requireSameOrigin := sameOrigin(handler.RequestScheme, logger)
 	router := chi.NewRouter()
-	router.Use(middleware.RequestID)
+	router.Use(requestID)
 	router.Use(requestIDHeader)
 	router.Use(accessLog(logger))
 	router.Use(middleware.Recoverer)
@@ -119,6 +121,32 @@ func Router(handler *htmx.Handler, logger *slog.Logger) http.Handler {
 	return router
 }
 
+// requestID gives every request a random server-generated ID under chi's
+// request-ID context key. A client-supplied X-Request-Id is never adopted: it
+// could forge or collide with another request's log entries. chi's generator
+// is not used because it embeds the hostname (the container ID).
+func requestID(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		ctx := context.WithValue(request.Context(), middleware.RequestIDKey, rand.Text())
+		next.ServeHTTP(writer, request.WithContext(ctx))
+	})
+}
+
+// upstreamRequestID returns a proxy's X-Request-Id when it is a plain token,
+// so access logs can still be correlated with proxy logs without trusting it.
+func upstreamRequestID(request *http.Request) string {
+	value := request.Header.Get("X-Request-Id")
+	if value == "" || len(value) > 128 {
+		return ""
+	}
+	for _, character := range value {
+		if !(character >= 'a' && character <= 'z' || character >= 'A' && character <= 'Z' || character >= '0' && character <= '9' || strings.ContainsRune("-_.:", character)) {
+			return ""
+		}
+	}
+	return value
+}
+
 // requestIDHeader echoes the request ID that access and error logs record, so a
 // user or proxy can quote it when reporting a failure.
 func requestIDHeader(next http.Handler) http.Handler {
@@ -136,8 +164,12 @@ func accessLog(logger *slog.Logger) func(http.Handler) http.Handler {
 			wrapped := middleware.NewWrapResponseWriter(writer, request.ProtoMajor)
 			start := time.Now()
 			next.ServeHTTP(wrapped, request)
-			logger.Info("http request", "request_id", middleware.GetReqID(request.Context()), "method", request.Method,
-				"path", request.URL.Path, "status", wrapped.Status(), "bytes", wrapped.BytesWritten(), "duration_ms", time.Since(start).Milliseconds())
+			attributes := []any{"request_id", middleware.GetReqID(request.Context()), "method", request.Method,
+				"path", request.URL.Path, "status", wrapped.Status(), "bytes", wrapped.BytesWritten(), "duration_ms", time.Since(start).Milliseconds()}
+			if upstream := upstreamRequestID(request); upstream != "" {
+				attributes = append(attributes, "upstream_request_id", upstream)
+			}
+			logger.Info("http request", attributes...)
 		})
 	}
 }
