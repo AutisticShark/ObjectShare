@@ -141,6 +141,16 @@
     upload.send(file);
   });
 
+  // Ask for a fresh short-lived URL right before each PUT: a batch is authorized
+  // at once but sent one file at a time, so a URL issued with the batch could
+  // expire before a later file's turn.
+  const freshUploadURL = async (authorization) => {
+    if (!authorization.renew_url) return authorization.upload_url;
+    const renewed = await fetch(authorization.renew_url, {method: "POST", headers: {"Content-Type": "application/json", ...csrfHeaders}, body: JSON.stringify({token: authorization.token})});
+    if (!renewed.ok) throw await responseError(renewed);
+    return (await renewed.json()).upload_url;
+  };
+
   const sendDirectAttempt = async () => {
     const current = attempt;
     for (let index = 0; index < current.files.length; index += 1) {
@@ -148,7 +158,7 @@
       const authorization = current.authorizations[index];
       const file = current.files[index];
       if (!current.uploaded.has(index)) {
-        await putFile(authorization.upload_url, file, file.type || "application/octet-stream", index, current.files.length);
+        await putFile(await freshUploadURL(authorization), file, file.type || "application/octet-stream", index, current.files.length);
         current.uploaded.add(index);
       }
       showStatus(`Verifying ${current.names[index]}…`);

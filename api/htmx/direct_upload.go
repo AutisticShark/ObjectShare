@@ -42,6 +42,7 @@ type directUploadAuthorization struct {
 	UploadURL   string `json:"upload_url"`
 	CompleteURL string `json:"complete_url"`
 	AbortURL    string `json:"abort_url"`
+	RenewURL    string `json:"renew_url"`
 	Token       string `json:"token"`
 	ExpiresAt   string `json:"expires_at"`
 }
@@ -174,15 +175,16 @@ func (handler *Handler) authorizeDirectUpload(request *http.Request, input direc
 	}
 	fileID, now := uuid.NewString(), time.Now().UTC()
 	expiresAt := now.Add(handler.directPolicy.Expires)
+	reservedUntil := now.Add(handler.directUploadReservation())
 	record := &db.FileList{ClientEncryption: input.ClientEncryption, ShareMode: mode, AnonymousSessionToken: tokenHash, FileID: fileID, FileName: fileName, FileSize: input.FileSize,
 		ContentType: contentType, IsAnonymousUpload: true, StorageService: handler.config.StorageService,
-		UploadStatus: "pending", ChecksumStatus: "unavailable", UploadExpiresAt: &expiresAt, CreatedAt: now, UpdatedAt: now}
+		UploadStatus: "pending", ChecksumStatus: "unavailable", UploadExpiresAt: &reservedUntil, CreatedAt: now, UpdatedAt: now}
 	if identity := currentIdentity(request); identity != nil {
 		record.FileOwner = &identity.User.ID
 		record.IsAnonymousUpload = false
 	}
 	authorization := directUploadAuthorization{FileID: fileID, FileName: fileName, CompleteURL: "/api/v1/uploads/direct/" + fileID + "/complete",
-		AbortURL: "/api/v1/uploads/direct/" + fileID + "/abort", Token: token, ExpiresAt: expiresAt.Format(time.RFC3339)}
+		AbortURL: "/api/v1/uploads/direct/" + fileID + "/abort", RenewURL: "/api/v1/uploads/direct/" + fileID + "/renew", Token: token, ExpiresAt: expiresAt.Format(time.RFC3339)}
 	return authorization, record, nil
 }
 
@@ -210,9 +212,65 @@ func (handler *Handler) BeginDirectUpload(writer http.ResponseWriter, request *h
 	}
 	writeJSON(writer, http.StatusCreated, map[string]any{
 		"file_id": authorization.FileID, "upload_url": authorization.UploadURL,
-		"complete_url": authorization.CompleteURL, "abort_url": authorization.AbortURL,
+		"complete_url": authorization.CompleteURL, "abort_url": authorization.AbortURL, "renew_url": authorization.RenewURL,
 		"token": authorization.Token, "expires_at": authorization.ExpiresAt,
 	})
+}
+
+// directUploadReservation is how long a pending direct upload is kept after its
+// upload URL is issued: the URL's lifetime plus an equal completion grace. Object
+// storage accepts a PUT that starts before the URL expires, so a large file can
+// still be arriving when the URL itself has expired; its completion must not be
+// refused, or the reservation swept, while that PUT finishes.
+func (handler *Handler) directUploadReservation() time.Duration {
+	return 2 * handler.directPolicy.Expires
+}
+
+// RenewDirectUpload presigns a fresh upload URL for a pending direct upload just
+// before the client starts its PUT. A batch is authorized at once but uploaded
+// one file at a time, so a URL issued with the batch can expire before a later
+// file's turn. The new URL has the same short lifetime, staging key, size and
+// content type as the original authorization and needs the same owner token;
+// the reservation is extended to cover it, up to a cap that keeps renewal from
+// holding a reservation open indefinitely.
+func (handler *Handler) RenewDirectUpload(writer http.ResponseWriter, request *http.Request) {
+	if !handler.verifyAuthenticatedMutationCSRF(writer, request) {
+		return
+	}
+	file, _, ok := handler.directUploadIntent(writer, request)
+	if !ok {
+		return
+	}
+	if file.UploadStatus != "pending" {
+		http.Error(writer, "The upload is already being finalized.", http.StatusConflict)
+		return
+	}
+	if !handler.directUploadVerificationAllowed(writer, request, file) {
+		return
+	}
+	now := time.Now().UTC()
+	reservedUntil := now.Add(handler.directUploadReservation())
+	if limit := file.CreatedAt.Add(time.Duration(handler.uploadSettings().MaxFilesPerBatch) * handler.directUploadReservation()); reservedUntil.After(limit) {
+		reservedUntil = limit
+	}
+	if !reservedUntil.After(now.Add(handler.directPolicy.Expires)) {
+		http.Error(writer, "This upload authorization cannot be renewed again. Start a new upload.", http.StatusGone)
+		return
+	}
+	if err := handler.repository.ExtendUploadReservation(request.Context(), file.FileID, reservedUntil); err != nil {
+		if errors.Is(err, db.ErrNotFound) {
+			http.Error(writer, "The upload authorization has expired.", http.StatusGone)
+			return
+		}
+		handler.internalError(writer, request, "extend direct upload reservation", err)
+		return
+	}
+	uploadURL, err := handler.direct.PresignPut(request.Context(), service.PendingUploadKey(file.FileID), file.FileSize, file.ContentType)
+	if err != nil {
+		handler.internalError(writer, request, "renew direct upload", err)
+		return
+	}
+	writeJSON(writer, http.StatusOK, map[string]string{"upload_url": uploadURL, "expires_at": now.Add(handler.directPolicy.Expires).Format(time.RFC3339)})
 }
 
 func (handler *Handler) CompleteDirectUpload(writer http.ResponseWriter, request *http.Request) {

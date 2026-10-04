@@ -112,6 +112,7 @@ func Router(handler *htmx.Handler, logger *slog.Logger) http.Handler {
 			router.With(requireSameOrigin).Post("/uploads/direct/batch", handler.BeginDirectUploadBatch)
 			router.With(requireSameOrigin).Post("/uploads/direct/{id}/complete", handler.CompleteDirectUpload)
 			router.With(requireSameOrigin).Post("/uploads/direct/{id}/abort", handler.AbortDirectUpload)
+			router.With(requireSameOrigin).Post("/uploads/direct/{id}/renew", handler.RenewDirectUpload)
 			router.With(getOnly).Get("/download/{id}", handler.Download)
 			router.With(requireSameOrigin).Post("/download/{id}", handler.Download)
 			router.With(requireSameOrigin).Post("/delete/{id}", handler.Delete)

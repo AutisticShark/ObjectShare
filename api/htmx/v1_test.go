@@ -138,6 +138,19 @@ func (repository *memoryRepository) ReleaseUploadPublication(_ context.Context, 
 	return nil
 }
 
+func (repository *memoryRepository) ExtendUploadReservation(_ context.Context, id string, until time.Time) error {
+	repository.mu.Lock()
+	defer repository.mu.Unlock()
+	file, ok := repository.files[id]
+	if !ok || file.UploadStatus != "pending" || file.UploadExpiresAt == nil || file.UploadExpiresAt.Before(time.Now()) {
+		return db.ErrNotFound
+	}
+	if until.After(*file.UploadExpiresAt) {
+		file.UploadExpiresAt = &until
+	}
+	return nil
+}
+
 // stalePublication reports an abandoned publishing claim, as PostgreSQL does.
 func stalePublication(file *db.FileList, now time.Time) bool {
 	return file.UploadStatus == "publishing" && file.UpdatedAt.Before(now.Add(-db.UploadPublicationLease))

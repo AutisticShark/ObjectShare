@@ -70,6 +70,7 @@ type Repository interface {
 	CompleteUpload(context.Context, string) error
 	ClaimUploadPublication(context.Context, string) error
 	ReleaseUploadPublication(context.Context, string) error
+	ExtendUploadReservation(context.Context, string, time.Time) error
 	ClaimPendingUploadDeletion(context.Context, string) error
 	FinalizeUpload(context.Context, string, string, string, bool, string) error
 	ExpiredUploads(context.Context, time.Time, int) ([]FileList, error)
@@ -537,6 +538,22 @@ func (repo *GormRepository) ReleaseUploadPublication(ctx context.Context, fileID
 	result := repo.connection.WithContext(ctx).Model(&FileList{}).
 		Where("file_id = ? AND upload_status = ?", fileID, "publishing").
 		Updates(map[string]any{"upload_status": "pending", "updated_at": time.Now().UTC()})
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// ExtendUploadReservation moves a live pending upload's expiry out to until when a
+// fresh upload URL is issued for it. An expired reservation is not revived, and
+// an expiry is never shortened.
+func (repo *GormRepository) ExtendUploadReservation(ctx context.Context, fileID string, until time.Time) error {
+	result := repo.connection.WithContext(ctx).Model(&FileList{}).
+		Where("file_id = ? AND upload_status = ? AND upload_expires_at >= ?", fileID, "pending", time.Now().UTC()).
+		Update("upload_expires_at", gorm.Expr("GREATEST(upload_expires_at, ?)", until))
 	if result.Error != nil {
 		return result.Error
 	}

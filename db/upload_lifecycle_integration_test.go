@@ -190,3 +190,32 @@ func containsFile(files []FileList, fileID string) bool {
 	}
 	return false
 }
+
+func TestPostgresUploadReservationExtendsOnlyLivePendingUploads(t *testing.T) {
+	repo := creditTestRepository(t)
+	if err := repo.connection.AutoMigrate(&FileList{}); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	create := func(status string, expires time.Time) string {
+		file := FileList{FileID: uuid.NewString(), FileName: "renew.txt", FileSize: 6, UploadStatus: status, UploadExpiresAt: &expires, ShareUserIDs: []string{}}
+		if err := repo.Create(t.Context(), &file); err != nil {
+			t.Fatal(err)
+		}
+		return file.FileID
+	}
+	live := create("pending", now.Add(10*time.Minute))
+	for _, until := range []time.Time{now.Add(2 * time.Hour), now.Add(time.Hour)} {
+		if err := repo.ExtendUploadReservation(t.Context(), live, until); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if stored, err := repo.Get(t.Context(), live); err != nil || stored.UploadExpiresAt.Sub(now.Add(2*time.Hour)).Abs() > time.Second {
+		t.Fatalf("reservation must extend and never shorten: %+v %v", stored, err)
+	}
+	for _, id := range []string{create("pending", now.Add(-time.Minute)), create("publishing", now.Add(time.Hour)), create("aborting", now.Add(time.Hour))} {
+		if err := repo.ExtendUploadReservation(t.Context(), id, now.Add(2*time.Hour)); !errors.Is(err, ErrNotFound) {
+			t.Fatalf("extended a reservation that is expired or no longer pending: %v", err)
+		}
+	}
+}

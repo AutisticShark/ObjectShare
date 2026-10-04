@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	appauth "github.com/AutisticShark/ObjectShare/auth"
 	"github.com/AutisticShark/ObjectShare/config"
@@ -295,5 +296,98 @@ func TestGuestDirectUploadsShareAGlobalPendingCap(t *testing.T) {
 	handler.BeginDirectUpload(response, signedIn)
 	if response.Code != http.StatusCreated {
 		t.Fatalf("signed-in upload was limited by the guest cap: %d %s", response.Code, response.Body.String())
+	}
+}
+
+func TestBatchFilesAreAuthorizedWhenTheirUploadStartsAndCompleteWithinGrace(t *testing.T) {
+	repository := &memoryRepository{files: make(map[string]*db.FileList)}
+	direct := &directMemoryStorage{&memoryStorage{objects: make(map[string][]byte)}}
+	handler := newTestHandler(t, repository, direct)
+	expires := direct.DirectUploadPolicy().Expires
+	response := httptest.NewRecorder()
+	handler.BeginDirectUploadBatch(response, httptest.NewRequest(http.MethodPost, "/api/v1/uploads/direct/batch", strings.NewReader(
+		`{"files":[{"file_name":"a.txt","file_size":5,"content_type":"text/plain"},{"file_name":"b.txt","file_size":5,"content_type":"text/plain"}]}`)))
+	if response.Code != http.StatusCreated {
+		t.Fatalf("begin batch: %d %s", response.Code, response.Body.String())
+	}
+	var batch struct {
+		Uploads []directUploadAuthorization `json:"uploads"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &batch); err != nil || len(batch.Uploads) != 2 {
+		t.Fatalf("batch response: %v %s", err, response.Body.String())
+	}
+	second := batch.Uploads[1]
+	if second.RenewURL != "/api/v1/uploads/direct/"+second.FileID+"/renew" {
+		t.Fatalf("renew URL = %q", second.RenewURL)
+	}
+	call := func(handle func(http.ResponseWriter, *http.Request), token string) *httptest.ResponseRecorder {
+		body, _ := json.Marshal(map[string]string{"token": token})
+		response := httptest.NewRecorder()
+		handle(response, sharingRequest("POST", second.FileID, string(body), nil))
+		return response
+	}
+	age := func(begun time.Duration, reservedFor time.Duration) {
+		repository.mu.Lock()
+		defer repository.mu.Unlock()
+		record := repository.files[second.FileID]
+		reserved := time.Now().Add(reservedFor)
+		record.CreatedAt, record.UploadExpiresAt = time.Now().Add(-begun), &reserved
+	}
+
+	// The first file took most of the batch URL's lifetime. The second file's
+	// URL is issued when its own PUT starts, for the same staging key, and its
+	// reservation now covers that URL plus the completion grace.
+	age(expires-time.Minute, time.Minute+expires)
+	if response := call(handler.RenewDirectUpload, "wrong-token"); response.Code != http.StatusForbidden {
+		t.Fatalf("renewal with another token = %d", response.Code)
+	}
+	presigned := len(direct.presigned)
+	renewed := call(handler.RenewDirectUpload, second.Token)
+	var fresh struct {
+		UploadURL string `json:"upload_url"`
+		ExpiresAt string `json:"expires_at"`
+	}
+	if renewed.Code != http.StatusOK || json.Unmarshal(renewed.Body.Bytes(), &fresh) != nil || fresh.UploadURL == "" {
+		t.Fatalf("renew: %d %s", renewed.Code, renewed.Body.String())
+	}
+	if len(direct.presigned) != presigned+1 || direct.presigned[presigned] != service.PendingUploadKey(second.FileID) {
+		t.Fatalf("renewal presigned %v, want the staging key", direct.presigned[presigned:])
+	}
+	if urlExpiry, err := time.Parse(time.RFC3339, fresh.ExpiresAt); err != nil || time.Until(urlExpiry) > expires || time.Until(urlExpiry) < expires-time.Minute {
+		t.Fatalf("renewed URL expiry %q is not the short upload lifetime", fresh.ExpiresAt)
+	}
+	record, _ := repository.Get(t.Context(), second.FileID)
+	if until := time.Until(*record.UploadExpiresAt); until < 2*expires-time.Minute || until > 2*expires {
+		t.Fatalf("reservation runs %v more, want the URL lifetime plus an equal grace", until)
+	}
+
+	// The PUT started before its URL expired but finished after it: completion
+	// within the grace period still succeeds.
+	age(2*expires, time.Minute)
+	direct.objects[service.PendingUploadKey(second.FileID)] = []byte("hello")
+	if response := call(handler.CompleteDirectUpload, second.Token); response.Code != http.StatusOK {
+		t.Fatalf("completion within grace = %d %s", response.Code, response.Body.String())
+	}
+
+	// Renewal is refused once the batch's lifetime cap is used up, and an
+	// expired reservation is not revived.
+	first := batch.Uploads[0]
+	repository.mu.Lock()
+	repository.files[first.FileID].CreatedAt = time.Now().Add(-time.Duration(handler.uploadSettings().MaxFilesPerBatch) * 2 * expires)
+	repository.mu.Unlock()
+	body, _ := json.Marshal(map[string]string{"token": first.Token})
+	capped := httptest.NewRecorder()
+	handler.RenewDirectUpload(capped, sharingRequest("POST", first.FileID, string(body), nil))
+	if capped.Code != http.StatusGone {
+		t.Fatalf("renewal past the cap = %d", capped.Code)
+	}
+	past := time.Now().Add(-time.Second)
+	repository.mu.Lock()
+	repository.files[first.FileID].UploadExpiresAt = &past
+	repository.mu.Unlock()
+	expired := httptest.NewRecorder()
+	handler.RenewDirectUpload(expired, sharingRequest("POST", first.FileID, string(body), nil))
+	if _, err := repository.Get(t.Context(), first.FileID); expired.Code != http.StatusGone || err == nil {
+		t.Fatalf("expired renewal = %d, record err=%v", expired.Code, err)
 	}
 }

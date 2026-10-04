@@ -73,12 +73,12 @@ function retryHarness(failure) {
   const fields={'#file':input,'#upload-button':button,'#retry-upload':retry,'#completed-uploads':completed,'#upload-status':status,'#upload-progress-wrap':element(),'#upload-progress':element(),'#upload-recovery':element(),'#encryption-passphrase':pass,'#share-mode':access,"input[name='upload_mode']:checked":{value:'multiple'}};
   const choice = {...element(),checked:true};fields['#encrypt-files']=choice;
   let submit, destination, reservations=0, encryptions=0, lost=false;
-  const puts=[0,0,0], completions=[0,0,0];
+  const puts=[0,0,0], completions=[0,0,0], renewals=[0,0,0];
   const form={dataset:{directUpload:'true',maxFiles:'3',maxFileMib:'1'},elements:{share_mode:access},querySelector:s=>fields[s]||null,querySelectorAll:()=>[],addEventListener(_name,fn){submit=fn;}};
   const key=new Uint8Array(32).fill(7);
   class XHR {
     constructor(){this.events={};this.upload={addEventListener(){}};this.status=200;}
-    open(_method,url){this.index=Number(url.split('/').pop());}
+    open(_method,url){assert.ok(url.startsWith('https://store.test/fresh/'),'each PUT must use a URL renewed just before it');this.index=Number(url.split('/').pop());}
     setRequestHeader(){}
     addEventListener(name,fn){this.events[name]=fn;}
     send(file){
@@ -90,7 +90,12 @@ function retryHarness(failure) {
     if(url.endsWith('/batch')){
       reservations++;
       assert.ok(JSON.parse(options.body).files.every(file=>file.share_mode==='private'));
-      return Response.json({uploads:[0,1,2].map(i=>({file_id:`id-${i}`,upload_url:`https://store.test/${i}`,complete_url:`/complete/${i}`,abort_url:`/abort/${i}`,token:'same-reservation'}))});
+      return Response.json({uploads:[0,1,2].map(i=>({file_id:`id-${i}`,upload_url:`https://store.test/batch/${i}`,complete_url:`/complete/${i}`,abort_url:`/abort/${i}`,renew_url:`/renew/${i}`,token:'same-reservation'}))});
+    }
+    if(url.startsWith('/renew/')){
+      const index=Number(url.split('/').pop());renewals[index]++;
+      assert.equal(JSON.parse(options.body).token,'same-reservation');
+      return Response.json({upload_url:`https://store.test/fresh/${index}`});
     }
     assert.ok(url.startsWith('/complete/'),'retry must not abort or create another reservation');
     const index=Number(url.split('/').pop());completions[index]++;
@@ -103,7 +108,7 @@ function retryHarness(failure) {
     encryptFile:async(file)=>{encryptions++;return {file:new File(['ciphertext'],file.name,{type:'application/octet-stream'}),metadata:'encrypted-metadata'};}
   },XMLHttpRequest:XHR,fetch,window:{location:{assign(url){destination=url;}}}});
   input.files=[0,1,2].map(i=>new File(['plaintext'],`file-${i}.txt`));
-  return {submit:()=>submit({preventDefault(){}}),retry:()=>retry.events.click(),input,button,completed,pass,access,choice,key,puts,completions,
+  return {submit:()=>submit({preventDefault(){}}),retry:()=>retry.events.click(),input,button,completed,pass,access,choice,key,puts,completions,renewals,
     stats:()=>({reservations,encryptions,destination})};
 }
 
@@ -119,6 +124,7 @@ for (const failure of ['put','completion']) test(`direct retry after ${failure} 
   await ui.retry();
   assert.equal(ui.stats().reservations,1);assert.equal(ui.stats().encryptions,3);
   assert.deepEqual(ui.puts,failure==='put'?[1,2,1]:[1,1,1]);
+  assert.deepEqual(ui.renewals,ui.puts,'every PUT attempt, including a retry, gets a fresh URL');
   assert.deepEqual(ui.completions,failure==='completion'?[1,2,1]:[1,1,1]);
   assert.equal(ui.stats().destination,'/uploads/complete?ids=id-0,id-1,id-2');
 });

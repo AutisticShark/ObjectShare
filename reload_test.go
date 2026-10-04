@@ -61,6 +61,10 @@ func (repository *memoryApplicationRepository) ReleaseUploadPublication(context.
 	return db.ErrNotFound
 }
 
+func (repository *memoryApplicationRepository) ExtendUploadReservation(context.Context, string, time.Time) error {
+	return db.ErrNotFound
+}
+
 func (repository *memoryApplicationRepository) ClaimPendingUploadDeletion(context.Context, string) error {
 	return db.ErrNotFound
 }
