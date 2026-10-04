@@ -468,16 +468,14 @@ func effectiveUploadQuota(connection *gorm.DB, userID string, accountQuota int64
 	if accountQuota == 0 {
 		return 0, nil
 	}
-	var planQuota int64
-	err := connection.Table("subscriptions AS s").Select("COALESCE(MAX(p.storage_quota_bytes), 0)").
-		Joins("JOIN paid_plans AS p ON p.id = s.plan_id").
-		Where("s.user_id = ? AND s.status IN ? AND s.current_period_end > ?", userID, []string{"active", "trialing"}, now).
-		Scan(&planQuota).Error
+	// Use the same terms as the account's entitlements: a settled invoice keeps
+	// the quota it was sold with even if the plan is edited later.
+	entitlements, err := entitlementsWithDB(connection, userID, now)
 	if err != nil {
 		return 0, err
 	}
-	if planQuota > accountQuota {
-		return planQuota, nil
+	if entitlements.Active && entitlements.StorageQuotaBytes > accountQuota {
+		return entitlements.StorageQuotaBytes, nil
 	}
 	return accountQuota, nil
 }
@@ -655,8 +653,9 @@ func (repo *GormRepository) ClaimFilesForRetention(ctx context.Context, now, sta
 		args := append(eligibilityArgs, staleBefore)
 		claimed = nil
 		var claimedIDs, rejectedIDs []uint
-		// The SQL pre-filter is an approximation of the entitlement check done in
-		// Go below, so it can select rows Go then rejects. Rejected rows stay in
+		// The SQL pre-filter applies the same entitlement rule as the check done in
+		// Go below, but it reads entitlements before they are locked, so it can
+		// still select rows Go then rejects. Rejected rows stay in
 		// place, and re-selecting them on every run would starve eligible rows
 		// behind them; page past them instead, a bounded number of times.
 		for pass := 0; pass < maxRetentionClaimPasses && len(claimedIDs) < limit; pass++ {
@@ -758,6 +757,23 @@ func retentionEligibleCandidates(transaction *gorm.DB, candidates []FileList, no
 	return accepted, rejected, nil
 }
 
+// subscriptionRetentionFromSQL is entitlementsWithDB's retention rule as a
+// FROM clause over subscriptions s, exposing benefit.retention_days. Its two
+// placeholders both take the evaluation time. Subscriptions without an invoice
+// use the live plan; invoice-backed ones use currentPeriodInvoice's snapshot:
+// for local purchases the most recently started paid plan invoice while its
+// period lasts (so an early renewal waits for the earlier period to end),
+// otherwise the invoice the subscription points to. Go's AddDate on a UTC time
+// adds whole 24-hour days, hence INTERVAL '24 hours' rather than '1 day'.
+const subscriptionRetentionFromSQL = `subscriptions AS s JOIN paid_plans AS p ON p.id = s.plan_id
+	LEFT JOIN LATERAL (SELECT i.retention_days, i.period_start, i.duration_days FROM invoices AS i
+		WHERE s.gateway = 'credit' AND i.user_id = s.user_id AND i.kind = 'plan' AND i.status = 'paid' AND i.period_start <= ?
+		ORDER BY i.period_start DESC LIMIT 1) AS started ON TRUE
+	LEFT JOIN invoices AS latest ON s.invoice_id <> '' AND CAST(latest.id AS text) = s.invoice_id AND latest.status = 'paid'
+	CROSS JOIN LATERAL (SELECT CASE WHEN s.invoice_id = '' THEN p.retention_days
+		WHEN started.period_start + started.duration_days * INTERVAL '24 hours' > ? THEN started.retention_days
+		ELSE latest.retention_days END AS retention_days) AS benefit`
+
 func retentionEligibilitySQLAt(now time.Time, guestBefore, unpaidBefore *time.Time) (string, []any) {
 	var eligibility []string
 	var eligibilityArgs []any
@@ -766,8 +782,8 @@ func retentionEligibilitySQLAt(now time.Time, guestBefore, unpaidBefore *time.Ti
 		eligibilityArgs = append(eligibilityArgs, *guestBefore)
 	}
 	if unpaidBefore != nil {
-		eligibility = append(eligibility, `(f.file_owner IS NOT NULL AND EXISTS (SELECT 1 FROM users AS u WHERE u.id = f.file_owner AND u.is_paid = FALSE) AND ((EXISTS (SELECT 1 FROM subscriptions AS s JOIN paid_plans AS p ON p.id = s.plan_id WHERE s.user_id = f.file_owner AND s.status IN ('active','trialing') AND s.current_period_end > ? AND p.retention_days > 0 AND f.created_at <= CAST(? AS timestamptz) - (p.retention_days * INTERVAL '1 day'))) OR (NOT EXISTS (SELECT 1 FROM subscriptions AS s WHERE s.user_id = f.file_owner AND s.status IN ('active','trialing') AND s.current_period_end > ?) AND f.created_at <= ?)))`)
-		eligibilityArgs = append(eligibilityArgs, now, now, now, *unpaidBefore)
+		eligibility = append(eligibility, `(f.file_owner IS NOT NULL AND EXISTS (SELECT 1 FROM users AS u WHERE u.id = f.file_owner AND u.is_paid = FALSE) AND ((EXISTS (SELECT 1 FROM `+subscriptionRetentionFromSQL+` WHERE s.user_id = f.file_owner AND s.status IN ('active','trialing') AND s.current_period_end > ? AND benefit.retention_days > 0 AND f.created_at <= CAST(? AS timestamptz) - (benefit.retention_days * INTERVAL '1 day'))) OR (NOT EXISTS (SELECT 1 FROM subscriptions AS s WHERE s.user_id = f.file_owner AND s.status IN ('active','trialing') AND s.current_period_end > ?) AND f.created_at <= ?)))`)
+		eligibilityArgs = append(eligibilityArgs, now, now, now, now, now, *unpaidBefore)
 	}
 	eligibleSQL := "FALSE"
 	if len(eligibility) != 0 {

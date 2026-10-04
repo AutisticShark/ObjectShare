@@ -540,3 +540,171 @@ func TestCheckoutDeadlinesFollowProviderLimits(t *testing.T) {
 		}
 	}
 }
+
+// Plan benefits for a paid period follow the invoice that paid for it, so a
+// later catalog edit neither raises nor lowers the upload quota, including
+// while an early renewal waits for the current period to end.
+func TestPostgresUploadQuotaUsesThePaidInvoiceSnapshot(t *testing.T) {
+	repo := creditTestRepository(t)
+	if err := repo.connection.AutoMigrate(&FileList{}); err != nil {
+		t.Fatal(err)
+	}
+	user := creditTestUser(t, repo, 100)
+	if err := repo.connection.Model(&User{}).Where("id = ?", user.ID).Update("upload_quota_bytes", 100).Error; err != nil {
+		t.Fatal(err)
+	}
+	plan := invoiceTestPlan(t, repo) // 2048 bytes for 30 days
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	first, err := repo.CreatePlanInvoice(t.Context(), user.ID, plan.ID, uuid.NewString(), "USD", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = repo.PayInvoiceCredit(t.Context(), user.ID, first.ID, now); err != nil {
+		t.Fatal(err)
+	}
+	plan.StorageQuotaBytes = 4096
+	if err = repo.UpdatePlan(t.Context(), &plan); err != nil {
+		t.Fatal(err)
+	}
+	usage, err := repo.UploadUsage(t.Context(), user.ID)
+	if err != nil || usage.Limit != 2048 {
+		t.Fatalf("usage after a catalog edit = %#v, %v; want the purchased 2048-byte quota", usage, err)
+	}
+	renewed := now.Add(time.Hour)
+	second, err := repo.CreatePlanInvoice(t.Context(), user.ID, plan.ID, uuid.NewString(), "USD", renewed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = repo.PayInvoiceCredit(t.Context(), user.ID, second.ID, renewed); err != nil {
+		t.Fatal(err)
+	}
+	plan.StorageQuotaBytes = 1024
+	if err = repo.UpdatePlan(t.Context(), &plan); err != nil {
+		t.Fatal(err)
+	}
+	firstEnd := now.AddDate(0, 0, 30)
+	for _, check := range []struct {
+		at           time.Time
+		accountQuota int64
+		want         int64
+		described    string
+	}{
+		{renewed.Add(time.Minute), 100, 2048, "during the first paid period"},
+		{firstEnd.Add(-time.Minute), 100, 2048, "just before the first paid period ends"},
+		{firstEnd, 100, 4096, "when the renewal starts"},
+		{firstEnd.Add(time.Minute), 100, 4096, "during the renewal"},
+		{firstEnd.AddDate(0, 0, 30).Add(time.Minute), 100, 100, "after the renewal ends"},
+		{renewed.Add(time.Minute), 0, 0, "with an unlimited account quota"},
+		{renewed.Add(time.Minute), 8192, 8192, "with a larger account quota"},
+	} {
+		quota, err := effectiveUploadQuota(repo.connection.WithContext(t.Context()), user.ID, check.accountQuota, check.at)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if quota != check.want {
+			t.Errorf("%s: quota %d, want %d", check.described, quota, check.want)
+		}
+	}
+}
+
+// Retention cleanup selects files in SQL. Its rule must pick the same plan
+// terms as entitlementsWithDB in every subscription shape.
+func TestPostgresRetentionSQLMatchesEntitlements(t *testing.T) {
+	repo := creditTestRepository(t)
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	plan := invoiceTestPlan(t, repo) // 60 days of retention, 30-day periods
+	createSubscription := func(user User, gateway, invoiceID string, periodEnd time.Time) {
+		t.Helper()
+		sub := Subscription{ID: uuid.NewString(), UserID: user.ID, PlanID: plan.ID, Gateway: gateway, GatewaySubscriptionID: uuid.NewString(), Status: "active",
+			CurrentPeriodEnd: periodEnd, InvoiceID: invoiceID, CreatedAt: now, UpdatedAt: now}
+		if err := repo.connection.Create(&sub).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	createInvoice := func(user User, kind string, retention int, periodStart *time.Time) Invoice {
+		t.Helper()
+		invoice := Invoice{ID: uuid.NewString(), UserID: user.ID, RequestID: uuid.NewString(), Kind: kind, PlanID: plan.ID, Name: "Snapshot", Description: "paid terms",
+			Email: user.Email, Credits: 10, AmountMinor: 1000, Currency: "USD", DurationDays: 30, StorageQuotaBytes: 2048, RetentionDays: retention, Status: "paid",
+			CreatedAt: now, ExpiresAt: now.Add(time.Hour), PaidAt: &now, PeriodStart: periodStart}
+		if err := repo.connection.Create(&invoice).Error; err != nil {
+			t.Fatal(err)
+		}
+		return invoice
+	}
+
+	// A local purchase with an early renewal bought after a catalog edit.
+	stacked := creditTestUser(t, repo, 100)
+	first, err := repo.CreatePlanInvoice(t.Context(), stacked.ID, plan.ID, uuid.NewString(), "USD", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = repo.PayInvoiceCredit(t.Context(), stacked.ID, first.ID, now); err != nil {
+		t.Fatal(err)
+	}
+	plan.RetentionDays = 5
+	if err = repo.UpdatePlan(t.Context(), &plan); err != nil {
+		t.Fatal(err)
+	}
+	second, err := repo.CreatePlanInvoice(t.Context(), stacked.ID, plan.ID, uuid.NewString(), "USD", now.Add(time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = repo.PayInvoiceCredit(t.Context(), stacked.ID, second.ID, now.Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	// A gateway subscription without an invoice follows the live plan.
+	gateway := creditTestUser(t, repo, 0)
+	createSubscription(gateway, BillingGatewayStripe, "", now.AddDate(0, 0, 30))
+	// A gateway renewal receipt stores its own snapshot.
+	receipt := creditTestUser(t, repo, 0)
+	createSubscription(receipt, BillingGatewayStripe, createInvoice(receipt, "renewal", 77, nil).ID, now.AddDate(0, 0, 30))
+	// A local purchase recorded before period starts were stored.
+	legacy := creditTestUser(t, repo, 0)
+	createSubscription(legacy, BillingGatewayCredit, createInvoice(legacy, "plan", 11, nil).ID, now.AddDate(0, 0, 30))
+	// A local subscription whose latest started invoice has already ended.
+	ended := creditTestUser(t, repo, 0)
+	old := now.AddDate(0, 0, -40)
+	createInvoice(ended, "plan", 13, &old)
+	createSubscription(ended, BillingGatewayCredit, createInvoice(ended, "plan", 17, nil).ID, now.AddDate(0, 0, 30))
+
+	plan.RetentionDays = 9 // edited after every payment above
+	if err = repo.UpdatePlan(t.Context(), &plan); err != nil {
+		t.Fatal(err)
+	}
+	firstEnd := now.AddDate(0, 0, 30)
+	for _, check := range []struct {
+		user      User
+		at        time.Time
+		want      int
+		described string
+	}{
+		{stacked, now.Add(2 * time.Hour), 60, "first paid period"},
+		{stacked, firstEnd.Add(-time.Microsecond), 60, "end of the first paid period"},
+		{stacked, firstEnd, 5, "start of the early renewal"},
+		{stacked, firstEnd.AddDate(0, 0, 1), 5, "early renewal"},
+		{stacked, firstEnd.AddDate(0, 0, 31), 0, "after the renewal"},
+		{gateway, now, 9, "gateway subscription"},
+		{receipt, now, 77, "gateway renewal receipt"},
+		{legacy, now, 11, "local purchase without a period start"},
+		{ended, now, 17, "ended earlier invoice"},
+	} {
+		entitlements, err := repo.Entitlements(t.Context(), check.user.ID, check.at)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var fromSQL []int
+		if err := repo.connection.Raw("SELECT benefit.retention_days FROM "+subscriptionRetentionFromSQL+" WHERE s.user_id = ? AND s.status IN ('active','trialing') AND s.current_period_end > ?",
+			check.at, check.at, check.user.ID, check.at).Scan(&fromSQL).Error; err != nil {
+			t.Fatal(err)
+		}
+		if check.want == 0 {
+			if entitlements.Active || len(fromSQL) != 0 {
+				t.Errorf("%s: entitlements %#v, SQL %v; want no active plan", check.described, entitlements, fromSQL)
+			}
+			continue
+		}
+		if !entitlements.Active || entitlements.RetentionDays != check.want || len(fromSQL) != 1 || fromSQL[0] != check.want {
+			t.Errorf("%s: entitlements %#v, SQL %v; want %d retention days from both", check.described, entitlements, fromSQL, check.want)
+		}
+	}
+}

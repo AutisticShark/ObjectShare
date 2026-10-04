@@ -75,13 +75,18 @@ func TestRetentionEligibilityKeepsPaidAccountsOutOfCleanup(t *testing.T) {
 	unpaidBefore := time.Date(2026, 8, 5, 0, 0, 0, 0, time.UTC)
 	now := time.Date(2026, 9, 4, 0, 0, 0, 0, time.UTC)
 	query, arguments := retentionEligibilitySQLAt(now, &guestBefore, &unpaidBefore)
-	for _, clause := range []string{"f.file_owner IS NULL", "f.file_owner IS NOT NULL", "u.id = f.file_owner", "u.is_paid = FALSE", "subscriptions AS s", "p.retention_days"} {
+	for _, clause := range []string{"f.file_owner IS NULL", "f.file_owner IS NOT NULL", "u.id = f.file_owner", "u.is_paid = FALSE", "subscriptions AS s", "p.retention_days", "invoices AS i", "benefit.retention_days"} {
 		if !strings.Contains(query, clause) {
 			t.Fatalf("retention eligibility omitted %q: %s", clause, query)
 		}
 	}
-	if len(arguments) != 5 || arguments[0] != guestBefore || arguments[1] != now || arguments[2] != now || arguments[3] != now || arguments[4] != unpaidBefore {
+	if len(arguments) != 7 || arguments[0] != guestBefore || arguments[6] != unpaidBefore {
 		t.Fatalf("retention cutoffs = %#v", arguments)
+	}
+	for _, argument := range arguments[1:6] {
+		if argument != now {
+			t.Fatalf("retention cutoffs = %#v", arguments)
+		}
 	}
 	disabled, arguments := retentionEligibilitySQLAt(now, nil, nil)
 	if disabled != "FALSE" || len(arguments) != 0 {
