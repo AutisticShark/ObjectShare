@@ -631,12 +631,16 @@ func (cfg *ServiceConfig) Validate() error {
 		if err != nil || len(key) != 32 {
 			return errors.New("encryption key must be a base64 or hex encoded 32-byte key")
 		}
-		if cfg.MaxFileSize > 128 {
-			return errors.New("max_file_size cannot exceed 128 MiB when encryption is enabled")
+		if cfg.MaxFileSize > MaxEncryptedFileSizeMiB {
+			return fmt.Errorf("max_file_size cannot exceed %d MiB when encryption is enabled", MaxEncryptedFileSizeMiB)
 		}
 	}
 	return nil
 }
+
+// MaxEncryptedFileSizeMiB is the largest file server-side encryption accepts,
+// because the whole object is held in memory while it is sealed or opened.
+const MaxEncryptedFileSizeMiB = 128
 
 func validateBilling(settings *BillingConfig, secureCookies bool) error {
 	if settings == nil {
