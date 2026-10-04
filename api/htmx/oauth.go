@@ -428,7 +428,7 @@ func validOAuthSubject(subject string) bool {
 
 func oauthDisplayName(value, providerLabel string) string {
 	value = strings.Map(func(character rune) rune {
-		if unicode.IsControl(character) {
+		if appauth.UnsafeTextCharacter(character) {
 			return -1
 		}
 		return character

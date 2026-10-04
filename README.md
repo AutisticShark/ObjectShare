@@ -93,6 +93,9 @@ The signed-in navigation separates the common tasks:
 - **Upload** (`/`): choose single or multiple files, browse or drag files onto the
   selector, review filenames and sizes, and choose access before uploading. Local
   validation includes encryption overhead; the server still enforces all limits.
+  File and display names may not contain control characters or invisible
+  formatting characters such as bidirectional overrides, which can disguise a
+  name (zero-width joiners remain allowed).
   If a direct-upload batch is interrupted, keep the page open and choose **Retry
   unfinished uploads**. Completed files have links and are skipped on retry.
   The retry reuses the original uploads and encrypted bytes; it does not create

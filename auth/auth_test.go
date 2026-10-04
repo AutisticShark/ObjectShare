@@ -50,6 +50,12 @@ func TestNormalizeEmailAndDisplayName(t *testing.T) {
 	if _, err := ValidateDisplayName("bad\nname"); err == nil {
 		t.Fatal("control character should be rejected")
 	}
+	if _, err := ValidateDisplayName("Admin\u202Enimda"); err == nil {
+		t.Fatal("bidirectional override should be rejected")
+	}
+	if _, err := ValidateDisplayName("\u0645\u06CC\u200C\u0631\u0627"); err != nil {
+		t.Fatalf("zero-width non-joiner rejected: %v", err)
+	}
 }
 
 func TestTokensAreRandomAndHashable(t *testing.T) {

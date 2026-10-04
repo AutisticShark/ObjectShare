@@ -68,11 +68,23 @@ func ValidateDisplayName(value string) (string, error) {
 		return "", errors.New("Display name must contain 1 to 100 characters.")
 	}
 	for _, character := range value {
-		if unicode.IsControl(character) {
-			return "", errors.New("Display name cannot contain control characters.")
+		if UnsafeTextCharacter(character) {
+			return "", errors.New("Display name cannot contain control or invisible formatting characters.")
 		}
 	}
 	return value, nil
+}
+
+// UnsafeTextCharacter reports characters that must not appear in names shown
+// to other people: control characters and invisible format characters (Cf),
+// including bidirectional overrides that make "invoice\u202Efdp.exe" display
+// as "invoiceexe.pdf". The zero-width non-joiner and joiner stay allowed
+// because several scripts and emoji sequences need them.
+func UnsafeTextCharacter(character rune) bool {
+	if character == '\u200C' || character == '\u200D' {
+		return false
+	}
+	return unicode.IsControl(character) || unicode.Is(unicode.Cf, character)
 }
 
 func ValidatePassword(password string) error {

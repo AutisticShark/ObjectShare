@@ -14,9 +14,9 @@ import (
 	"path"
 	"strings"
 	"time"
-	"unicode"
 	"unicode/utf8"
 
+	appauth "github.com/AutisticShark/ObjectShare/auth"
 	"github.com/AutisticShark/ObjectShare/config"
 	"github.com/AutisticShark/ObjectShare/db"
 	"github.com/google/uuid"
@@ -410,8 +410,8 @@ func safeFileName(value string) (string, error) {
 		return "", errors.New("Invalid file name.")
 	}
 	for _, character := range value {
-		if unicode.IsControl(character) {
-			return "", errors.New("File name contains control characters.")
+		if appauth.UnsafeTextCharacter(character) {
+			return "", errors.New("File name contains control or invisible formatting characters.")
 		}
 	}
 	if len([]byte(value)) > 255 {
