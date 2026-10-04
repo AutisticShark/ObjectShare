@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -46,7 +47,7 @@ func run() error {
 		return nil
 	}
 	if *healthcheck {
-		return runHealthcheck()
+		return runHealthcheck(*configPath)
 	}
 
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
@@ -195,10 +196,16 @@ func createInitialAdmin(ctx context.Context, repository db.AuthRepository, email
 	return nil
 }
 
-func runHealthcheck() error {
+func runHealthcheck(configPath string) error {
 	endpoint := os.Getenv("OBJECTSHARE_HEALTH_URL")
 	if endpoint == "" {
-		endpoint = "http://127.0.0.1:8080/health/live"
+		address, err := config.ListenAddress(configPath)
+		if err != nil {
+			return fmt.Errorf("resolve listen address: %w", err)
+		}
+		if endpoint, err = healthURL(address); err != nil {
+			return err
+		}
 	}
 	client := &http.Client{Timeout: 3 * time.Second}
 	response, err := client.Get(endpoint)
@@ -210,4 +217,21 @@ func runHealthcheck() error {
 		return fmt.Errorf("health endpoint returned %s", response.Status)
 	}
 	return nil
+}
+
+// healthURL turns the configured listen address into a loopback URL for the
+// live endpoint: a wildcard bind such as ":9000", "0.0.0.0:9000", or
+// "[::]:9000" is reached through the matching loopback address.
+func healthURL(address string) (string, error) {
+	host, port, err := net.SplitHostPort(address)
+	if err != nil {
+		return "", fmt.Errorf("listen address %q: %w", address, err)
+	}
+	if ip := net.ParseIP(host); host == "" || (ip != nil && ip.IsUnspecified()) {
+		host = "127.0.0.1"
+		if ip != nil && ip.To4() == nil {
+			host = "::1"
+		}
+	}
+	return "http://" + net.JoinHostPort(host, port) + "/health/live", nil
 }

@@ -219,13 +219,7 @@ func applyEnvironment(cfg *ServiceConfig) error {
 	}
 	problems = append(problems, applyEmailEnvironment(cfg.Email))
 	applyBrandingEnvironment(&cfg.Branding)
-	if value, ok := lookupEnv("OBJECTSHARE_ADDRESS"); ok {
-		// An explicit listen address beats a legacy "port" from config.json,
-		// which would otherwise widen a loopback bind to every interface.
-		// OBJECTSHARE_PORT, when also set, still takes precedence as before.
-		cfg.Address, cfg.Port = value, 0
-	}
-	problems = append(problems, setInt("OBJECTSHARE_PORT", &cfg.Port))
+	problems = append(problems, applyListenEnvironment(cfg))
 	problems = append(problems, setDuration("OBJECTSHARE_READ_TIMEOUT", &cfg.ReadTimeout))
 	problems = append(problems, setDuration("OBJECTSHARE_WRITE_TIMEOUT", &cfg.WriteTimeout))
 	problems = append(problems, setDuration("OBJECTSHARE_IDLE_TIMEOUT", &cfg.IdleTimeout))
@@ -388,6 +382,42 @@ func applyEnvironment(cfg *ServiceConfig) error {
 	return errors.Join(problems...)
 }
 
+func applyListenEnvironment(cfg *ServiceConfig) error {
+	if value, ok := lookupEnv("OBJECTSHARE_ADDRESS"); ok {
+		// An explicit listen address beats a legacy "port" from config.json,
+		// which would otherwise widen a loopback bind to every interface.
+		// OBJECTSHARE_PORT, when also set, still takes precedence as before.
+		cfg.Address, cfg.Port = value, 0
+	}
+	return setInt("OBJECTSHARE_PORT", &cfg.Port)
+}
+
+// ListenAddress resolves only the HTTP listen address, with the same
+// precedence as LoadBootstrap, so the container health check can find the
+// server without the secrets a full configuration load requires.
+func ListenAddress(path string) (string, error) {
+	cfg, err := readUnvalidated(path)
+	if err != nil {
+		return "", err
+	}
+	if err := applyListenEnvironment(cfg); err != nil {
+		return "", err
+	}
+	if err := cfg.resolveAddress(); err != nil {
+		return "", err
+	}
+	return cfg.Address, nil
+}
+
+func (cfg *ServiceConfig) resolveAddress() error {
+	if cfg.Port > 0 {
+		cfg.Address = ":" + strconv.Itoa(cfg.Port)
+	} else if cfg.Address == "" {
+		return errors.New("address or a valid port is required")
+	}
+	return nil
+}
+
 func applyS3Environment(prefix string, settings *S3CompatibleConfig, problems *[]error) {
 	base := "OBJECTSHARE_" + prefix + "_"
 	setString(base+"BUCKET_NAME", &settings.BucketName)
@@ -415,10 +445,8 @@ func (cfg *ServiceConfig) Validate() error {
 	if err := cfg.Email.Validate(); err != nil {
 		return err
 	}
-	if cfg.Port > 0 {
-		cfg.Address = ":" + strconv.Itoa(cfg.Port)
-	} else if cfg.Address == "" {
-		return errors.New("address or a valid port is required")
+	if err := cfg.resolveAddress(); err != nil {
+		return err
 	}
 	if cfg.MaxFileSize <= 0 || cfg.MaxFileSize > 10*1024 {
 		return errors.New("max_file_size must be between 1 and 10240 MiB")
