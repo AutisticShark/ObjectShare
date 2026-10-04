@@ -176,6 +176,7 @@ func openPostgres(ctx context.Context, cfg *config.DatabaseConfig, pgxConfig *pg
 	connection, err := gorm.Open(postgres.New(postgres.Config{Conn: sqlDB}), &gorm.Config{
 		SkipDefaultTransaction: true,
 		DisableAutomaticPing:   true,
+		Logger:                 queryLogger(),
 	})
 	if err != nil {
 		_ = sqlDB.Close()
