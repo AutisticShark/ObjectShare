@@ -13,6 +13,7 @@ import (
 )
 
 func Router(handler *htmx.Handler, logger *slog.Logger) http.Handler {
+	requireSameOrigin := sameOrigin(handler.RequestScheme, logger)
 	router := chi.NewRouter()
 	router.Use(middleware.RequestID)
 	router.Use(requestIDHeader)
@@ -169,19 +170,43 @@ func securityHeaders(captchaEnabled bool, imageSources []string, connectSources 
 	}
 }
 
-func requireSameOrigin(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		if site := request.Header.Get("Sec-Fetch-Site"); site != "" && site != "same-origin" {
-			http.Error(writer, "Cross-site request rejected.", http.StatusForbidden)
-			return
-		}
-		if origin := request.Header.Get("Origin"); origin != "" {
-			parsed, err := url.Parse(origin)
-			if err != nil || !strings.EqualFold(parsed.Host, request.Host) {
+// sameOrigin rejects state-changing browser requests from another origin. The
+// Origin host must match Host and, when requestScheme can determine it
+// reliably, the Origin scheme must match the scheme the browser used.
+func sameOrigin(requestScheme func(*http.Request) string, logger *slog.Logger) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+			site := request.Header.Get("Sec-Fetch-Site")
+			if site != "" && site != "same-origin" {
 				http.Error(writer, "Cross-site request rejected.", http.StatusForbidden)
 				return
 			}
-		}
-		next.ServeHTTP(writer, request)
-	})
+			if origin := request.Header.Get("Origin"); origin != "" {
+				parsed, err := url.Parse(origin)
+				if err != nil {
+					http.Error(writer, "Cross-site request rejected.", http.StatusForbidden)
+					return
+				}
+				if !strings.EqualFold(parsed.Host, request.Host) {
+					// Cross-site browser requests were rejected above by
+					// Sec-Fetch-Site. A browser that reports a same-origin request
+					// (or an older one that omits the header) yet names another
+					// host is usually behind a reverse proxy that rewrote Host.
+					if parsed.Host != "" {
+						logger.Warn("rejected a request whose Origin host differs from the Host header; a reverse proxy must forward the browser's Host header (nginx: proxy_set_header Host $host;)",
+							"request_id", middleware.GetReqID(request.Context()), "origin_host", parsed.Host, "host", request.Host, "path", request.URL.Path)
+					}
+					http.Error(writer, "Cross-site request rejected.", http.StatusForbidden)
+					return
+				}
+				if scheme := requestScheme(request); scheme != "" && !strings.EqualFold(parsed.Scheme, scheme) {
+					logger.Warn("rejected a request whose Origin scheme differs from the request scheme; a trusted reverse proxy must send the browser-facing scheme in X-Forwarded-Proto",
+						"request_id", middleware.GetReqID(request.Context()), "origin_scheme", parsed.Scheme, "scheme", scheme, "path", request.URL.Path)
+					http.Error(writer, "Cross-site request rejected.", http.StatusForbidden)
+					return
+				}
+			}
+			next.ServeHTTP(writer, request)
+		})
+	}
 }

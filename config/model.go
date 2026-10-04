@@ -161,7 +161,8 @@ type CaptchaConfig struct {
 
 // RateLimitConfig applies shared, database-backed fixed-window request limits.
 // Limits are requests per Window; zero disables only that scope. Proxy CIDRs
-// identify reverse proxies whose forwarded client-address chain may be trusted.
+// identify reverse proxies whose forwarded client-address chain and
+// X-Forwarded-Proto scheme may be trusted.
 type RateLimitConfig struct {
 	Enabled           bool     `json:"enabled"`
 	Window            Duration `json:"window"`

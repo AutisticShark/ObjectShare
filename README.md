@@ -381,6 +381,30 @@ join the application's Docker network and connect to `app:8080`; its own loopbac
 address does not refer to the host or the application container. Set the public
 HTTPS URLs in the dashboard before enabling OAuth, billing, and verification email.
 
+The proxy must forward the browser's `Host` header and scheme. ObjectShare rejects
+state-changing requests whose `Origin` names a different host than `Host`, so a
+proxy that rewrites `Host` (nginx's default `proxy_pass` sends the upstream
+address) makes every form submission fail with `403 Cross-site request rejected.`;
+the application logs a warning naming the mismatched hosts when this happens.
+Caddy and Traefik preserve `Host` by default. For nginx:
+
+```nginx
+location / {
+    proxy_pass http://127.0.0.1:8080;
+    proxy_set_header Host $host;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+}
+```
+
+When the proxy's address is one of the trusted proxy CIDRs (see
+[CAPTCHA and request rate limiting](#captcha-and-request-rate-limiting)),
+ObjectShare also requires the `Origin` scheme to match a single
+`X-Forwarded-Proto` value. That value must be the scheme the browser used: a proxy
+behind another TLS terminator, such as nginx behind Cloudflare, must pass on the
+outer scheme rather than its own `$scheme`. When the scheme cannot be determined
+(no trusted proxy, no header, or several values), only the host is compared.
+
 ## Run from source
 
 Requirements: Go 1.27 and PostgreSQL 18 (PostgreSQL 17 is also supported).
@@ -908,7 +932,7 @@ OBJECTSHARE_RATE_LIMIT_DOWNLOAD=60
 
 Older JSON configuration uses the top-level `rate_limit` object as `enabled`, `window`, `api_limit`, `login_limit`, `signup_limit`, `upload_limit`, and `download_limit`. A limit of `0` disables that scope; the window may be from one second to 24 hours. Rejected requests return HTTP `429`, `Retry-After`, `X-RateLimit-Limit`, and `X-RateLimit-Scope`. This application control complements—not replaces—connection, bandwidth, and request-body limits at the public reverse proxy.
 
-Forwarded IP headers are ignored unless the TCP peer belongs to a trusted proxy CIDR configured in the dashboard. The legacy seed is `OBJECTSHARE_TRUSTED_PROXY_CIDRS`, a comma-separated list; its older JSON equivalent is `rate_limit.trusted_proxy_cidrs`, an array. ObjectShare joins every `X-Forwarded-For` header line in order (proxies such as HAProxy with `option forwardfor` add their own line after any the client sent), walks the list from the trusted side, and selects the first untrusted address. Do not add broad public networks merely to make a header work; an incorrect trust boundary lets clients choose their own limiter key.
+Forwarded IP headers are ignored unless the TCP peer belongs to a trusted proxy CIDR configured in the dashboard. The legacy seed is `OBJECTSHARE_TRUSTED_PROXY_CIDRS`, a comma-separated list; its older JSON equivalent is `rate_limit.trusted_proxy_cidrs`, an array. ObjectShare joins every `X-Forwarded-For` header line in order (proxies such as HAProxy with `option forwardfor` add their own line after any the client sent), walks the list from the trusted side, and selects the first untrusted address. Do not add broad public networks merely to make a header work; an incorrect trust boundary lets clients choose their own limiter key. The same CIDRs decide whether `X-Forwarded-Proto` is trusted for the same-origin check on form and API submissions.
 
 ### Google, GitHub, and Discord OAuth login
 

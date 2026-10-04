@@ -1,6 +1,8 @@
 package api
 
 import (
+	"bytes"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -72,13 +74,75 @@ func TestSecurityHeadersAllowTurnstileOnlyWhenConfigured(t *testing.T) {
 }
 
 func TestSameOriginRejectsCrossSiteRequest(t *testing.T) {
-	handler := requireSameOrigin(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) { writer.WriteHeader(http.StatusNoContent) }))
+	handler := sameOrigin(func(*http.Request) string { return "" }, slog.New(slog.DiscardHandler))(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) { writer.WriteHeader(http.StatusNoContent) }))
 	request := httptest.NewRequest(http.MethodPost, "https://objectshare.example/delete", nil)
 	request.Header.Set("Origin", "https://attacker.example")
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
 	if response.Code != http.StatusForbidden {
 		t.Fatalf("status = %d", response.Code)
+	}
+}
+
+func TestSameOriginComparesSchemeWhenKnown(t *testing.T) {
+	for _, test := range []struct {
+		name, scheme, origin, site string
+		want                       int
+	}{
+		{"https origin on an http site", "http", "https://objectshare.example", "", http.StatusForbidden},
+		{"http origin on an https site", "https", "http://objectshare.example", "", http.StatusForbidden},
+		{"matching https", "https", "https://objectshare.example", "same-origin", http.StatusNoContent},
+		{"matching http", "http", "http://objectshare.example", "", http.StatusNoContent},
+		{"scheme case is ignored", "https", "HTTPS://objectshare.example", "", http.StatusNoContent},
+		// Without TLS or a trusted X-Forwarded-Proto the scheme is unknown, so a
+		// TLS-terminating proxy that is not configured as trusted keeps working.
+		{"unknown scheme", "", "https://objectshare.example", "", http.StatusNoContent},
+		{"unknown scheme still checks host", "", "https://attacker.example", "", http.StatusForbidden},
+		{"no origin", "https", "", "", http.StatusNoContent},
+		{"cross-site fetch metadata", "https", "https://objectshare.example", "cross-site", http.StatusForbidden},
+		{"opaque origin", "", "null", "", http.StatusForbidden},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			handler := sameOrigin(func(*http.Request) string { return test.scheme }, slog.New(slog.DiscardHandler))(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) { writer.WriteHeader(http.StatusNoContent) }))
+			request := httptest.NewRequest(http.MethodPost, "http://objectshare.example/login", nil)
+			if test.origin != "" {
+				request.Header.Set("Origin", test.origin)
+			}
+			if test.site != "" {
+				request.Header.Set("Sec-Fetch-Site", test.site)
+			}
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(response, request)
+			if response.Code != test.want {
+				t.Fatalf("status = %d, want %d", response.Code, test.want)
+			}
+		})
+	}
+}
+
+func TestSameOriginLogsLikelyHostRewrite(t *testing.T) {
+	var logs bytes.Buffer
+	handler := sameOrigin(func(*http.Request) string { return "" }, slog.New(slog.NewJSONHandler(&logs, nil)))(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) { writer.WriteHeader(http.StatusNoContent) }))
+	// nginx's default proxy_pass sends the upstream address as Host.
+	request := httptest.NewRequest(http.MethodPost, "http://127.0.0.1:8080/login", nil)
+	request.Header.Set("Origin", "https://share.example.com")
+	request.Header.Set("Sec-Fetch-Site", "same-origin")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusForbidden {
+		t.Fatalf("status = %d", response.Code)
+	}
+	if !strings.Contains(logs.String(), "proxy_set_header Host $host") || !strings.Contains(logs.String(), `"origin_host":"share.example.com"`) || !strings.Contains(logs.String(), `"host":"127.0.0.1:8080"`) {
+		t.Fatalf("host rewrite was not diagnosed: %s", logs.String())
+	}
+
+	logs.Reset()
+	request = httptest.NewRequest(http.MethodPost, "http://share.example.com/login", nil)
+	request.Header.Set("Origin", "https://attacker.example")
+	request.Header.Set("Sec-Fetch-Site", "cross-site")
+	handler.ServeHTTP(httptest.NewRecorder(), request)
+	if logs.Len() != 0 {
+		t.Fatalf("an ordinary cross-site request was logged as a proxy problem: %s", logs.String())
 	}
 }
 
