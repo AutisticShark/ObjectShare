@@ -45,3 +45,30 @@ func TestLoadBootstrapDefersOnlyOperationalEnvironmentErrors(t *testing.T) {
 		t.Fatalf("invalid database bootstrap environment was deferred: %v", err)
 	}
 }
+
+func writeBootstrapConfig(t *testing.T, document string) string {
+	t.Helper()
+	path := t.TempDir() + "/config.json"
+	if err := os.WriteFile(path, []byte(document), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+// An explicit OBJECTSHARE_ADDRESS (for example a loopback bind) must not be
+// replaced by a legacy "port" from config.json, which listens on every interface.
+func TestEnvironmentAddressBeatsLegacyFilePort(t *testing.T) {
+	path := writeBootstrapConfig(t, `{"port": 8080, "auth": {"jwt_secret": "`+testJWTSecret+`"}}`)
+	if cfg, err := LoadBootstrap(path); err != nil || cfg.Address != ":8080" {
+		t.Fatalf("legacy port without an explicit address: address %q, err %v", cfg.Address, err)
+	}
+	t.Setenv("OBJECTSHARE_ADDRESS", "127.0.0.1:9000")
+	cfg, err := LoadBootstrap(path)
+	if err != nil || cfg.Address != "127.0.0.1:9000" {
+		t.Fatalf("OBJECTSHARE_ADDRESS=127.0.0.1:9000 was replaced: address %q, err %v", cfg.Address, err)
+	}
+	t.Setenv("OBJECTSHARE_PORT", "9100")
+	if cfg, err := LoadBootstrap(path); err != nil || cfg.Address != ":9100" {
+		t.Fatalf("OBJECTSHARE_PORT keeps its precedence: address %q, err %v", cfg.Address, err)
+	}
+}

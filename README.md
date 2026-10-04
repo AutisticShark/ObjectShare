@@ -430,7 +430,7 @@ Bootstrap infrastructure and secrets remain file/environment-owned:
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `OBJECTSHARE_ADDRESS` | `:8080` | HTTP listen address |
+| `OBJECTSHARE_ADDRESS` (`address`) | `:8080` | HTTP listen address. A legacy `port` in `config.json` (or `OBJECTSHARE_PORT`) replaces it with `:<port>` on every interface, except that an explicit `OBJECTSHARE_ADDRESS` such as `127.0.0.1:9000` always wins over a `port` from `config.json` |
 | `OBJECTSHARE_READ_TIMEOUT`, `OBJECTSHARE_WRITE_TIMEOUT`, `OBJECTSHARE_IDLE_TIMEOUT`, `OBJECTSHARE_SHUTDOWN_TIMEOUT` | varies | HTTP server lifecycle timeouts. For proxied uploads and downloads, `READ_TIMEOUT` and `WRITE_TIMEOUT` restart on every read or write, so a slow transfer survives while data keeps moving and only a stalled one is cut off |
 | `OBJECTSHARE_DB_*` | varies | PostgreSQL connection and pool settings. `OBJECTSHARE_DB_MIGRATION_TIMEOUT` (`db.migration_timeout` in `config.json`, default `5m`, allowed `1s`-`1h`) bounds connecting and running the start-up schema migrations, which run in one transaction; raise it for large databases. |
 | `OBJECTSHARE_REDIS_*` | see below | Optional Redis connection, namespace, timeouts, and public plan cache; bootstrap settings requiring a restart |

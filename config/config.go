@@ -213,7 +213,12 @@ func applyEnvironment(cfg *ServiceConfig) error {
 	}
 	problems = append(problems, applyEmailEnvironment(cfg.Email))
 	applyBrandingEnvironment(&cfg.Branding)
-	setString("OBJECTSHARE_ADDRESS", &cfg.Address)
+	if value, ok := os.LookupEnv("OBJECTSHARE_ADDRESS"); ok && value != "" {
+		// An explicit listen address beats a legacy "port" from config.json,
+		// which would otherwise widen a loopback bind to every interface.
+		// OBJECTSHARE_PORT, when also set, still takes precedence as before.
+		cfg.Address, cfg.Port = value, 0
+	}
 	problems = append(problems, setInt("OBJECTSHARE_PORT", &cfg.Port))
 	problems = append(problems, setDuration("OBJECTSHARE_READ_TIMEOUT", &cfg.ReadTimeout))
 	problems = append(problems, setDuration("OBJECTSHARE_WRITE_TIMEOUT", &cfg.WriteTimeout))
