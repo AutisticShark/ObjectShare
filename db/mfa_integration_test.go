@@ -111,6 +111,36 @@ func TestPostgresMFAAtomicConsumptionAndAccountChecks(t *testing.T) {
 	}
 }
 
+// Stored rows keep the sign-in challenge at the top level of the JSON; the
+// management slot is stored separately and changing it leaves sign-in alone.
+func TestPostgresMFAChallengeSlotsAreStoredSeparately(t *testing.T) {
+	repo := creditTestRepository(t)
+	user := creditTestUser(t, repo, 0)
+	legacy := `{"method":"totp","challenge":"login-challenge","action":"login","failures":2}`
+	if err := repo.connection.Exec("UPDATE users SET mfa = ?::jsonb WHERE id = ?", legacy, user.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	_, err := repo.MutateMFA(t.Context(), user.ID, user.TokenVersion, func(u *User) error {
+		if slot := u.MFA.ChallengeSlot("login"); slot.Challenge != "login-challenge" || slot.Failures != 2 {
+			t.Errorf("stored sign-in challenge was not read into the sign-in slot: %+v", slot)
+		}
+		manage := u.MFA.ChallengeSlot("disable")
+		manage.Challenge, manage.Action, manage.Failures = "manage-challenge", "disable", 5
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	current, err := repo.UserByID(t.Context(), user.ID)
+	if err != nil || current.MFA.Challenge != "login-challenge" || current.MFA.Failures != 2 || current.MFA.Manage.Challenge != "manage-challenge" || current.MFA.Manage.Failures != 5 {
+		t.Fatalf("challenge slots were not stored separately: %+v %v", current.MFA, err)
+	}
+	var stored string
+	if err := repo.connection.Raw("SELECT mfa->>'challenge' FROM users WHERE id = ?", user.ID).Scan(&stored).Error; err != nil || stored != "login-challenge" {
+		t.Fatalf("sign-in challenge moved within the stored JSON: %q %v", stored, err)
+	}
+}
+
 func TestPostgresMFAEmailChangeGuardAndRollback(t *testing.T) {
 	repo := creditTestRepository(t)
 	user := creditTestUser(t, repo, 0)

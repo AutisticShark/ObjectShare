@@ -10,12 +10,23 @@ import (
 )
 
 // MFAState is private account state. Seeds are encrypted; codes and JWT IDs are
-// hashed. One active challenge per account makes superseded flows unusable.
+// hashed. Sign-in and account management (enrolment, disabling, recovery-code
+// replacement) each have one active challenge slot with its own failure
+// budget. A new challenge makes the earlier one of the same kind unusable, but
+// a management challenge can never supersede or lock out a sign-in.
 type MFAState struct {
-	Method        string    `json:"method,omitempty"`
-	Secret        string    `json:"secret,omitempty"`
-	LastStep      int64     `json:"last_step,omitempty"`
-	Recovery      []string  `json:"recovery,omitempty"`
+	Method   string   `json:"method,omitempty"`
+	Secret   string   `json:"secret,omitempty"`
+	LastStep int64    `json:"last_step,omitempty"`
+	Recovery []string `json:"recovery,omitempty"`
+	// The embedded challenge is the sign-in slot; embedding keeps its fields
+	// at the top level of the stored JSON, where existing rows have them.
+	MFAChallenge
+	Manage MFAChallenge `json:"manage,omitzero"`
+}
+
+// MFAChallenge is one in-flight verification and its failed-attempt budget.
+type MFAChallenge struct {
 	Challenge     string    `json:"challenge,omitempty"`
 	Action        string    `json:"action,omitempty"`
 	AuthHash      string    `json:"auth_hash,omitempty"`
@@ -27,6 +38,14 @@ type MFAState struct {
 	SentAt        time.Time `json:"sent_at,omitempty"`
 	Failures      int       `json:"failures,omitempty"`
 	LockedUntil   time.Time `json:"locked_until,omitempty"`
+}
+
+// ChallengeSlot returns the slot that challenges for action use.
+func (state *MFAState) ChallengeSlot(action string) *MFAChallenge {
+	if action == "login" {
+		return &state.MFAChallenge
+	}
+	return &state.Manage
 }
 
 var ErrMFAEmailChange = errors.New("disable email MFA before changing the email address")

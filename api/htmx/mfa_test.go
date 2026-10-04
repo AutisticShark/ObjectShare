@@ -206,14 +206,17 @@ func TestMFAEnrollmentCSRFProofAndSessionInvalidation(t *testing.T) {
 	if start("bad", "a sufficiently long password").Code != http.StatusForbidden {
 		t.Fatal("CSRF bypass")
 	}
-	if w := start(claims.CSRF, "wrong"); !strings.Contains(w.Body.String(), "Confirm your current password") || user.MFA.Challenge != "" {
+	if w := start(claims.CSRF, "wrong"); !strings.Contains(w.Body.String(), "Confirm your current password") || user.MFA.Manage.Challenge != "" {
 		t.Fatal("password reauthentication bypass")
 	}
 	w := start(claims.CSRF, "a sufficiently long password")
 	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "Enter a setup key") || user.MFA.Method != "" {
 		t.Fatalf("setup %d %s", w.Code, w.Body.String())
 	}
-	secret, err := appauth.OpenMFASecret(h.settingsKey, user.ID, user.MFA.PendingSecret)
+	if user.MFA.Challenge != "" {
+		t.Fatal("enrolment used the sign-in challenge slot")
+	}
+	secret, err := appauth.OpenMFASecret(h.settingsKey, user.ID, user.MFA.Manage.PendingSecret)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -249,7 +252,7 @@ func TestMFAEnrollmentCSRFProofAndSessionInvalidation(t *testing.T) {
 		t.Fatal("enrolled without original authenticated session")
 	}
 	w = verify(code, challenge.CSRF, true)
-	if !strings.Contains(w.Body.String(), "Save your recovery codes") || user.MFA.Method != "totp" || len(user.MFA.Recovery) != 10 || user.TokenVersion != 2 || user.MFA.PendingSecret != "" {
+	if !strings.Contains(w.Body.String(), "Save your recovery codes") || user.MFA.Method != "totp" || len(user.MFA.Recovery) != 10 || user.TokenVersion != 2 || user.MFA.Manage.PendingSecret != "" {
 		t.Fatalf("enrollment failed: %s", w.Body.String())
 	}
 	if strings.Contains(w.Body.String(), secret) {
@@ -353,6 +356,60 @@ func TestMFADisableAndRecoveryReplacementRequireProof(t *testing.T) {
 	}
 }
 
+// A session that knows neither the password nor the second factor must not be
+// able to cancel the owner's in-flight sign-in or lock it out. Management
+// challenges need a recent sign-in to start, and even then use their own slot
+// and failure budget.
+func TestMFAManagementCannotSupersedeOrLockOutASignIn(t *testing.T) {
+	h, _, user, secret := mfaFixture(t, "totp")
+	ownerChallenge := apiChallenge(t, h) // the owner is mid-sign-in
+	loginSlot := user.MFA.MFAChallenge
+	startDisable := func(token, csrf string) *http.Cookie {
+		request := formRequest("/account/mfa", url.Values{"action": {"disable"}, "csrf_token": {csrf}})
+		request.AddCookie(&http.Cookie{Name: h.jwtCookieName(), Value: token})
+		response := httptest.NewRecorder()
+		h.Authenticate(h.RequireUser(http.HandlerFunc(h.BeginMFAChange))).ServeHTTP(response, request)
+		for _, cookie := range response.Result().Cookies() {
+			if cookie.Name == h.mfaCookieName() {
+				return cookie
+			}
+		}
+		return nil
+	}
+
+	stale, staleClaims, err := h.jwt.Issue(user.ID, user.Role, user.TokenVersion, time.Now().UTC().Add(-2*time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if startDisable(stale, staleClaims.CSRF) != nil || user.MFA.Manage.Challenge != "" {
+		t.Fatal("a stale session started an MFA management challenge")
+	}
+
+	recent, recentClaims := issueTestJWT(t, h, user)
+	cookie := startDisable(recent, recentClaims.CSRF)
+	if cookie == nil || user.MFA.Manage.Challenge == "" {
+		t.Fatal("a recent session could not start disabling MFA")
+	}
+	if user.MFA.MFAChallenge != loginSlot {
+		t.Fatal("a management challenge replaced the sign-in challenge")
+	}
+	challenge, _ := h.jwt.ParseMFA(cookie.Value)
+	for range 5 {
+		request := formRequest("/login/mfa", url.Values{"code": {"000000"}, "csrf_token": {challenge.CSRF}})
+		request.AddCookie(cookie)
+		request.AddCookie(&http.Cookie{Name: h.jwtCookieName(), Value: recent})
+		h.Authenticate(http.HandlerFunc(h.VerifyMFA)).ServeHTTP(httptest.NewRecorder(), request)
+	}
+	if user.MFA.Manage.LockedUntil.IsZero() || user.MFA.Failures != 0 || !user.MFA.LockedUntil.IsZero() {
+		t.Fatalf("management failures spent the sign-in budget: manage=%+v login failures=%d", user.MFA.Manage, user.MFA.Failures)
+	}
+
+	code, _ := appauth.TOTPCode(secret, time.Now().Unix()/30)
+	if w := verifyAPI(h, ownerChallenge, code); w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "access_token") || user.MFA.Method != "totp" {
+		t.Fatalf("the owner's sign-in was blocked by a management challenge: %d %s", w.Code, w.Body.String())
+	}
+}
+
 func TestMFAEmailEnrollmentPrerequisitesAndConfirmation(t *testing.T) {
 	h, _, user, _ := mfaFixture(t, "")
 	access, claims := issueTestJWT(t, h, user)
@@ -366,13 +423,13 @@ func TestMFAEmailEnrollmentPrerequisitesAndConfirmation(t *testing.T) {
 	verified := user.EmailVerifiedAt
 	user.EmailVerifiedAt = nil
 	start()
-	if user.MFA.Challenge != "" {
+	if user.MFA.Manage.Challenge != "" {
 		t.Fatal("unverified email enrolled")
 	}
 	user.EmailVerifiedAt = verified
 	h.config.Email.Provider = "none"
 	start()
-	if user.MFA.Challenge != "" {
+	if user.MFA.Manage.Challenge != "" {
 		t.Fatal("disabled email provider enrolled")
 	}
 	h.config.Email.Provider = "smtp"

@@ -26,7 +26,7 @@
     {{else if .User}}
       {{if .User.MFA.Method}}<p>MFA is enabled using <strong>{{if eq .User.MFA.Method "totp"}}an authenticator app{{else}}email codes{{end}}</strong>. Password and OAuth sign-ins require a second factor.</p><p>{{len .User.MFA.Recovery}} recovery codes remain.</p>
         <form action="/account/mfa" method="post" hx-post="/account/mfa" hx-select=".page" hx-target=".page" hx-swap="outerHTML" hx-disabled-elt="button"><input type="hidden" name="csrf_token" value="{{.CSRF}}"><div class="d-grid gap-2"><button class="btn" name="action" value="recovery" type="submit">Generate new recovery codes</button><button class="btn btn-outline-danger" name="action" value="disable" type="submit">Disable MFA</button></div></form>
-        <p class="text-secondary mt-3">To change methods, disable the current method using a code, then enroll again. Email MFA must be disabled before changing your email address.</p>
+        <p class="text-secondary mt-3">Generating new recovery codes or disabling MFA requires a sign-in within the last five minutes. To change methods, disable the current method using a code, then enroll again. Email MFA must be disabled before changing your email address.</p>
       {{else}}<p>Add a second step to sign-ins. Choose an authenticator app or email verification codes.</p><p class="text-secondary">An authenticator app works offline. Email codes depend on mailbox security and delivery. Both methods include recovery codes.</p>
         <form action="/account/mfa" method="post" hx-post="/account/mfa" hx-select=".page" hx-target=".page" hx-swap="outerHTML" hx-disabled-elt="button">
           <input type="hidden" name="csrf_token" value="{{.CSRF}}">

@@ -513,19 +513,23 @@ can replace the second factor after the password or OAuth step. If both the
 factor and every recovery code are lost, the account cannot sign in; resetting
 its password does not disable MFA.
 
-Disabling MFA or generating new recovery codes requires a current second-factor
-code or an unused recovery code. Each of these changes, including enrollment,
+Disabling MFA or generating new recovery codes requires a sign-in within the
+last five minutes to start, and a current second-factor code or an unused
+recovery code to complete. Each of these changes, including enrollment,
 increments the account token version and invalidates earlier JWTs. The current
 browser receives a replacement JWT. To switch methods, disable the current
 method and enroll again. Email MFA must be disabled before changing the account
 email, then re-enabled after the new address is verified; profile-only edits
 continue to work.
 
-Challenges expire after five minutes, with one active challenge per account.
-Starting another challenge or sending another email has a one-minute account
+Challenges expire after five minutes. Each account has one active sign-in
+challenge and, separately, one active account-management challenge (enrollment,
+disabling, or recovery-code replacement), each with its own failed-attempt
+budget, so managing MFA never cancels or locks out a sign-in.
+Starting another challenge or sending another email has a one-minute
 cooldown. Resending replaces the email code without extending the challenge or
-resetting failed attempts. Five failed codes lock verification for 15 minutes,
-including across new challenges and application replicas. These database limits
+resetting failed attempts. Five failed codes lock that kind of verification for
+15 minutes, including across new challenges and application replicas. These database limits
 remain active when configurable request rate limiting is disabled. When request
 rate limiting is enabled, MFA verification and management additionally allow
 10 requests, and resend allows 5 requests, per configured rate-limit window.

@@ -51,7 +51,8 @@ func (handler *Handler) MFASettings(writer http.ResponseWriter, request *http.Re
 
 // BeginMFAChange requires an authenticated account and CSRF protection. Initial
 // enrollment reauthenticates a password, or requires a recent OAuth-only login.
-// Disabling or replacing recovery codes always proves the existing factor.
+// Disabling or replacing recovery codes requires a recent sign-in to start and
+// always proves the existing factor to complete.
 func (handler *Handler) BeginMFAChange(writer http.ResponseWriter, request *http.Request) {
 	id := currentIdentity(request)
 	if !handler.parseAuthForm(writer, request) || !handler.verifyJWTCSRF(writer, request, id) {
@@ -86,6 +87,9 @@ func (handler *Handler) BeginMFAChange(writer http.ResponseWriter, request *http
 			handler.renderMFA(writer, mfaPageData{User: id.User, CSRF: id.Claims.CSRF, EmailAvailable: handler.mfaEmailAvailable(), Error: "Confirm your current password. For an OAuth-only account, sign out and sign in again, then enroll within five minutes."})
 			return
 		}
+	} else if !recentlyAuthenticated(id) {
+		handler.renderMFA(writer, mfaPageData{User: id.User, CSRF: id.Claims.CSRF, EmailAvailable: handler.mfaEmailAvailable(), Error: "To disable MFA or replace recovery codes, sign out and sign in again, then try within five minutes."})
+		return
 	}
 	handler.beginMFA(writer, request, id.User, action, "", transportCookie)
 }
@@ -126,12 +130,13 @@ func (handler *Handler) beginMFA(writer http.ResponseWriter, request *http.Reque
 			return errMFAInvalid
 		}
 		state := &current.MFA
-		if now.Before(state.LockedUntil) {
-			retryAt = state.LockedUntil
+		slot := state.ChallengeSlot(action)
+		if now.Before(slot.LockedUntil) {
+			retryAt = slot.LockedUntil
 			return errMFACooldown
 		}
-		if now.Before(state.SentAt.Add(time.Minute)) {
-			retryAt = state.SentAt.Add(time.Minute)
+		if now.Before(slot.SentAt.Add(time.Minute)) {
+			retryAt = slot.SentAt.Add(time.Minute)
 			return errMFACooldown
 		}
 		method = state.Method
@@ -146,22 +151,22 @@ func (handler *Handler) beginMFA(writer http.ResponseWriter, request *http.Reque
 		if method == "email" && action == "setup-email" && (!handler.mfaEmailAvailable() || current.EmailVerifiedAt == nil) {
 			return errors.New("Email MFA needs a verified address and configured email delivery.")
 		}
-		state.Challenge, state.Action = appauth.TokenHash(claims.ID), action
-		state.PendingMethod, state.PendingSecret = method, sealed
-		state.Email, state.EmailHash = current.Email, ""
-		state.Expires, state.SentAt = claims.ExpiresAt.Time, now
+		slot.Challenge, slot.Action = appauth.TokenHash(claims.ID), action
+		slot.PendingMethod, slot.PendingSecret = method, sealed
+		slot.Email, slot.EmailHash = current.Email, ""
+		slot.Expires, slot.SentAt = claims.ExpiresAt.Time, now
 		// Starting a new challenge does not reset failed attempts. Only a
-		// successful proof or the end of a lockout resets the account budget.
-		if !state.LockedUntil.IsZero() {
-			state.Failures = 0
-			state.LockedUntil = time.Time{}
+		// successful proof or the end of a lockout resets the slot's budget.
+		if !slot.LockedUntil.IsZero() {
+			slot.Failures = 0
+			slot.LockedUntil = time.Time{}
 		}
-		state.AuthHash = ""
+		slot.AuthHash = ""
 		if action != "login" {
-			state.AuthHash = appauth.TokenHash(currentIdentity(request).Claims.ID)
+			slot.AuthHash = appauth.TokenHash(currentIdentity(request).Claims.ID)
 		}
 		if method == "email" {
-			state.EmailHash = appauth.MFAHash(handler.settingsKey, current.ID+":"+state.Challenge, code)
+			slot.EmailHash = appauth.MFAHash(handler.settingsKey, current.ID+":"+slot.Challenge, code)
 		}
 		return nil
 	})
@@ -235,7 +240,7 @@ func (handler *Handler) readMFA(request *http.Request) (*appauth.Claims, error) 
 }
 
 func validMFAState(user *db.User, claims *appauth.Claims, now time.Time) bool {
-	s := &user.MFA
+	s := user.MFA.ChallengeSlot(claims.Action)
 	return user.CanAuthenticate() && user.TokenVersion == claims.TokenVersion && s.Challenge == appauth.TokenHash(claims.ID) && s.Action == claims.Action && now.Before(s.Expires) && now.Before(claims.ExpiresAt.Time) && !now.Before(s.LockedUntil) && user.Email == s.Email
 }
 
@@ -252,7 +257,7 @@ func (handler *Handler) MFAChallenge(writer http.ResponseWriter, request *http.R
 		return
 	}
 	// Setup keys are shown only in the initial authenticated POST response.
-	handler.renderMFA(writer, mfaPageData{Action: claims.Action, Method: user.MFA.PendingMethod, CSRF: claims.CSRF})
+	handler.renderMFA(writer, mfaPageData{Action: claims.Action, Method: user.MFA.ChallengeSlot(claims.Action).PendingMethod, CSRF: claims.CSRF})
 }
 
 func (handler *Handler) VerifyMFA(writer http.ResponseWriter, request *http.Request) {
@@ -287,7 +292,8 @@ func (handler *Handler) completeMFA(writer http.ResponseWriter, request *http.Re
 		if !validMFAState(user, claims, now) {
 			return errMFAInvalid
 		}
-		s := &user.MFA
+		state := &user.MFA
+		s := state.ChallengeSlot(claims.Action)
 		if claims.Action != "login" {
 			id := currentIdentity(request)
 			if id == nil || id.User.ID != user.ID || appauth.TokenHash(id.Claims.ID) != s.AuthHash {
@@ -299,9 +305,9 @@ func (handler *Handler) completeMFA(writer http.ResponseWriter, request *http.Re
 		// Recovery codes cannot confirm a new factor.
 		if !setup {
 			hash := appauth.MFAHash(handler.settingsKey, user.ID+":recovery", code)
-			for i, saved := range s.Recovery {
+			for i, saved := range state.Recovery {
 				if subtle.ConstantTimeCompare([]byte(hash), []byte(saved)) == 1 {
-					s.Recovery = append(s.Recovery[:i:i], s.Recovery[i+1:]...)
+					state.Recovery = append(state.Recovery[:i:i], state.Recovery[i+1:]...)
 					success = true
 					break
 				}
@@ -312,7 +318,7 @@ func (handler *Handler) completeMFA(writer http.ResponseWriter, request *http.Re
 			success = subtle.ConstantTimeCompare([]byte(hash), []byte(s.EmailHash)) == 1
 		}
 		if !success && method == "totp" {
-			sealed, last := s.Secret, s.LastStep
+			sealed, last := state.Secret, state.LastStep
 			if setup {
 				sealed, last = s.PendingSecret, 0
 			}
@@ -321,7 +327,7 @@ func (handler *Handler) completeMFA(writer http.ResponseWriter, request *http.Re
 				return openErr
 			}
 			if step, ok := appauth.VerifyTOTP(secret, code, now, last); ok {
-				s.LastStep, success = step, true
+				state.LastStep, success = step, true
 			}
 		}
 		if !success {
@@ -338,16 +344,16 @@ func (handler *Handler) completeMFA(writer http.ResponseWriter, request *http.Re
 			if genErr != nil {
 				return genErr
 			}
-			s.Recovery = nil
+			state.Recovery = nil
 			for _, value := range codes {
-				s.Recovery = append(s.Recovery, appauth.MFAHash(handler.settingsKey, user.ID+":recovery", value))
+				state.Recovery = append(state.Recovery, appauth.MFAHash(handler.settingsKey, user.ID+":recovery", value))
 			}
 		}
 		if setup {
-			s.Method, s.Secret = method, s.PendingSecret
+			state.Method, state.Secret = method, s.PendingSecret
 		}
 		if claims.Action == "disable" {
-			*s = db.MFAState{}
+			*state = db.MFAState{}
 		}
 		if claims.Action != "login" {
 			user.TokenVersion++
@@ -426,14 +432,15 @@ func (handler *Handler) resendMFA(writer http.ResponseWriter, request *http.Requ
 	}
 	user, err := repo.MutateMFA(request.Context(), claims.Subject, claims.TokenVersion, func(user *db.User) error {
 		now := time.Now().UTC()
-		if !validMFAState(user, claims, now) || user.MFA.PendingMethod != "email" {
+		slot := user.MFA.ChallengeSlot(claims.Action)
+		if !validMFAState(user, claims, now) || slot.PendingMethod != "email" {
 			return errMFAInvalid
 		}
-		if now.Before(user.MFA.SentAt.Add(time.Minute)) {
+		if now.Before(slot.SentAt.Add(time.Minute)) {
 			return errMFACooldown
 		}
-		user.MFA.SentAt = now
-		user.MFA.EmailHash = appauth.MFAHash(handler.settingsKey, user.ID+":"+user.MFA.Challenge, code)
+		slot.SentAt = now
+		slot.EmailHash = appauth.MFAHash(handler.settingsKey, user.ID+":"+slot.Challenge, code)
 		return nil
 	})
 	if err != nil {
