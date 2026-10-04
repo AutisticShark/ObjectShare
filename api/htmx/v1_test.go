@@ -59,7 +59,7 @@ func (repository *memoryRepository) UploadUsage(_ context.Context, userID string
 func (repository *memoryRepository) uploadUsage(userID string) db.UploadUsage {
 	usage := db.UploadUsage{Limit: repository.quotaBytes[userID]}
 	for _, file := range repository.files {
-		if file.UploadStatus != "pending" && file.UploadStatus != "complete" && file.UploadStatus != "deleting" && file.UploadStatus != "aborting" {
+		if file.UploadStatus != "pending" && file.UploadStatus != "publishing" && file.UploadStatus != "complete" && file.UploadStatus != "deleting" && file.UploadStatus != "aborting" {
 			continue
 		}
 		if file.FileOwner != nil && *file.FileOwner == userID {
@@ -82,7 +82,7 @@ func (repository *memoryRepository) CompleteUpload(_ context.Context, id string)
 	repository.mu.Lock()
 	defer repository.mu.Unlock()
 	file, ok := repository.files[id]
-	if !ok || file.UploadStatus != "pending" {
+	if !ok || (file.UploadStatus != "pending" && file.UploadStatus != "publishing") {
 		return db.ErrNotFound
 	}
 	file.UploadStatus = "complete"
@@ -109,11 +109,38 @@ func (repository *memoryRepository) ClaimPendingUploadDeletion(_ context.Context
 	repository.mu.Lock()
 	defer repository.mu.Unlock()
 	file, ok := repository.files[id]
-	if !ok || (file.UploadStatus != "pending" && file.UploadStatus != "aborting") {
+	if !ok || (file.UploadStatus != "pending" && file.UploadStatus != "aborting" && !stalePublication(file, time.Now())) {
 		return db.ErrNotFound
 	}
 	file.UploadStatus = "aborting"
 	return nil
+}
+
+func (repository *memoryRepository) ClaimUploadPublication(_ context.Context, id string) error {
+	repository.mu.Lock()
+	defer repository.mu.Unlock()
+	file, ok := repository.files[id]
+	if !ok || (file.UploadStatus != "pending" && !stalePublication(file, time.Now())) {
+		return db.ErrNotFound
+	}
+	file.UploadStatus, file.UpdatedAt = "publishing", time.Now()
+	return nil
+}
+
+func (repository *memoryRepository) ReleaseUploadPublication(_ context.Context, id string) error {
+	repository.mu.Lock()
+	defer repository.mu.Unlock()
+	file, ok := repository.files[id]
+	if !ok || file.UploadStatus != "publishing" {
+		return db.ErrNotFound
+	}
+	file.UploadStatus, file.UpdatedAt = "pending", time.Now()
+	return nil
+}
+
+// stalePublication reports an abandoned publishing claim, as PostgreSQL does.
+func stalePublication(file *db.FileList, now time.Time) bool {
+	return file.UploadStatus == "publishing" && file.UpdatedAt.Before(now.Add(-db.UploadPublicationLease))
 }
 
 func (repository *memoryRepository) ExpiredUploads(_ context.Context, before time.Time, limit int) ([]db.FileList, error) {
@@ -121,7 +148,8 @@ func (repository *memoryRepository) ExpiredUploads(_ context.Context, before tim
 	defer repository.mu.Unlock()
 	files := make([]db.FileList, 0, limit)
 	for _, file := range repository.files {
-		if (file.UploadStatus == "pending" && file.UploadExpiresAt != nil && file.UploadExpiresAt.Before(before)) || file.UploadStatus == "aborting" {
+		if (file.UploadStatus == "pending" && file.UploadExpiresAt != nil && file.UploadExpiresAt.Before(before)) || file.UploadStatus == "aborting" ||
+			(stalePublication(file, before) && file.UploadExpiresAt != nil && file.UploadExpiresAt.Before(before)) {
 			files = append(files, *file)
 			if len(files) == limit {
 				break

@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/AutisticShark/ObjectShare/db"
+	"github.com/AutisticShark/ObjectShare/service"
 )
 
 // Simulate completion committing after a handler reads pending state but before
@@ -259,5 +260,143 @@ func TestOwnerDeleteClaimsBeforeRemovingTheObject(t *testing.T) {
 				t.Fatalf("object present = %v, want %v", hasObject, test.wantObject)
 			}
 		})
+	}
+}
+
+// copyHookStorage models S3 CopyObject: the source is read when the copy starts
+// and the destination appears only when it finishes. duringCopy runs in that
+// window, like a request that arrives during a long server-side copy.
+type copyHookStorage struct {
+	*directMemoryStorage
+	duringCopy func()
+	failCopy   bool
+}
+
+func (storage *copyHookStorage) Copy(_ context.Context, sourceKey, destinationKey string) error {
+	data, ok := storage.objects[sourceKey]
+	if !ok || storage.failCopy {
+		return errors.New("copy failed")
+	}
+	snapshot := append([]byte(nil), data...)
+	if hook := storage.duringCopy; hook != nil {
+		storage.duringCopy = nil
+		hook()
+	}
+	storage.objects[destinationKey] = snapshot
+	return nil
+}
+
+// beginStagedDirectUpload authorizes a guest direct upload and stages its bytes
+// as the browser's presigned PUT would. It returns the file ID and the JSON body
+// that completion and abort expect.
+func beginStagedDirectUpload(t *testing.T, handler *Handler, direct *copyHookStorage) (string, string) {
+	t.Helper()
+	response := httptest.NewRecorder()
+	handler.BeginDirectUpload(response, httptest.NewRequest(http.MethodPost, "/api/v1/uploads/direct", strings.NewReader(`{"file_name":"a.txt","file_size":5,"content_type":"text/plain"}`)))
+	if response.Code != http.StatusCreated {
+		t.Fatalf("begin: %d %s", response.Code, response.Body.String())
+	}
+	var authorization struct {
+		FileID string `json:"file_id"`
+		Token  string `json:"token"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &authorization); err != nil {
+		t.Fatal(err)
+	}
+	direct.objects[service.PendingUploadKey(authorization.FileID)] = []byte("hello")
+	body, _ := json.Marshal(map[string]string{"token": authorization.Token})
+	return authorization.FileID, string(body)
+}
+
+func TestCompletionClaimKeepsAbortAndCleanupFromOrphaningTheCopy(t *testing.T) {
+	for _, interrupt := range []string{"abort", "expiry cleanup"} {
+		t.Run(interrupt, func(t *testing.T) {
+			repository := &memoryRepository{files: make(map[string]*db.FileList)}
+			direct := &copyHookStorage{directMemoryStorage: &directMemoryStorage{&memoryStorage{objects: make(map[string][]byte)}}}
+			handler := newTestHandler(t, repository, direct)
+			fileID, body := beginStagedDirectUpload(t, handler, direct)
+			interrupted := 0
+			direct.duringCopy = func() {
+				if interrupt == "abort" {
+					abort := httptest.NewRecorder()
+					handler.AbortDirectUpload(abort, sharingRequest("POST", fileID, body, nil))
+					interrupted = abort.Code
+					return
+				}
+				expired := time.Now().Add(-time.Minute)
+				repository.mu.Lock()
+				repository.files[fileID].UploadExpiresAt = &expired
+				repository.mu.Unlock()
+				interrupted = handler.sweepExpiredUploads(t.Context())
+			}
+			complete := httptest.NewRecorder()
+			handler.CompleteDirectUpload(complete, sharingRequest("POST", fileID, body, nil))
+			if (interrupt == "abort" && interrupted != http.StatusConflict) || (interrupt != "abort" && interrupted != 0) {
+				t.Fatalf("%s removed an upload while it was being published: %d", interrupt, interrupted)
+			}
+			record, err := repository.Get(t.Context(), fileID)
+			if complete.Code != http.StatusOK || err != nil || record.UploadStatus != "complete" || string(direct.objects[fileID]) != "hello" {
+				t.Fatalf("completion status=%d record=%+v err=%v objects=%v", complete.Code, record, err, direct.objects)
+			}
+		})
+	}
+}
+
+func TestCompletionRemovesTheCopyWhenItsLapsedClaimWasCleanedUp(t *testing.T) {
+	repository := &memoryRepository{files: make(map[string]*db.FileList)}
+	direct := &copyHookStorage{directMemoryStorage: &directMemoryStorage{&memoryStorage{objects: make(map[string][]byte)}}}
+	handler := newTestHandler(t, repository, direct)
+	fileID, body := beginStagedDirectUpload(t, handler, direct)
+	direct.duringCopy = func() {
+		// The copy outlived its lease, so an abort is allowed to delete the
+		// record and both keys before the copy writes the final object.
+		repository.mu.Lock()
+		repository.files[fileID].UpdatedAt = time.Now().Add(-db.UploadPublicationLease - time.Minute)
+		repository.mu.Unlock()
+		abort := httptest.NewRecorder()
+		handler.AbortDirectUpload(abort, sharingRequest("POST", fileID, body, nil))
+		if abort.Code != http.StatusNoContent {
+			t.Fatalf("abort of an abandoned claim: %d %s", abort.Code, abort.Body.String())
+		}
+	}
+	complete := httptest.NewRecorder()
+	handler.CompleteDirectUpload(complete, sharingRequest("POST", fileID, body, nil))
+	if _, err := repository.Get(t.Context(), fileID); !errors.Is(err, db.ErrNotFound) || complete.Code != http.StatusConflict {
+		t.Fatalf("completion status=%d record err=%v", complete.Code, err)
+	}
+	for key := range direct.objects {
+		t.Errorf("object %q survives although no file record references it", key)
+	}
+}
+
+func TestFailedOrAbandonedPublicationCanBeRetried(t *testing.T) {
+	repository := &memoryRepository{files: make(map[string]*db.FileList)}
+	direct := &copyHookStorage{directMemoryStorage: &directMemoryStorage{&memoryStorage{objects: make(map[string][]byte)}}, failCopy: true}
+	handler := newTestHandler(t, repository, direct)
+	fileID, body := beginStagedDirectUpload(t, handler, direct)
+	complete := httptest.NewRecorder()
+	handler.CompleteDirectUpload(complete, sharingRequest("POST", fileID, body, nil))
+	if record, _ := repository.Get(t.Context(), fileID); complete.Code != http.StatusConflict || record.UploadStatus != "pending" {
+		t.Fatalf("failed copy must release its claim: status=%d record=%+v", complete.Code, record)
+	}
+
+	// A process that stopped mid-copy leaves a publishing claim. While it is
+	// live a retry is told to wait; once abandoned the retry takes it over.
+	direct.failCopy = false
+	repository.mu.Lock()
+	repository.files[fileID].UploadStatus, repository.files[fileID].UpdatedAt = "publishing", time.Now()
+	repository.mu.Unlock()
+	complete = httptest.NewRecorder()
+	handler.CompleteDirectUpload(complete, sharingRequest("POST", fileID, body, nil))
+	if complete.Code != http.StatusConflict {
+		t.Fatalf("live claim: status=%d", complete.Code)
+	}
+	repository.mu.Lock()
+	repository.files[fileID].UpdatedAt = time.Now().Add(-db.UploadPublicationLease - time.Minute)
+	repository.mu.Unlock()
+	complete = httptest.NewRecorder()
+	handler.CompleteDirectUpload(complete, sharingRequest("POST", fileID, body, nil))
+	if record, _ := repository.Get(t.Context(), fileID); complete.Code != http.StatusOK || record.UploadStatus != "complete" || string(direct.objects[fileID]) != "hello" {
+		t.Fatalf("abandoned claim retry: status=%d record=%+v", complete.Code, record)
 	}
 }

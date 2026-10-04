@@ -68,6 +68,8 @@ type Repository interface {
 	UploadUsage(context.Context, string) (UploadUsage, error)
 	Get(context.Context, string) (*FileList, error)
 	CompleteUpload(context.Context, string) error
+	ClaimUploadPublication(context.Context, string) error
+	ReleaseUploadPublication(context.Context, string) error
 	ClaimPendingUploadDeletion(context.Context, string) error
 	FinalizeUpload(context.Context, string, string, string, bool, string) error
 	ExpiredUploads(context.Context, time.Time, int) ([]FileList, error)
@@ -430,7 +432,7 @@ func (repo *GormRepository) ReserveGuestUpload(ctx context.Context, file *FileLi
 		}
 		var pending int64
 		if err := transaction.Model(&FileList{}).Select("COALESCE(SUM(file_size), 0)").
-			Where("file_owner IS NULL AND upload_status = ?", "pending").Scan(&pending).Error; err != nil {
+			Where("file_owner IS NULL AND upload_status IN ?", []string{"pending", "publishing"}).Scan(&pending).Error; err != nil {
 			return err
 		}
 		if exceedsQuota(pending, file.FileSize, maxPendingBytes) {
@@ -480,7 +482,7 @@ func effectiveUploadQuota(connection *gorm.DB, userID string, accountQuota int64
 }
 
 func uploadBytesUsed(connection *gorm.DB, userID string) (int64, error) {
-	active := []string{"pending", "complete", "deleting", "aborting"}
+	active := []string{"pending", "publishing", "complete", "deleting", "aborting"}
 	var used int64
 	if err := connection.Model(&FileList{}).Select("COALESCE(SUM(file_size), 0)").
 		Where("upload_status IN ? AND file_owner = ?", active, userID).Scan(&used).Error; err != nil {
@@ -505,9 +507,48 @@ func (repo *GormRepository) Get(ctx context.Context, fileID string) (*FileList, 
 	return &file, nil
 }
 
+// UploadPublicationLease is how long a "publishing" claim protects a direct
+// upload while completion copies its staged object to the final key. A claim
+// older than this is treated as abandoned (the process stopped mid-copy):
+// completion may claim it again, and abort or expiry cleanup may delete it.
+const UploadPublicationLease = 15 * time.Minute
+
+// ClaimUploadPublication moves a pending upload (or an abandoned publishing
+// claim) to "publishing" before completion creates its final object. Abort and
+// expiry cleanup refuse a live claim, so they cannot delete the record while
+// the copy runs and leave a final object that nothing references or counts.
+func (repo *GormRepository) ClaimUploadPublication(ctx context.Context, fileID string) error {
+	now := time.Now().UTC()
+	result := repo.connection.WithContext(ctx).Model(&FileList{}).
+		Where("file_id = ? AND (upload_status = ? OR (upload_status = ? AND updated_at < ?))", fileID, "pending", "publishing", now.Add(-UploadPublicationLease)).
+		Updates(map[string]any{"upload_status": "publishing", "updated_at": now})
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// ReleaseUploadPublication returns a publishing upload to pending after a
+// failed copy, so the owner can retry completion and cleanup can expire it.
+func (repo *GormRepository) ReleaseUploadPublication(ctx context.Context, fileID string) error {
+	result := repo.connection.WithContext(ctx).Model(&FileList{}).
+		Where("file_id = ? AND upload_status = ?", fileID, "publishing").
+		Updates(map[string]any{"upload_status": "pending", "updated_at": time.Now().UTC()})
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 func (repo *GormRepository) CompleteUpload(ctx context.Context, fileID string) error {
 	result := repo.connection.WithContext(ctx).Model(&FileList{}).
-		Where("file_id = ? AND upload_status = ?", fileID, "pending").
+		Where("file_id = ? AND upload_status IN ?", fileID, []string{"pending", "publishing"}).
 		Updates(map[string]any{"upload_status": "complete", "upload_expires_at": nil})
 	if result.Error != nil {
 		return result.Error
@@ -538,9 +579,11 @@ func (repo *GormRepository) FinalizeUpload(ctx context.Context, fileID, sha256Su
 // ClaimPendingUploadDeletion prevents completion from racing with object deletion.
 // An aborting upload cannot be completed. Keep that state until deletion succeeds
 // so later cleanup can retry after an object-store failure or process restart.
+// A live publishing claim is refused; an abandoned one may be deleted.
 func (repo *GormRepository) ClaimPendingUploadDeletion(ctx context.Context, fileID string) error {
 	result := repo.connection.WithContext(ctx).Model(&FileList{}).
-		Where("file_id = ? AND upload_status IN ?", fileID, []string{"pending", "aborting"}).
+		Where("file_id = ? AND (upload_status IN ? OR (upload_status = ? AND updated_at < ?))", fileID, []string{"pending", "aborting"},
+			"publishing", time.Now().UTC().Add(-UploadPublicationLease)).
 		Update("upload_status", "aborting")
 	if result.Error != nil {
 		return result.Error
@@ -554,7 +597,8 @@ func (repo *GormRepository) ClaimPendingUploadDeletion(ctx context.Context, file
 func (repo *GormRepository) ExpiredUploads(ctx context.Context, before time.Time, limit int) ([]FileList, error) {
 	var files []FileList
 	err := repo.connection.WithContext(ctx).
-		Where("(upload_status = ? AND upload_expires_at < ?) OR upload_status = ?", "pending", before, "aborting").
+		Where("(upload_status = ? AND upload_expires_at < ?) OR upload_status = ? OR (upload_status = ? AND upload_expires_at < ? AND updated_at < ?)",
+			"pending", before, "aborting", "publishing", before, before.Add(-UploadPublicationLease)).
 		Order("upload_expires_at ASC").Limit(limit).Find(&files).Error
 	return files, err
 }

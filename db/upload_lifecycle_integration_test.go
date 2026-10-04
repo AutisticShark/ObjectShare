@@ -98,3 +98,95 @@ func TestPostgresUploadCleanupRetriesClaimsAndExcludesCompletedFiles(t *testing.
 		}
 	}
 }
+
+func TestPostgresUploadPublicationExcludesCleanupUntilAbandoned(t *testing.T) {
+	repo := creditTestRepository(t)
+	if err := repo.connection.AutoMigrate(&FileList{}); err != nil {
+		t.Fatal(err)
+	}
+	owner := creditTestUser(t, repo, 0)
+	create := func(expires time.Time) FileList {
+		file := FileList{FileID: uuid.NewString(), FileOwner: &owner.ID, FileName: "publish.txt", FileSize: 6,
+			UploadStatus: "pending", UploadExpiresAt: &expires, ShareUserIDs: []string{}}
+		if err := repo.Create(t.Context(), &file); err != nil {
+			t.Fatal(err)
+		}
+		return file
+	}
+	for i := 0; i < 20; i++ {
+		file := create(time.Now().Add(time.Hour))
+		start := make(chan struct{})
+		published, discarded := make(chan error, 1), make(chan error, 1)
+		go func() { <-start; published <- repo.ClaimUploadPublication(t.Context(), file.FileID) }()
+		go func() { <-start; discarded <- repo.ClaimPendingUploadDeletion(t.Context(), file.FileID) }()
+		close(start)
+		publishErr, discardErr := <-published, <-discarded
+		if !((publishErr == nil && errors.Is(discardErr, ErrNotFound)) || (discardErr == nil && errors.Is(publishErr, ErrNotFound))) {
+			t.Fatalf("exactly one claim must win: publish=%v discard=%v", publishErr, discardErr)
+		}
+		if publishErr == nil {
+			if err := repo.CompleteUpload(t.Context(), file.FileID); err != nil {
+				t.Fatalf("a publishing upload must complete: %v", err)
+			}
+		}
+	}
+
+	// A live claim is protected from expiry cleanup, still counts against the
+	// quota, and returns to pending when released after a failed copy.
+	expired := time.Now().Add(-time.Hour)
+	file := create(expired)
+	if err := repo.ClaimUploadPublication(t.Context(), file.FileID); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.ClaimUploadPublication(t.Context(), file.FileID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("a live publishing claim was claimed twice: %v", err)
+	}
+	if candidates, err := repo.ExpiredUploads(t.Context(), time.Now().UTC(), 100); err != nil || containsFile(candidates, file.FileID) {
+		t.Fatalf("expiry cleanup selected a live publishing claim: %v", err)
+	}
+	if used, err := uploadBytesUsed(repo.connection, owner.ID); err != nil || used != 21*6 { // twenty raced files (complete or aborting) and this one
+		t.Fatalf("publishing upload must consume quota: %d %v", used, err)
+	}
+	if err := repo.ReleaseUploadPublication(t.Context(), file.FileID); err != nil {
+		t.Fatal(err)
+	}
+	if stored, err := repo.Get(t.Context(), file.FileID); err != nil || stored.UploadStatus != "pending" {
+		t.Fatalf("released claim: %+v %v", stored, err)
+	}
+
+	// A claim abandoned by a stopped process can be claimed again by a retried
+	// completion, or removed by cleanup once its authorization has expired.
+	abandon := func() {
+		t.Helper()
+		if err := repo.ClaimUploadPublication(t.Context(), file.FileID); err != nil {
+			t.Fatal(err)
+		}
+		if err := repo.connection.Model(&FileList{}).Where("file_id = ?", file.FileID).
+			Update("updated_at", time.Now().UTC().Add(-UploadPublicationLease-time.Minute)).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	abandon()
+	if err := repo.ClaimUploadPublication(t.Context(), file.FileID); err != nil {
+		t.Fatalf("abandoned claim could not be retried: %v", err)
+	}
+	if err := repo.ReleaseUploadPublication(t.Context(), file.FileID); err != nil {
+		t.Fatal(err)
+	}
+	abandon()
+	if candidates, err := repo.ExpiredUploads(t.Context(), time.Now().UTC(), 100); err != nil || !containsFile(candidates, file.FileID) {
+		t.Fatalf("expiry cleanup skipped an abandoned publishing claim: %v", err)
+	}
+	if err := repo.ClaimPendingUploadDeletion(t.Context(), file.FileID); err != nil {
+		t.Fatalf("abandoned claim could not be deleted: %v", err)
+	}
+}
+
+func containsFile(files []FileList, fileID string) bool {
+	for _, file := range files {
+		if file.FileID == fileID {
+			return true
+		}
+	}
+	return false
+}

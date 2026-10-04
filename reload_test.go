@@ -53,6 +53,14 @@ func (repository *memoryApplicationRepository) CompleteUpload(context.Context, s
 	return nil
 }
 
+func (repository *memoryApplicationRepository) ClaimUploadPublication(context.Context, string) error {
+	return db.ErrNotFound
+}
+
+func (repository *memoryApplicationRepository) ReleaseUploadPublication(context.Context, string) error {
+	return db.ErrNotFound
+}
+
 func (repository *memoryApplicationRepository) ClaimPendingUploadDeletion(context.Context, string) error {
 	return db.ErrNotFound
 }

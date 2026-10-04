@@ -259,13 +259,30 @@ func (handler *Handler) CompleteDirectUpload(writer http.ResponseWriter, request
 		return
 	}
 	if staged {
+		// Claim the record before the copy creates the final object. Abort and
+		// expiry cleanup refuse a publishing record, so they cannot remove it
+		// mid-copy and leave a final object that no record references or counts.
+		if err := handler.repository.ClaimUploadPublication(request.Context(), file.FileID); err != nil {
+			if errors.Is(err, db.ErrNotFound) {
+				http.Error(writer, "The upload is being finalized or has changed. Retry completion to check its status.", http.StatusConflict)
+				return
+			}
+			handler.internalError(writer, request, "claim direct upload publication", err)
+			return
+		}
 		if err := handler.publishStagedUpload(request.Context(), file, pendingKey); err != nil {
 			handler.logger.Warn("publish staged direct upload", "file_id", file.FileID, "error", err)
+			if err := handler.repository.ReleaseUploadPublication(context.WithoutCancel(request.Context()), file.FileID); err != nil && !errors.Is(err, db.ErrNotFound) {
+				handler.logger.Warn("release direct upload publication", "file_id", file.FileID, "error", err)
+			}
 			http.Error(writer, "The uploaded object could not be finalized yet. Retry completion.", http.StatusConflict)
 			return
 		}
 	}
 	if err := handler.repository.CompleteUpload(request.Context(), file.FileID); err != nil {
+		if staged {
+			handler.removeUnreferencedPublication(request, file.FileID)
+		}
 		if errors.Is(err, db.ErrNotFound) {
 			http.Error(writer, "The upload state changed. Retry completion to check its status.", http.StatusConflict)
 			return
@@ -288,6 +305,10 @@ func (handler *Handler) AbortDirectUpload(writer http.ResponseWriter, request *h
 		return
 	}
 	if err := handler.deletePendingUpload(request.Context(), file.FileID); err != nil {
+		if errors.Is(err, db.ErrNotFound) && file.UploadStatus == "publishing" {
+			http.Error(writer, "The upload is being finalized and can no longer be aborted.", http.StatusConflict)
+			return
+		}
 		if errors.Is(err, db.ErrNotFound) {
 			http.NotFound(writer, request)
 			return
@@ -318,7 +339,7 @@ func (handler *Handler) directUploadIntentState(writer http.ResponseWriter, requ
 		return nil, "", false
 	}
 	file, err := handler.repository.Get(request.Context(), fileID)
-	if errors.Is(err, db.ErrNotFound) || (err == nil && file.UploadStatus != "pending" && !(allowComplete && file.UploadStatus == "complete")) {
+	if errors.Is(err, db.ErrNotFound) || (err == nil && file.UploadStatus != "pending" && file.UploadStatus != "publishing" && !(allowComplete && file.UploadStatus == "complete")) {
 		http.NotFound(writer, request)
 		return nil, "", false
 	}
@@ -339,7 +360,9 @@ func (handler *Handler) directUploadIntentState(writer http.ResponseWriter, requ
 		http.Error(writer, "Authentication as the upload owner is required.", http.StatusForbidden)
 		return nil, "", false
 	}
-	if file.UploadStatus == "complete" {
+	// A publishing upload was transferred in time; its claim, not the expiry,
+	// decides whether completion may continue or cleanup may remove it.
+	if file.UploadStatus == "complete" || file.UploadStatus == "publishing" {
 		return file, input.Token, true
 	}
 	if file.UploadExpiresAt == nil || time.Now().UTC().After(*file.UploadExpiresAt) {
@@ -427,6 +450,23 @@ func (handler *Handler) publishStagedUpload(ctx context.Context, file *db.FileLi
 		handler.logger.Warn("delete staged direct upload", "file_id", file.FileID, "error", err)
 	}
 	return nil
+}
+
+// removeUnreferencedPublication runs when completion fails after copying a
+// staged upload to its final key. If the record is gone or being aborted (the
+// publishing claim lapsed and cleanup won), that cleanup may have deleted the
+// final key before the copy wrote it, so delete it again. Any other record
+// still references the object and its own completion or cleanup owns it.
+func (handler *Handler) removeUnreferencedPublication(request *http.Request, fileID string) {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(request.Context()), 5*time.Second)
+	defer cancel()
+	current, err := handler.repository.Get(ctx, fileID)
+	if (err == nil && current.UploadStatus != "aborting") || (err != nil && !errors.Is(err, db.ErrNotFound)) {
+		return
+	}
+	if err := handler.storage.Delete(ctx, fileID); err != nil {
+		handler.logger.Warn("delete unreferenced published upload", "file_id", fileID, "error", err)
+	}
 }
 
 func (handler *Handler) deletePendingUpload(ctx context.Context, fileID string) error {

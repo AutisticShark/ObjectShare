@@ -52,7 +52,7 @@ func (repo *GormRepository) AdminUserDirectory(ctx context.Context, search, filt
 			Used      int64
 		}
 		if err := connection.Model(&FileList{}).Select("file_owner, COALESCE(SUM(file_size), 0) AS used").
-			Where("file_owner IN ? AND upload_status IN ?", ids, []string{"pending", "complete", "deleting", "aborting"}).
+			Where("file_owner IN ? AND upload_status IN ?", ids, []string{"pending", "publishing", "complete", "deleting", "aborting"}).
 			Group("file_owner").Scan(&usage).Error; err != nil {
 			return result, err
 		}
@@ -63,7 +63,7 @@ func (repo *GormRepository) AdminUserDirectory(ctx context.Context, search, filt
 	var totals struct{ TotalUsers, TotalStorageUsed int64 }
 	err := connection.Raw(`SELECT (SELECT count(*) FROM users) AS total_users,
         COALESCE((SELECT sum(f.file_size) FROM file_lists f JOIN users u ON u.id = f.file_owner
-        WHERE f.upload_status IN ('pending','complete','deleting','aborting')), 0) AS total_storage_used`).Scan(&totals).Error
+        WHERE f.upload_status IN ('pending','publishing','complete','deleting','aborting')), 0) AS total_storage_used`).Scan(&totals).Error
 	result.TotalUsers, result.TotalStorageUsed = totals.TotalUsers, totals.TotalStorageUsed
 	return result, err
 }

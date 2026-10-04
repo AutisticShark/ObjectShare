@@ -55,7 +55,7 @@ func (repo *GormRepository) AdminOverview(ctx context.Context, now time.Time) (O
       CROSS JOIN
       (SELECT count(*) FILTER (WHERE upload_status = 'complete') AS files,
         COALESCE(sum(file_size) FILTER (WHERE upload_status = 'complete'), 0) AS storage_bytes,
-        count(*) FILTER (WHERE upload_status = 'pending') AS pending_uploads FROM file_lists) file_counts
+        count(*) FILTER (WHERE upload_status IN ('pending','publishing')) AS pending_uploads FROM file_lists) file_counts
       CROSS JOIN
       (SELECT count(*) AS active_plans FROM subscriptions
         WHERE status IN ('active', 'trialing') AND current_period_end > ?) plan_counts
