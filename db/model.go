@@ -13,7 +13,7 @@ type FileList struct {
 	FileSHA256            string     `gorm:"column:file_sha256;type:varchar(64);not null"`
 	FileSHA3              string     `gorm:"column:file_sha3;type:varchar(64);not null"`
 	ContentType           string     `gorm:"column:content_type;type:varchar(255);not null;default:application/octet-stream"`
-	IsAnonymousUpload     bool       `gorm:"column:is_anonymous_upload;not null;default:true"`
+	IsAnonymousUpload     bool       `gorm:"column:is_anonymous_upload;not null;default:false"`
 	IsEncrypted           bool       `gorm:"column:is_encrypted;not null;default:false"`
 	EncryptionMethod      string     `gorm:"column:encryption_method;type:varchar(32)"`
 	StorageService        string     `gorm:"column:storage_service;type:varchar(32);not null"`

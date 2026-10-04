@@ -274,6 +274,14 @@ func openPostgres(ctx context.Context, cfg *config.DatabaseConfig, pgxConfig *pg
 		_ = sqlDB.Close()
 		return nil, fmt.Errorf("migrate PostgreSQL: %w", err)
 	}
+	// Earlier releases declared is_anonymous_upload with a true default, which
+	// made GORM replace an explicit false, so account uploads were stored as
+	// anonymous. A file is anonymous exactly when it has no owner.
+	if err := migration.Exec("UPDATE file_lists SET is_anonymous_upload = (file_owner IS NULL) WHERE is_anonymous_upload <> (file_owner IS NULL)").Error; err != nil {
+		_ = migration.Rollback().Error
+		_ = sqlDB.Close()
+		return nil, fmt.Errorf("correct anonymous upload flags: %w", err)
+	}
 	if err := migration.Exec(dropLegacySessionsSQL).Error; err != nil {
 		_ = migration.Rollback().Error
 		_ = sqlDB.Close()
