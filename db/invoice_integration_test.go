@@ -252,6 +252,66 @@ func TestPostgresLegacyRenewalRequiresPaidInvoice(t *testing.T) {
 	}
 }
 
+// PayPal sends BILLING.SUBSCRIPTION.CANCELLED (or EXPIRED) as soon as the
+// subscriber cancels, not when the period they already paid for ends. That
+// period must keep its access; a suspension still ends access immediately.
+func TestPostgresPayPalCancellationKeepsThePaidPeriod(t *testing.T) {
+	for _, status := range []string{"canceled", "expired", "suspended"} {
+		t.Run(status, func(t *testing.T) {
+			repo := creditTestRepository(t)
+			user := creditTestUser(t, repo, 20)
+			plan := invoiceTestPlan(t, repo)
+			now := time.Now().UTC().Truncate(time.Second)
+			update := SubscriptionUpdate{Gateway: BillingGatewayPayPal, EventID: "WH-active", UserID: user.ID, PlanID: plan.ID, SubscriptionID: "I-SUB", CustomerID: "PAYER", Status: "active", CurrentPeriodEnd: now.AddDate(0, 0, 30), EventCreated: now.Unix()}
+			if _, err := repo.ApplySubscription(t.Context(), update); err != nil {
+				t.Fatal(err)
+			}
+			receipt := LegacyInvoicePayment{Gateway: BillingGatewayPayPal, SubscriptionID: "I-SUB", PaymentID: "SALE-1", AmountMinor: 1000, Currency: "USD", PeriodStart: now, PeriodEnd: now.AddDate(0, 0, 30), PaidAt: now}
+			if err := repo.ApplyLegacyInvoicePayment(t.Context(), receipt, now); err != nil {
+				t.Fatal(err)
+			}
+			update.EventID, update.EventCreated, update.Status, update.CurrentPeriodEnd = "WH-"+status, now.Add(time.Hour).Unix(), status, now.Add(time.Hour)
+			if _, err := repo.ApplySubscription(t.Context(), update); err != nil {
+				t.Fatal(err)
+			}
+			ent, err := repo.Entitlements(t.Context(), user.ID, now.Add(2*time.Hour))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if status == "suspended" {
+				if ent.Active {
+					t.Fatal("a suspended PayPal subscription kept access")
+				}
+				return
+			}
+			if !ent.Active || !ent.CancelAtPeriodEnd || !ent.CurrentPeriodEnd.Equal(receipt.PeriodEnd) {
+				t.Fatalf("paid period revoked by the %s event: %#v", status, ent)
+			}
+			// While paid access lasts, a local plan cannot overlap it.
+			invoice, err := repo.CreatePlanInvoice(t.Context(), user.ID, plan.ID, uuid.NewString(), "USD", now.Add(2*time.Hour))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err = repo.PayInvoiceCredit(t.Context(), user.ID, invoice.ID, now.Add(2*time.Hour)); !errors.Is(err, ErrConflict) {
+				t.Fatalf("local plan overlapped the paid PayPal period: %v", err)
+			}
+			// PayPal sends nothing more; once the period ends access stops and the
+			// account can buy a local plan.
+			after := receipt.PeriodEnd.Add(time.Minute)
+			if ent, err = repo.Entitlements(t.Context(), user.ID, after); err != nil || ent.Active {
+				t.Fatalf("access outlived the paid period: %#v %v", ent, err)
+			}
+			invoice, err = repo.CreatePlanInvoice(t.Context(), user.ID, plan.ID, uuid.NewString(), "USD", after)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err = repo.PayInvoiceCredit(t.Context(), user.ID, invoice.ID, after); err != nil {
+				t.Fatalf("ended PayPal subscription still blocks local plans: %v", err)
+			}
+		})
+	}
+}
+
 func TestPostgresExpiredGatewayInvoiceDoesNotBlockLaterPlanPurchases(t *testing.T) {
 	repo := creditTestRepository(t)
 	user := creditTestUser(t, repo, 50)

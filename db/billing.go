@@ -526,6 +526,14 @@ func (repo *GormRepository) ApplySubscription(ctx context.Context, update Subscr
 		} else {
 			update.CurrentPeriodEnd = time.Unix(0, 0).UTC()
 		}
+		// PayPal reports a cancellation, or the end of the billing cycles, when it
+		// happens rather than when the paid period ends. Keep receipt-backed access
+		// until then; suspensions and payment failures still end it immediately.
+		// (Stripe sets cancel_at_period_end and deletes at the period end.)
+		if sameSubscription && update.Gateway == BillingGatewayPayPal && (update.Status == "canceled" || update.Status == "expired") &&
+			subscriptionActive(existing.Status, existing.CurrentPeriodEnd, time.Now().UTC()) {
+			update.Status, update.CancelAtPeriodEnd = existing.Status, true
+		}
 		if update.Status == "active" || update.Status == "trialing" {
 			if !sameSubscription {
 				update.Status = "incomplete"

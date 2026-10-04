@@ -164,7 +164,10 @@ func checkInvoicePlan(tx *gorm.DB, invoice *Invoice, now time.Time) error {
 	if subscriptionActive(sub.Status, sub.CurrentPeriodEnd, now) && (sub.Gateway != BillingGatewayCredit || sub.PlanID != invoice.PlanID) {
 		return ErrConflict
 	}
-	if sub.Gateway != BillingGatewayCredit && !subscriptionTerminal(sub.Status) {
+	// A gateway subscription canceled at its period end has ended once that
+	// period is over, even if the provider sends no further event.
+	ended := sub.CancelAtPeriodEnd && !sub.CurrentPeriodEnd.After(now)
+	if sub.Gateway != BillingGatewayCredit && !subscriptionTerminal(sub.Status) && !ended {
 		return ErrConflict
 	}
 	return nil
