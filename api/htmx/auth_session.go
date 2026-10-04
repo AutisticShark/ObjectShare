@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/base64"
+	"encoding/json"
 	"net/http"
 	"strings"
 	"time"
@@ -38,6 +39,19 @@ func (handler *Handler) replaceJWT(writer http.ResponseWriter, request *http.Req
 
 func (handler *Handler) setJWTCookie(writer http.ResponseWriter, token string) {
 	http.SetCookie(writer, &http.Cookie{Name: handler.jwtCookieName(), Value: token, Path: "/", HttpOnly: true, Secure: handler.config.SecureCookies, SameSite: http.SameSiteStrictMode})
+}
+
+// writeAccessToken returns a JWT to a bearer-token client as JSON, in the same
+// shape as the API login response, plus any extra fields.
+func writeAccessToken(writer http.ResponseWriter, token string, claims *appauth.Claims, extra map[string]any) {
+	body := map[string]any{"access_token": token, "token_type": "Bearer", "expires_in": int(time.Until(claims.ExpiresAt.Time).Seconds())}
+	for key, value := range extra {
+		body[key] = value
+	}
+	writer.Header().Set("Content-Type", "application/json")
+	writer.Header().Set("Cache-Control", "no-store")
+	writer.Header().Set("Pragma", "no-cache")
+	_ = json.NewEncoder(writer).Encode(body)
 }
 
 // issueJWT signs a token for a user who has just authenticated.

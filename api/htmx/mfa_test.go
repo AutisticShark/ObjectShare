@@ -410,6 +410,48 @@ func TestMFAManagementCannotSupersedeOrLockOutASignIn(t *testing.T) {
 	}
 }
 
+// Replacing recovery codes bumps the token version. A bearer-authenticated
+// account must receive the replacement JWT and the new codes as JSON.
+func TestMFABearerManagementReturnsTheReplacementToken(t *testing.T) {
+	h, _, user, _ := mfaFixture(t, "totp")
+	access, claims := issueTestJWT(t, h, user)
+	start := formRequest("/account/mfa", url.Values{"action": {"recovery"}, "csrf_token": {claims.CSRF}})
+	start.Header.Set("Authorization", "Bearer "+access)
+	w := httptest.NewRecorder()
+	h.Authenticate(h.RequireUser(http.HandlerFunc(h.BeginMFAChange))).ServeHTTP(w, start)
+	var cookie *http.Cookie
+	for _, c := range w.Result().Cookies() {
+		if c.Name == h.mfaCookieName() {
+			cookie = c
+		}
+	}
+	if cookie == nil {
+		t.Fatalf("missing challenge %d %s", w.Code, w.Body.String())
+	}
+	challenge, _ := h.jwt.ParseMFA(cookie.Value)
+	verify := formRequest("/login/mfa", url.Values{"csrf_token": {challenge.CSRF}, "code": {strings.Repeat("a", 32)}})
+	verify.AddCookie(cookie)
+	verify.Header.Set("Authorization", "Bearer "+access)
+	w = httptest.NewRecorder()
+	h.Authenticate(http.HandlerFunc(h.VerifyMFA)).ServeHTTP(w, verify)
+	var body struct {
+		AccessToken   string   `json:"access_token"`
+		RecoveryCodes []string `json:"recovery_codes"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil || w.Code != http.StatusOK || len(body.RecoveryCodes) != 10 || user.TokenVersion != 2 {
+		t.Fatalf("bearer recovery replacement status=%d body=%q", w.Code, w.Body.String())
+	}
+	replacement, err := h.jwt.Parse(body.AccessToken)
+	if err != nil || replacement.TokenVersion != 2 || replacement.AuthTime == nil || !replacement.AuthTime.Time.Equal(claims.AuthTime.Time) {
+		t.Fatalf("replacement token claims=%#v err=%v", replacement, err)
+	}
+	for _, c := range w.Result().Cookies() {
+		if c.Name == h.jwtCookieName() && c.Value != "" {
+			t.Fatal("a bearer client was sent a session cookie")
+		}
+	}
+}
+
 func TestMFAEmailEnrollmentPrerequisitesAndConfirmation(t *testing.T) {
 	h, _, user, _ := mfaFixture(t, "")
 	access, claims := issueTestJWT(t, h, user)

@@ -794,6 +794,17 @@ func (handler *Handler) UpdateOwnPassword(writer http.ResponseWriter, request *h
 		handler.internalError(writer, request, "change password", err)
 		return
 	}
+	// The token version changed, so the caller's JWT no longer works. A bearer
+	// client cannot use a cookie, so it receives the replacement as JSON.
+	if identity.Transport == transportBearer {
+		token, claims, err := handler.issueReplacementJWT(request, updatedUser, identityAuthTime(identity), false)
+		if err != nil {
+			handler.internalError(writer, request, "issue JWT after password change", err)
+			return
+		}
+		writeAccessToken(writer, token, claims, nil)
+		return
+	}
 	if err := handler.replaceJWT(writer, request, updatedUser, identityAuthTime(identity), false); err != nil {
 		handler.internalError(writer, request, "issue JWT after password change", err)
 		return

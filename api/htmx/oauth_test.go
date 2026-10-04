@@ -2,6 +2,7 @@ package htmx
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -338,6 +339,43 @@ func TestPasswordChangeDoesNotRefreshTheSignInTime(t *testing.T) {
 	}
 	if replacement.AuthTime == nil || !replacement.AuthTime.Time.Equal(signedIn) || recentlyAuthenticated(&identity{User: user, Claims: replacement}) {
 		t.Fatalf("password change refreshed the sign-in time: auth_time=%v", replacement.AuthTime)
+	}
+}
+
+// A bearer client's token stops working when its password changes, so the
+// replacement must come back in the response body, not only as a cookie.
+func TestBearerPasswordChangeReturnsTheReplacementToken(t *testing.T) {
+	repository := newAuthMemoryRepository()
+	hash, _ := appauth.HashPassword("the current password")
+	user := &db.User{ID: "60c628c1-85cb-4463-b895-a629c31bfa55", Email: "user@example.com", DisplayName: "User", PasswordHash: hash, Role: db.RoleUser, Active: true, TokenVersion: 1}
+	repository.users[user.ID] = user
+	handler := newAuthTestHandler(t, repository, false)
+	token, original := issueTestJWT(t, handler, user)
+	request := formRequest("/account/password", url.Values{"current_password": {"the current password"}, "password": {"a brand new password"}, "password_confirm": {"a brand new password"}})
+	request.Header.Set("Authorization", "Bearer "+token)
+	response := httptest.NewRecorder()
+	handler.Authenticate(handler.RequireUser(http.HandlerFunc(handler.UpdateOwnPassword))).ServeHTTP(response, request)
+	var body struct {
+		AccessToken string `json:"access_token"`
+		TokenType   string `json:"token_type"`
+		ExpiresIn   int    `json:"expires_in"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil || response.Code != http.StatusOK || body.TokenType != "Bearer" || body.ExpiresIn <= 0 || response.Header().Get("Cache-Control") != "no-store" {
+		t.Fatalf("bearer password change status=%d body=%q", response.Code, response.Body.String())
+	}
+	if responseJWT(response) != "" {
+		t.Fatal("a bearer client was sent a session cookie")
+	}
+	claims, err := handler.jwt.Parse(body.AccessToken)
+	if err != nil || claims.TokenVersion != 2 || claims.AuthTime == nil || !claims.AuthTime.Time.Equal(original.AuthTime.Time) {
+		t.Fatalf("replacement token claims=%#v err=%v", claims, err)
+	}
+	check := httptest.NewRequest(http.MethodGet, "/api/v1/private", nil)
+	check.Header.Set("Authorization", "Bearer "+body.AccessToken)
+	var served *identity
+	handler.Authenticate(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) { served = currentIdentity(r) })).ServeHTTP(httptest.NewRecorder(), check)
+	if served == nil || served.User.ID != user.ID {
+		t.Fatal("the replacement bearer token does not authenticate")
 	}
 }
 

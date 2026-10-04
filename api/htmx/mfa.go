@@ -376,11 +376,25 @@ func (handler *Handler) completeMFA(writer http.ResponseWriter, request *http.Re
 			handler.internalError(writer, request, "issue MFA API JWT", issueErr)
 			return
 		}
-		writer.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(writer).Encode(map[string]any{"access_token": token, "token_type": "Bearer", "expires_in": int(time.Until(issued.ExpiresAt.Time).Seconds())})
+		writeAccessToken(writer, token, issued, nil)
 		return
 	}
 	http.SetCookie(writer, &http.Cookie{Name: handler.mfaCookieName(), Path: "/", MaxAge: -1, HttpOnly: true, Secure: handler.config.SecureCookies, SameSite: http.SameSiteStrictMode})
+	// A management change bumped the token version. A bearer-authenticated
+	// account gets its replacement JWT (and any new recovery codes) as JSON.
+	if id := currentIdentity(request); claims.Action != "login" && id != nil && id.Transport == transportBearer {
+		token, issued, issueErr := handler.issueReplacementJWT(request, user, identityAuthTime(id), false)
+		if issueErr != nil {
+			handler.internalError(writer, request, "issue MFA API JWT", issueErr)
+			return
+		}
+		var extra map[string]any
+		if len(codes) > 0 {
+			extra = map[string]any{"recovery_codes": codes}
+		}
+		writeAccessToken(writer, token, issued, extra)
+		return
+	}
 	if claims.Action == "login" {
 		err = handler.startJWT(writer, request, user, true)
 	} else {
