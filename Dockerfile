@@ -6,7 +6,7 @@ ARG TARGETOS
 ARG TARGETARCH
 ARG VERSION=dev
 WORKDIR /src
-RUN apk add --no-cache ca-certificates tzdata && mkdir -p /out/data/objects
+RUN apk add --no-cache ca-certificates tzdata && mkdir -p /out/data/objects /out/data/tmp
 COPY go.mod go.sum ./
 RUN --mount=type=cache,target=/go/pkg/mod go mod download
 COPY . .
@@ -35,4 +35,8 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 CMD ["/obj
 # This is only a default: storage_path in a mounted config.json or an explicit
 # OBJECTSHARE_STORAGE_PATH still takes precedence at the first import.
 ENV OBJECTSHARE_DEFAULT_STORAGE_PATH=/var/lib/objectshare/objects
+# Proxied multipart uploads above 32 MiB are spooled to TMPDIR while they are
+# received. Keep that on the data volume, sized for uploads, rather than in a
+# small in-memory /tmp.
+ENV TMPDIR=/var/lib/objectshare/tmp
 ENTRYPOINT ["/object-share"]

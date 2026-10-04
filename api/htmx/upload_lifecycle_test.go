@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/AutisticShark/ObjectShare/config"
 	"github.com/AutisticShark/ObjectShare/db"
 	"github.com/AutisticShark/ObjectShare/service"
 )
@@ -398,5 +399,41 @@ func TestFailedOrAbandonedPublicationCanBeRetried(t *testing.T) {
 	handler.CompleteDirectUpload(complete, sharingRequest("POST", fileID, body, nil))
 	if record, _ := repository.Get(t.Context(), fileID); complete.Code != http.StatusOK || record.UploadStatus != "complete" || string(direct.objects[fileID]) != "hello" {
 		t.Fatalf("abandoned claim retry: status=%d record=%+v", complete.Code, record)
+	}
+}
+
+// A file above the in-memory multipart threshold is spooled to the temporary
+// directory. When that fails (a full or missing TMPDIR) the client is not at
+// fault: the response must be a logged server error, not a 400 that blames the
+// upload's size.
+func TestMultipartSpoolFailureIsALoggedServerError(t *testing.T) {
+	content := make([]byte, uploadFormMemory+1024)
+	for _, test := range []struct {
+		name    string
+		tempDir string
+		want    int
+	}{
+		{"writable temporary directory", t.TempDir(), http.StatusSeeOther},
+		{"missing temporary directory", t.TempDir() + "/missing", http.StatusInternalServerError},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			for _, name := range []string{"TMPDIR", "TMP", "TEMP"} {
+				t.Setenv(name, test.tempDir)
+			}
+			repository := &memoryRepository{files: make(map[string]*db.FileList)}
+			storage := &memoryStorage{objects: make(map[string][]byte)}
+			cfg := &config.ServiceConfig{MaxFileSize: 64, StorageService: "filesystem", Encryption: &config.EncryptionConfig{}}
+			handler := newTestHandlerConfig(t, cfg, repository, storage)
+			logs := &lockedBuffer{}
+			handler.logger = slog.New(slog.NewTextHandler(logs, nil))
+			response := httptest.NewRecorder()
+			handler.Upload(response, multipartUploadRequest(t, content))
+			if response.Code != test.want {
+				t.Fatalf("status = %d, want %d: %s", response.Code, test.want, response.Body.String())
+			}
+			if test.want == http.StatusInternalServerError && (!strings.Contains(logs.String(), "spool multipart upload") || len(repository.files) != 0) {
+				t.Fatalf("spool failure was not logged or left a reservation: records=%d log=%q", len(repository.files), logs.String())
+			}
+		})
 	}
 }

@@ -52,6 +52,12 @@ func run() error {
 
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	slog.SetDefault(logger)
+	// Proxied uploads larger than 32 MiB spool to os.TempDir() while they arrive.
+	// The container image points TMPDIR at the data volume, which can predate that
+	// directory, so create it rather than failing the first large upload.
+	if err := os.MkdirAll(os.TempDir(), 0o700); err != nil {
+		logger.Warn("temporary directory for upload spool files is unavailable", "path", os.TempDir(), "error", err)
+	}
 	cfg, err := config.LoadBootstrap(*configPath)
 	if err != nil {
 		return fmt.Errorf("load configuration: %w", err)

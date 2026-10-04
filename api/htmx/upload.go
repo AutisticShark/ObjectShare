@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"mime/multipart"
 	"net/http"
 	"path"
@@ -38,10 +39,16 @@ func (handler *Handler) Upload(writer http.ResponseWriter, request *http.Request
 			_ = request.MultipartForm.RemoveAll()
 		}
 	}()
-	if !handler.verifyAuthenticatedMutationCSRF(writer, request) {
+	if !handler.uploadAllowed(writer, request) {
 		return
 	}
-	if !handler.uploadAllowed(writer, request) {
+	// Read the form before anything consults its fields: FormValue discards a
+	// parse failure, which would hide a full temporary directory behind a
+	// misleading CSRF, CAPTCHA, or missing-file response.
+	if !handler.parseUploadForm(writer, request) {
+		return
+	}
+	if !handler.verifyAuthenticatedMutationCSRF(writer, request) {
 		return
 	}
 	captchaOK := handler.verifyCaptcha(writer, request, "upload", "")
@@ -331,6 +338,31 @@ func (handler *Handler) UploadResults(writer http.ResponseWriter, request *http.
 		User          *db.User
 		Files         []uploadedFileResult
 	}{config.GetVersion(), identityCSRF(request), identityUser(request), results})
+}
+
+// uploadFormMemory is how much of a multipart upload is buffered in memory, the
+// net/http default; larger files are spooled to os.TempDir() (TMPDIR).
+const uploadFormMemory = 32 << 20
+
+// parseUploadForm reads the multipart body. A body over the size limit is the
+// client's fault (413) and a malformed one is a bad request (400), but failing
+// to spool a file to the temporary directory, for example because it is full,
+// is a server fault: log it and answer 500 rather than blaming the upload.
+func (handler *Handler) parseUploadForm(writer http.ResponseWriter, request *http.Request) bool {
+	err := request.ParseMultipartForm(uploadFormMemory)
+	var limitError *http.MaxBytesError
+	var spoolError *fs.PathError
+	switch {
+	case err == nil:
+		return true
+	case errors.As(err, &limitError):
+		http.Error(writer, "The upload exceeds the configured size limit.", http.StatusRequestEntityTooLarge)
+	case errors.As(err, &spoolError):
+		handler.internalError(writer, request, "spool multipart upload to the temporary directory", err)
+	default:
+		http.Error(writer, "A file is required and must be within the configured size limit.", http.StatusBadRequest)
+	}
+	return false
 }
 
 func (handler *Handler) uploadAllowed(writer http.ResponseWriter, request *http.Request) bool {

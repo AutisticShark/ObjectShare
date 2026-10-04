@@ -373,6 +373,15 @@ directory depth from the build context, while retaining the root `.env.example`.
 Custom configuration files with other names must also be excluded if they contain
 secrets. Build-context exclusion does not replace runtime secret storage.
 
+Proxied (multipart) uploads larger than 32 MiB are spooled to the temporary
+directory while they arrive. The image sets `TMPDIR=/var/lib/objectshare/tmp` on
+the `object-data` volume (created at start-up if an older volume lacks it) instead
+of the container's small in-memory `/tmp`, so keep free space there for the largest
+proxied uploads you accept concurrently: up to `max_file_size` times
+`max_files_per_batch` per request. A spooling failure, such as a full disk, is
+logged and answered with `500` rather than reported as an invalid upload. When
+running the binary outside this image, point `TMPDIR` at a disk with similar room.
+
 The first visit redirects to the one-time setup page. Create the initial administrator there; after that, `/setup` is locked. Administrators configure the application from **Configuration** (`/admin/settings`) and manage accounts from **Users**. Public signup is enabled by default and creates normal users.
 
 For HTTPS deployments, terminate TLS at a reverse proxy, enable secure cookies in the configuration dashboard, and save. The saving replica activates the change immediately and other replicas activate it at their next configuration reload. Back up both named volumes together so metadata, encrypted configuration, and objects remain consistent.

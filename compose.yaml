@@ -11,6 +11,8 @@ services:
     stop_grace_period: 20s
     init: true
     read_only: true
+    # The image sets TMPDIR to /var/lib/objectshare/tmp on the object-data volume,
+    # so large proxied uploads spool there; this small in-memory /tmp is not used for them.
     tmpfs:
       - /tmp:size=256m,mode=1777
     cap_drop:
