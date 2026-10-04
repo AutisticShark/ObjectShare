@@ -31,7 +31,7 @@ func (handler *Handler) Upload(writer http.ResponseWriter, request *http.Request
 	if maxFiles <= 0 {
 		maxFiles = 10
 	}
-	handler.withUploadProgress(writer, request)
+	request = handler.withUploadProgress(writer, request)
 	request.Body = http.MaxBytesReader(writer, request.Body, maxBytes*int64(maxFiles)+int64(maxFiles)*mebibyte)
 	defer func() {
 		if request.MultipartForm != nil {
@@ -175,7 +175,7 @@ func (handler *Handler) Upload(writer http.ResponseWriter, request *http.Request
 		reader = bytes.NewReader(ciphertext)
 	}
 	objectMayExist = true
-	if err := handler.storage.Put(request.Context(), fileID, reader, storedSize, contentType); err != nil {
+	if err := handler.storage.Put(request.Context(), fileID, uploadProgressReader(request, reader), storedSize, contentType); err != nil {
 		handler.internalError(writer, request, "store file", err)
 		return
 	}
@@ -292,7 +292,7 @@ func (handler *Handler) storeProxiedHeader(request *http.Request, header *multip
 		storedSize, reader = int64(len(ciphertext)), bytes.NewReader(ciphertext)
 	}
 	objectMayExist = true
-	if err := handler.storage.Put(request.Context(), fileID, reader, storedSize, contentType); err != nil {
+	if err := handler.storage.Put(request.Context(), fileID, uploadProgressReader(request, reader), storedSize, contentType); err != nil {
 		return uploadedFileResult{}, "", err
 	}
 	if counter.total != header.Size {
