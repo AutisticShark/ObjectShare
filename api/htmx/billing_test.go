@@ -402,3 +402,37 @@ func TestPlansDisplayStoredPriceWithoutConfiguredGateway(t *testing.T) {
 		t.Fatal("offered a legacy plan without a numeric price")
 	}
 }
+
+type twoPlanRepository struct{ *entitlementRepository }
+
+func (twoPlanRepository) PublicPlans(context.Context) ([]db.PaidPlan, error) {
+	return []db.PaidPlan{{ID: "22222222-2222-4222-8222-222222222222", Name: "Plus", Price: 10, DurationDays: 30, Active: true},
+		{ID: "33333333-3333-4333-8333-333333333333", Name: "Pro", Price: 20, DurationDays: 30, Active: true}}, nil
+}
+
+// An invoice request ID is bound to one plan. Every plan card needs its own,
+// or choosing a second plan from the same page (for example after Back) is
+// refused as a conflicting retry.
+func TestPlansPageGivesEachPlanItsOwnRequestID(t *testing.T) {
+	handler := newTestHandler(t, twoPlanRepository{&entitlementRepository{memoryRepository: &memoryRepository{files: make(map[string]*db.FileList)}}}, &memoryStorage{objects: make(map[string][]byte)})
+	var err error
+	if handler.templates, err = parseTemplates(os.DirFS("../.."), config.BrandingConfig{}); err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodGet, "/plans", nil)
+	request = request.WithContext(context.WithValue(request.Context(), identityContextKey{}, &identity{User: &db.User{ID: "11111111-1111-4111-8111-111111111111"}, Transport: transportCookie, Claims: &appauth.Claims{CSRF: "expected"}}))
+	response := httptest.NewRecorder()
+	handler.Plans(response, request)
+	const field = `name="credit_request_id" value="`
+	body := response.Body.String()
+	var ids []string
+	for rest := body; strings.Contains(rest, field); {
+		_, rest, _ = strings.Cut(rest, field)
+		var id string
+		id, rest, _ = strings.Cut(rest, `"`)
+		ids = append(ids, id)
+	}
+	if response.Code != http.StatusOK || len(ids) != 2 || ids[0] == ids[1] || ids[0] == "" {
+		t.Fatalf("status=%d request IDs=%q", response.Code, ids)
+	}
+}

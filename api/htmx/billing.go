@@ -20,13 +20,16 @@ type planCard struct {
 	CurrencyPrice                                              string
 	ID, Name, Description, Price, Storage, Retention, Duration string
 	DirectLinks                                                bool
+	// RequestID is unique per card: an invoice request ID is bound to one
+	// plan, so reusing it for another plan from the same page is refused.
+	RequestID string
 }
 type plansPageData struct {
-	VerificationRequired                                 bool
-	Version, CSRF, Error, CreditBalance, CreditRequestID string
-	User                                                 *db.User
-	Plans                                                []planCard
-	BillingEnabled                                       bool
+	VerificationRequired                bool
+	Version, CSRF, Error, CreditBalance string
+	User                                *db.User
+	Plans                               []planCard
+	BillingEnabled                      bool
 }
 
 func (handler *Handler) Plans(writer http.ResponseWriter, request *http.Request) {
@@ -56,7 +59,7 @@ func (handler *Handler) Plans(writer http.ResponseWriter, request *http.Request)
 		cards = append(cards, planCard{ID: plan.ID, Name: plan.Name, Description: plan.Description,
 			CurrencyPrice: fmt.Sprintf("%s %d.00", currency, plan.Price),
 			Price:         fmt.Sprintf("%d credits", plan.Price), Duration: fmt.Sprintf("%d days", plan.DurationDays),
-			Storage: humanSize(plan.StorageQuotaBytes), Retention: retention, DirectLinks: plan.DirectLinks})
+			Storage: humanSize(plan.StorageQuotaBytes), Retention: retention, DirectLinks: plan.DirectLinks, RequestID: uuid.NewString()})
 		creditPurchases = true
 	}
 	user := identityUser(request)
@@ -64,7 +67,7 @@ func (handler *Handler) Plans(writer http.ResponseWriter, request *http.Request)
 	if user != nil {
 		creditBalance = fmt.Sprintf("%d credits", user.CreditBalance)
 	}
-	handler.render(writer, "plans.html", plansPageData{VerificationRequired: user != nil && user.EmailVerifiedAt == nil && handler.verificationSettings().RequireForPurchases, Version: config.GetVersion(), CSRF: identityCSRF(request), User: user, Plans: cards, BillingEnabled: creditPurchases, CreditBalance: creditBalance, CreditRequestID: uuid.NewString()})
+	handler.render(writer, "plans.html", plansPageData{VerificationRequired: user != nil && user.EmailVerifiedAt == nil && handler.verificationSettings().RequireForPurchases, Version: config.GetVersion(), CSRF: identityCSRF(request), User: user, Plans: cards, BillingEnabled: creditPurchases, CreditBalance: creditBalance})
 }
 
 func (handler *Handler) BillingTopUp(writer http.ResponseWriter, request *http.Request) {
