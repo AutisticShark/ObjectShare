@@ -855,13 +855,16 @@ func decodeKey(value string) ([]byte, error) {
 	return hex.DecodeString(value)
 }
 
+// lookupEnvironment is replaced in tests to list every variable the parser reads.
+var lookupEnvironment = os.LookupEnv
+
 // lookupEnv reports an environment override. A set but empty variable means
 // "not provided": Compose forwards every documented variable, empty unless the
 // operator set it, and that must not erase a value from config.json or replace
 // a built-in default. OBJECTSHARE_REDIS_URL is the one exception, because an
 // explicit empty URL deliberately disables Redis.
 func lookupEnv(name string) (string, bool) {
-	value, ok := os.LookupEnv(name)
+	value, ok := lookupEnvironment(name)
 	if !ok || (value == "" && name != "OBJECTSHARE_REDIS_URL") {
 		return "", false
 	}
