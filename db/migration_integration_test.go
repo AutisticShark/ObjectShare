@@ -71,6 +71,9 @@ func TestPostgresMigrationCreditTopUpSchemaChanges(t *testing.T) {
 		if got.UserID != user.ID || got.Credits != 25 || got.AmountMinor != 2500 || got.Currency != "USD" || got.CheckoutURL != "" || got.Status != CreditTopUpPending || !got.ExpiresAt.Equal(expires) {
 			t.Fatalf("migration changed existing top-up: %+v", got)
 		}
+		if got.CheckoutExpiresAt == nil || !got.CheckoutExpiresAt.Equal(expires) {
+			t.Fatalf("Stripe checkout deadline was not backfilled: %+v", got)
+		}
 		// Pending payments gain the checkout deadline their provider enforces.
 		var paypal CreditTopUp
 		if err := repo.connection.First(&paypal, "id = ?", paypalTopUp.ID).Error; err != nil {

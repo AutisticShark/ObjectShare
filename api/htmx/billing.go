@@ -101,7 +101,7 @@ func (handler *Handler) BillingTopUp(writer http.ResponseWriter, request *http.R
 	// Keep the reservation on ambiguous gateway failures: a payment may have
 	// succeeded remotely and its verified receipt must still be settleable.
 	result, err := gateway.TopUp(request.Context(), handler.invoiceCheckoutInput(&db.Invoice{ID: topUp.ID, UserID: identity.User.ID, Email: identity.User.Email, Kind: "topup",
-		Currency: topUp.Currency, Credits: topUp.Credits, AmountMinor: topUp.AmountMinor}, gatewayKey, topUp.CheckoutAttempt))
+		Currency: topUp.Currency, Credits: topUp.Credits, AmountMinor: topUp.AmountMinor}, gatewayKey, topUp))
 	if err != nil {
 		handler.internalError(writer, request, "create "+billingGatewayLabel(gatewayKey)+" credit top-up", err)
 		return

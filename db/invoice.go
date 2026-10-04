@@ -239,7 +239,8 @@ var billingBackfillSQL = []string{
 	// Pending payments started before checkout deadlines were stored; matches
 	// CreditTopUp.CheckoutDeadline's fallback.
 	`UPDATE credit_topups SET checkout_started_at = created_at, checkout_expires_at = CASE
-		WHEN gateway = 'paypal' THEN LEAST(expires_at, created_at + INTERVAL '3 hours') ELSE expires_at END
+		WHEN gateway = 'paypal' THEN LEAST(expires_at, created_at + INTERVAL '3 hours')
+		WHEN gateway = 'stripe' THEN LEAST(expires_at, created_at + INTERVAL '23 hours 55 minutes') ELSE expires_at END
 		WHERE status = 'pending' AND checkout_expires_at IS NULL`,
 }
 
@@ -247,11 +248,23 @@ var billingBackfillSQL = []string{
 // three hours after creating an order to capture it.
 const PayPalCheckoutLifetime = 3 * time.Hour
 
+// StripeCheckoutLifetime is the longest Checkout Session ObjectShare requests.
+// Stripe allows expires_at at most 24 hours after creating the session; the
+// margin absorbs clock differences between ObjectShare and Stripe.
+const StripeCheckoutLifetime = 24*time.Hour - 5*time.Minute
+
 // CheckoutDeadline is when a provider checkout started at the given time stops
 // accepting payment. It never outlives the local payment window.
 func CheckoutDeadline(gateway string, started, windowEnd time.Time) time.Time {
-	if gateway == BillingGatewayPayPal && started.Add(PayPalCheckoutLifetime).Before(windowEnd) {
-		return started.Add(PayPalCheckoutLifetime)
+	lifetime := time.Duration(0)
+	switch gateway {
+	case BillingGatewayPayPal:
+		lifetime = PayPalCheckoutLifetime
+	case BillingGatewayStripe:
+		lifetime = StripeCheckoutLifetime
+	}
+	if lifetime > 0 && started.Add(lifetime).Before(windowEnd) {
+		return started.Add(lifetime)
 	}
 	return windowEnd
 }

@@ -244,6 +244,12 @@ func (handler *Handler) PayInvoice(writer http.ResponseWriter, request *http.Req
 		handler.billingProblem(writer, request, http.StatusServiceUnavailable, "This payment gateway is unavailable. Return to the invoice to review the available payment methods, or contact the site administrator.")
 		return
 	}
+	// Do not bind the invoice to a gateway that can no longer open a checkout
+	// within the remaining payment window.
+	if limited, ok := gateway.(checkoutWindowGateway); ok && invoice.Gateway == "" && time.Until(invoice.ExpiresAt) < limited.MinimumCheckoutWindow() {
+		handler.checkoutWindowTooShort(writer, request, gatewayKey)
+		return
+	}
 	payment, err := repo.ReserveInvoiceGateway(request.Context(), identityUser(request).ID, invoice.ID, gatewayKey, time.Now().UTC())
 	if err != nil {
 		handler.invoiceFailure(writer, request, err)
@@ -253,7 +259,11 @@ func (handler *Handler) PayInvoice(writer http.ResponseWriter, request *http.Req
 		http.Redirect(writer, request, payment.CheckoutURL, http.StatusSeeOther)
 		return
 	}
-	result, err := gateway.TopUp(request.Context(), handler.invoiceCheckoutInput(invoice, gatewayKey, payment.CheckoutAttempt))
+	result, err := gateway.TopUp(request.Context(), handler.invoiceCheckoutInput(invoice, gatewayKey, payment))
+	if errors.Is(err, errCheckoutWindowTooShort) {
+		handler.checkoutWindowTooShort(writer, request, gatewayKey)
+		return
+	}
 	if err != nil {
 		handler.logger.Error("create invoice payment", "error", err)
 		handler.billingProblem(writer, request, http.StatusInternalServerError, "The payment provider did not confirm checkout. A payment may still be in progress. Return to your invoice and check its status before trying again; contact the site administrator if it remains unresolved.")
@@ -266,13 +276,17 @@ func (handler *Handler) PayInvoice(writer http.ResponseWriter, request *http.Req
 	http.Redirect(writer, request, result.Location, http.StatusSeeOther)
 }
 
+func (handler *Handler) checkoutWindowTooShort(writer http.ResponseWriter, request *http.Request, gatewayKey string) {
+	handler.billingProblem(writer, request, http.StatusConflict, "Too little of this invoice's payment window remains to start "+billingGatewayLabel(gatewayKey)+" checkout. Choose another payment method, or generate a new invoice from Plans (or start a new top-up from Billing).")
+}
+
 // invoiceCheckoutInput builds the gateway request for an invoice. A top-up
 // started from Billing and a retry from its invoice share one idempotency key,
 // so both paths must send identical parameters.
-func (handler *Handler) invoiceCheckoutInput(invoice *db.Invoice, gatewayKey string, attempt int) billingTopUpInput {
+func (handler *Handler) invoiceCheckoutInput(invoice *db.Invoice, gatewayKey string, payment *db.CreditTopUp) billingTopUpInput {
 	base := handler.config.Billing.PublicURL
 	input := billingTopUpInput{TopUpID: invoice.ID, UserID: invoice.UserID, Email: invoice.Email, Currency: invoice.Currency, Credits: invoice.Credits, AmountMinor: invoice.AmountMinor,
-		Attempt: attempt, SuccessURL: base + "/invoices/" + invoice.ID, CancelURL: base + "/invoices/" + invoice.ID}
+		Attempt: payment.CheckoutAttempt, ExpiresAt: payment.CheckoutDeadline(), SuccessURL: base + "/invoices/" + invoice.ID, CancelURL: base + "/invoices/" + invoice.ID}
 	if invoice.Kind != "topup" {
 		input.Description = "Invoice " + invoice.ID + ": " + invoice.Name
 	}

@@ -97,6 +97,12 @@ func (client *stripeClient) postForm(ctx context.Context, endpoint string, value
 	return result.URL, nil
 }
 
+// stripeMinimumCheckoutWindow is Stripe's 30-minute minimum Checkout Session
+// lifetime plus a margin for clock differences.
+const stripeMinimumCheckoutWindow = 35 * time.Minute
+
+func (client *stripeClient) MinimumCheckoutWindow() time.Duration { return stripeMinimumCheckoutWindow }
+
 func (client *stripeClient) TopUp(ctx context.Context, input billingTopUpInput) (billingTopUpResult, error) {
 	if input.Description == "" {
 		input.Description = fmt.Sprintf("%d ObjectShare account credits", input.Credits)
@@ -110,6 +116,14 @@ func (client *stripeClient) TopUp(ctx context.Context, input billingTopUpInput) 
 		"client_reference_id": {input.UserID}, "customer_email": {input.Email},
 		"metadata[purpose]": {"credit_topup"}, "metadata[topup_id]": {input.TopUpID},
 		"payment_intent_data[metadata][purpose]": {"credit_topup"}, "payment_intent_data[metadata][topup_id]": {input.TopUpID},
+	}
+	// Without expires_at a session stays payable for 24 hours after creation,
+	// even past the invoice's payment window.
+	if !input.ExpiresAt.IsZero() {
+		if time.Until(input.ExpiresAt) < stripeMinimumCheckoutWindow {
+			return billingTopUpResult{}, errCheckoutWindowTooShort
+		}
+		values.Set("expires_at", strconv.FormatInt(input.ExpiresAt.Unix(), 10))
 	}
 	location, err := client.postForm(ctx, "/checkout/sessions", values, "objectshare-topup-"+checkoutIdempotencyKey(input))
 	return billingTopUpResult{Location: location}, err

@@ -371,3 +371,23 @@ func TestPostgresInvoiceEmailRetriesBackOffAndStopAtTheCap(t *testing.T) {
 		t.Fatalf("an invoice past the attempt cap was claimed again: %v", err)
 	}
 }
+
+func TestCheckoutDeadlinesFollowProviderLimits(t *testing.T) {
+	start := time.Date(2026, 10, 4, 12, 0, 0, 0, time.UTC)
+	window := start.Add(24 * time.Hour)
+	for _, test := range []struct {
+		gateway         string
+		started, wanted time.Time
+	}{
+		{BillingGatewayPayPal, start, start.Add(3 * time.Hour)},
+		{BillingGatewayPayPal, window.Add(-time.Hour), window},
+		// Stripe rejects expires_at more than 24 hours after session creation.
+		{BillingGatewayStripe, start, start.Add(24*time.Hour - 5*time.Minute)},
+		{BillingGatewayStripe, start.Add(23 * time.Hour), window},
+		{"other", start, window},
+	} {
+		if got := CheckoutDeadline(test.gateway, test.started, window); !got.Equal(test.wanted) {
+			t.Errorf("%s checkout started %v: deadline %v, want %v", test.gateway, test.started, got, test.wanted)
+		}
+	}
+}

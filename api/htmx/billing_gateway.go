@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/AutisticShark/ObjectShare/config"
 	"github.com/AutisticShark/ObjectShare/db"
@@ -26,6 +27,19 @@ type billingTopUpInput struct {
 	// Attempt numbers replacement checkouts for one payment after an earlier
 	// provider checkout expired unpaid.
 	Attempt int
+	// ExpiresAt is when the provider checkout must stop accepting payment, so a
+	// customer cannot pay after the invoice's payment window has ended.
+	ExpiresAt time.Time
+}
+
+// errCheckoutWindowTooShort means too little of the payment window remains for
+// the provider's minimum checkout lifetime.
+var errCheckoutWindowTooShort = errors.New("too little of the payment window remains to start checkout")
+
+// checkoutWindowGateway is implemented by gateways that cannot create a
+// checkout lasting less than a minimum time.
+type checkoutWindowGateway interface {
+	MinimumCheckoutWindow() time.Duration
 }
 
 // checkoutIdempotencyKey lets a lost response be retried safely while giving a

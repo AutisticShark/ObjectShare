@@ -2,6 +2,7 @@ package htmx
 
 import (
 	"bytes"
+	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
@@ -9,11 +10,14 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/AutisticShark/ObjectShare/config"
 	"github.com/AutisticShark/ObjectShare/db"
+	"github.com/go-chi/chi/v5"
 )
 
 func TestStripeSignatureVerificationRejectsTamperingAndStaleEvents(t *testing.T) {
@@ -110,5 +114,54 @@ func TestStripeClientCreatesServerPricedTopUp(t *testing.T) {
 	result, err := client.TopUp(t.Context(), billingTopUpInput{TopUpID: "33333333-3333-4333-8333-333333333333", Credits: 25, AmountMinor: 2500, Currency: "USD", SuccessURL: "https://share.example.com/account", CancelURL: "https://share.example.com/account"})
 	if err != nil || result.Location != "https://checkout.stripe.com/c/pay/cs_test_1" {
 		t.Fatalf("result=%#v err=%v", result, err)
+	}
+}
+
+// A Checkout Session must stop accepting payment when the invoice's payment
+// window ends; otherwise a customer could pay hours later for an invoice that
+// can no longer be applied. Stripe cannot create a session shorter than 30
+// minutes, so a nearly expired invoice must not start one.
+func TestStripeInvoiceCheckoutExpiresWithTheInvoice(t *testing.T) {
+	const owner, id = "11111111-1111-4111-8111-111111111111", "22222222-2222-4222-8222-222222222222"
+	var sessions []string
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if err := request.ParseForm(); err != nil {
+			t.Error(err)
+		}
+		sessions = append(sessions, request.FormValue("expires_at"))
+		_, _ = io.WriteString(writer, `{"url":"https://checkout.stripe.com/c/pay/cs_test_1"}`)
+	}))
+	defer server.Close()
+	repo := &checkoutRetryRepository{invoiceTestRepository: &invoiceTestRepository{entitlementRepository: &entitlementRepository{memoryRepository: &memoryRepository{files: make(map[string]*db.FileList)}}}}
+	handler := newTestHandler(t, repo, &memoryStorage{objects: make(map[string][]byte)})
+	handler.config.Billing = &config.BillingConfig{PublicURL: "https://share.example.com", CreditCurrency: "USD"}
+	handler.billingGateways = map[string]billingGateway{db.BillingGatewayStripe: &stripeClient{secret: "sk_test", apiBase: server.URL, client: server.Client()}}
+	router := chi.NewRouter()
+	router.Post("/invoices/{id}/pay", handler.PayInvoice)
+	pay := func(remaining time.Duration, bound string) *httptest.ResponseRecorder {
+		expires := time.Now().UTC().Add(remaining).Truncate(time.Second)
+		repo.invoice = db.Invoice{ID: id, UserID: owner, Kind: "plan", Name: "Plus", Email: "buyer@example.com", Credits: 10, AmountMinor: 1000, Currency: "USD", Status: "pending", Gateway: bound, ExpiresAt: expires}
+		repo.payment = db.CreditTopUp{ID: id, UserID: owner, Gateway: db.BillingGatewayStripe, Credits: 10, AmountMinor: 1000, Currency: "USD", Status: db.CreditTopUpPending, ExpiresAt: expires, CreatedAt: time.Now().UTC()}
+		request := httptest.NewRequest(http.MethodPost, "/invoices/"+id+"/pay", strings.NewReader("gateway=stripe"))
+		request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		request = request.WithContext(context.WithValue(request.Context(), identityContextKey{}, &identity{User: &db.User{ID: owner}, Transport: transportBearer}))
+		response := httptest.NewRecorder()
+		router.ServeHTTP(response, request)
+		return response
+	}
+
+	response := pay(time.Hour, "")
+	if response.Code != http.StatusSeeOther || len(sessions) != 1 || sessions[0] != strconv.FormatInt(repo.invoice.ExpiresAt.Unix(), 10) {
+		t.Fatalf("status=%d expires_at=%q, want the invoice expiry %d", response.Code, sessions, repo.invoice.ExpiresAt.Unix())
+	}
+	response = pay(20*time.Minute, "")
+	if response.Code != http.StatusConflict || len(sessions) != 1 {
+		t.Fatalf("checkout started with 20 minutes left: status=%d sessions=%d", response.Code, len(sessions))
+	}
+	// An invoice already bound to Stripe (a retry after a lost response) is
+	// refused by the client instead of asking Stripe for an invalid session.
+	response = pay(20*time.Minute, db.BillingGatewayStripe)
+	if response.Code != http.StatusConflict || len(sessions) != 1 {
+		t.Fatalf("retry started with 20 minutes left: status=%d sessions=%d", response.Code, len(sessions))
 	}
 }
