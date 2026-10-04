@@ -5,6 +5,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/AutisticShark/ObjectShare/config"
 	"github.com/AutisticShark/ObjectShare/db"
@@ -49,5 +50,45 @@ func TestCreditTemplatesRenderFormsHistoryAndPrepaidState(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// PostgreSQL returns timestamps in the process's local zone. Billing pages label
+// times as UTC, so they must convert them, matching the invoice PDF.
+func TestBillingTemplatesShowTimesInUTC(t *testing.T) {
+	parsed, err := parseTemplates(os.DirFS("../.."), config.BrandingConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	user := &db.User{ID: "user", Email: "user@example.com", Role: db.RoleAdmin}
+	taipei := time.FixedZone("Asia/Taipei", 8*60*60)
+	created := time.Date(2026, 10, 4, 20, 0, 0, 0, taipei) // 12:00 UTC
+	paidAt := created.Add(time.Hour)
+	pending := db.Invoice{ID: "pending", Name: "Plus", Kind: "plan", Status: "pending", Currency: "USD", CreatedAt: created, ExpiresAt: created.Add(24 * time.Hour)}
+	paid := pending
+	paid.ID, paid.Status, paid.PaidAt = "paid", "paid", &paidAt
+	for _, test := range []struct {
+		name     string
+		data     any
+		contains []string
+	}{
+		{"invoice.html", invoicePageData{User: user, Invoice: &pending}, []string{"Issued 2026-10-04 12:00 UTC", "Payment window ends 2026-10-05 12:00 UTC"}},
+		{"invoice.html", invoicePageData{User: user, Invoice: &paid}, []string{"Issued 2026-10-04 12:00 UTC", "Payment confirmed on 2026-10-04 13:00 UTC"}},
+		{"invoices.html", invoicePageData{User: user, Invoices: []db.Invoice{pending}}, []string{"Issued (UTC)", "<td>2026-10-04 12:00</td>"}},
+		{"admin_invoices.html", workspacePageData{User: user, Page: 1, Invoices: []db.Invoice{pending}}, []string{"2026-10-04 12:00 UTC", "Window ends 2026-10-05 12:00 UTC"}},
+	} {
+		var output bytes.Buffer
+		if err := parsed.ExecuteTemplate(&output, test.name, test.data); err != nil {
+			t.Fatal(err)
+		}
+		body := output.String()
+		for _, value := range test.contains {
+			if !strings.Contains(body, value) {
+				t.Errorf("%s does not contain %q", test.name, value)
+			}
+		}
+		if strings.Contains(body, "20:00") || strings.Contains(body, "21:00") {
+			t.Errorf("%s shows a local time as UTC", test.name)
+		}
 	}
 }
