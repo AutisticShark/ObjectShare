@@ -282,9 +282,16 @@ func TestUploadStoresContentHashesAndOwnerCookie(t *testing.T) {
 			t.Fatal("stored content differs")
 		}
 	}
+	// A browser's first guest upload receives its owner key and, as a fallback
+	// against another tab replacing that key, the file's own owner cookie.
 	cookies := response.Result().Cookies()
-	if len(cookies) != 1 || !cookies[0].HttpOnly || cookies[0].SameSite != http.SameSiteStrictMode {
-		t.Fatal("secure owner cookie was not set")
+	if len(cookies) != 2 || cookies[0].Name != guestOwnerKeyCookieName {
+		t.Fatalf("owner cookies = %v", cookies)
+	}
+	for _, cookie := range cookies {
+		if !cookie.HttpOnly || cookie.SameSite != http.SameSiteStrictMode || cookie.Path != "/" {
+			t.Fatal("secure owner cookie was not set")
+		}
 	}
 }
 

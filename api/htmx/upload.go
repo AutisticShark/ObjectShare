@@ -33,6 +33,11 @@ func (handler *Handler) Upload(writer http.ResponseWriter, request *http.Request
 		maxFiles = 10
 	}
 	request = handler.withUploadProgress(writer, request)
+	request, err := withGuestOwnerKey(request)
+	if err != nil {
+		handler.internalError(writer, request, "create guest owner key", err)
+		return
+	}
 	request.Body = http.MaxBytesReader(writer, request.Body, maxBytes*int64(maxFiles)+int64(maxFiles)*mebibyte)
 	defer func() {
 		if request.MultipartForm != nil {
@@ -123,12 +128,12 @@ func (handler *Handler) Upload(writer http.ResponseWriter, request *http.Request
 		http.Error(writer, "Unable to read the uploaded file.", http.StatusBadRequest)
 		return
 	}
-	token, tokenHash, err := newOwnerToken()
+	fileID := uuid.NewString()
+	token, tokenHash, err := newUploadOwnerToken(request, fileID)
 	if err != nil {
 		handler.internalError(writer, request, "create owner token", err)
 		return
 	}
-	fileID := uuid.NewString()
 	now := time.Now().UTC()
 	expiresAt := now.Add(handler.proxiedUploadReservationLifetime())
 	record := &db.FileList{
@@ -198,7 +203,7 @@ func (handler *Handler) Upload(writer http.ResponseWriter, request *http.Request
 	}
 	reservationActive = false
 	if record.FileOwner == nil {
-		http.SetCookie(writer, ownerCookie(fileID, token, handler.config.SecureCookies, 30*24*time.Hour))
+		handler.grantGuestOwnership(writer, request, fileID, token)
 	}
 	handler.redirect(writer, request, "/file/"+fileID)
 }
@@ -231,7 +236,7 @@ func (handler *Handler) uploadMultiple(writer http.ResponseWriter, request *http
 	ids := make([]string, 0, len(results))
 	for index, result := range results {
 		if currentIdentity(request) == nil {
-			http.SetCookie(writer, ownerCookie(result.ID, tokens[index], handler.config.SecureCookies, 30*24*time.Hour))
+			handler.grantGuestOwnership(writer, request, result.ID, tokens[index])
 		}
 		ids = append(ids, result.ID)
 	}
@@ -257,11 +262,12 @@ func (handler *Handler) storeProxiedHeader(request *http.Request, header *multip
 	if err != nil {
 		return uploadedFileResult{}, "", fmt.Errorf("%w: unable to read %s", errInvalidUpload, fileName)
 	}
-	token, tokenHash, err := newOwnerToken()
+	fileID := uuid.NewString()
+	token, tokenHash, err := newUploadOwnerToken(request, fileID)
 	if err != nil {
 		return uploadedFileResult{}, "", err
 	}
-	fileID, now := uuid.NewString(), time.Now().UTC()
+	now := time.Now().UTC()
 	expiresAt := now.Add(handler.proxiedUploadReservationLifetime())
 	record := &db.FileList{AnonymousSessionToken: tokenHash, FileID: fileID, FileName: fileName, FileSize: header.Size,
 		ContentType: contentType, IsAnonymousUpload: true, IsEncrypted: handler.cipher != nil, StorageService: handler.config.StorageService,

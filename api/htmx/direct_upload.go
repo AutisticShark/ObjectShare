@@ -68,6 +68,11 @@ func (handler *Handler) BeginDirectUploadBatch(writer http.ResponseWriter, reque
 	if !handler.verifyCaptcha(writer, request, "upload", input.CaptchaToken) {
 		return
 	}
+	request, err := withGuestOwnerKey(request)
+	if err != nil {
+		handler.internalError(writer, request, "create guest owner key", err)
+		return
+	}
 	handler.cleanupExpiredUploads(request)
 	authorizations := make([]directUploadAuthorization, 0, len(input.Files))
 	rollback := func() {
@@ -84,6 +89,7 @@ func (handler *Handler) BeginDirectUploadBatch(writer http.ResponseWriter, reque
 		}
 		authorizations = append(authorizations, authorization)
 	}
+	handler.issueGuestOwnerKey(writer, request)
 	writeJSON(writer, http.StatusCreated, map[string]any{"uploads": authorizations})
 }
 
@@ -169,11 +175,12 @@ func (handler *Handler) authorizeDirectUpload(request *http.Request, input direc
 	if _, _, err := mime.ParseMediaType(contentType); err != nil || len(contentType) > 255 {
 		return directUploadAuthorization{}, nil, &uploadRejection{http.StatusBadRequest, "Invalid content type."}
 	}
-	token, tokenHash, err := newOwnerToken()
+	fileID := uuid.NewString()
+	token, tokenHash, err := newUploadOwnerToken(request, fileID)
 	if err != nil {
 		return directUploadAuthorization{}, nil, err
 	}
-	fileID, now := uuid.NewString(), time.Now().UTC()
+	now := time.Now().UTC()
 	expiresAt := now.Add(handler.directPolicy.Expires)
 	reservedUntil := now.Add(handler.directUploadReservation())
 	record := &db.FileList{ClientEncryption: input.ClientEncryption, ShareMode: mode, AnonymousSessionToken: tokenHash, FileID: fileID, FileName: fileName, FileSize: input.FileSize,
@@ -204,12 +211,18 @@ func (handler *Handler) BeginDirectUpload(writer http.ResponseWriter, request *h
 	if !handler.verifyCaptcha(writer, request, "upload", input.CaptchaToken) {
 		return
 	}
+	request, err := withGuestOwnerKey(request)
+	if err != nil {
+		handler.internalError(writer, request, "create guest owner key", err)
+		return
+	}
 	handler.cleanupExpiredUploads(request)
 	authorization, err := handler.reserveDirectUpload(request, input)
 	if err != nil {
 		handler.writeUploadError(writer, request, "begin direct upload", err)
 		return
 	}
+	handler.issueGuestOwnerKey(writer, request)
 	writeJSON(writer, http.StatusCreated, map[string]any{
 		"file_id": authorization.FileID, "upload_url": authorization.UploadURL,
 		"complete_url": authorization.CompleteURL, "abort_url": authorization.AbortURL, "renew_url": authorization.RenewURL,
@@ -289,7 +302,7 @@ func (handler *Handler) CompleteDirectUpload(writer http.ResponseWriter, request
 	// re-upload, revalidate storage, or mutate a completed record on this path.
 	if file.UploadStatus == "complete" {
 		if file.FileOwner == nil {
-			http.SetCookie(writer, ownerCookie(file.FileID, token, handler.config.SecureCookies, 30*24*time.Hour))
+			handler.grantGuestOwnership(writer, request, file.FileID, token)
 		}
 		writeJSON(writer, http.StatusOK, map[string]string{"location": "/file/" + file.FileID})
 		return
@@ -349,7 +362,7 @@ func (handler *Handler) CompleteDirectUpload(writer http.ResponseWriter, request
 		return
 	}
 	if file.FileOwner == nil {
-		http.SetCookie(writer, ownerCookie(file.FileID, token, handler.config.SecureCookies, 30*24*time.Hour))
+		handler.grantGuestOwnership(writer, request, file.FileID, token)
 	}
 	writeJSON(writer, http.StatusOK, map[string]string{"location": "/file/" + file.FileID})
 }

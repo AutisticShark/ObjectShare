@@ -701,11 +701,10 @@ func (handler *Handler) isOwner(request *http.Request, file *db.FileList) bool {
 	if file.FileOwner != nil {
 		return signedInFileOwner(request, file)
 	}
-	cookie, err := request.Cookie(ownerCookieName(file.FileID))
-	if err != nil {
-		return false
+	if cookie, err := request.Cookie(ownerCookieName(file.FileID)); err == nil && ownerTokenMatches(file, cookie.Value) {
+		return true
 	}
-	return ownerTokenMatches(file, cookie.Value)
+	return guestOwnerKeyOwns(request, file)
 }
 
 func identityUser(request *http.Request) *db.User {
