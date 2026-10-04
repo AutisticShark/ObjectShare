@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/AutisticShark/ObjectShare/config"
@@ -22,6 +23,18 @@ type billingGateway interface {
 type billingTopUpInput struct {
 	TopUpID, UserID, Email, Currency, SuccessURL, CancelURL, Description string
 	Credits, AmountMinor                                                 int64
+	// Attempt numbers replacement checkouts for one payment after an earlier
+	// provider checkout expired unpaid.
+	Attempt int
+}
+
+// checkoutIdempotencyKey lets a lost response be retried safely while giving a
+// replacement checkout for the same payment its own provider request.
+func checkoutIdempotencyKey(input billingTopUpInput) string {
+	if input.Attempt == 0 {
+		return input.TopUpID
+	}
+	return input.TopUpID + "-" + strconv.Itoa(input.Attempt)
 }
 
 type billingTopUpResult struct {

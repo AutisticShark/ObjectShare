@@ -135,7 +135,7 @@ func (client *paypalClient) TopUp(ctx context.Context, input billingTopUpInput) 
 			Rel  string `json:"rel"`
 		} `json:"links"`
 	}
-	if err := client.requestJSON(ctx, http.MethodPost, "/v2/checkout/orders", body, &response, map[string]string{"PayPal-Request-Id": input.TopUpID}); err != nil {
+	if err := client.requestJSON(ctx, http.MethodPost, "/v2/checkout/orders", body, &response, map[string]string{"PayPal-Request-Id": checkoutIdempotencyKey(input)}); err != nil {
 		return billingTopUpResult{}, err
 	}
 	if response.ID == "" {

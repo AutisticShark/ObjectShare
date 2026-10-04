@@ -779,8 +779,12 @@ An unpaid plan invoice can be paid in full from account credit or through any
 enabled payment gateway. Its gateway amount uses the existing conversion of
 one credit to one currency unit. A credit top-up also creates an invoice before
 checkout. Once gateway checkout starts, the invoice stays bound to that gateway
-and other overlapping plan payments are blocked. Reopening the invoice reuses
-the saved checkout URL. If the first gateway response is lost, creating the same
+and other overlapping plan payments are blocked while that provider checkout can
+still be paid. Reopening the invoice reuses the saved checkout URL until the
+checkout expires. PayPal allows an order to be captured for only three hours, so
+after three hours an unpaid PayPal checkout stops blocking other plan purchases,
+and paying the invoice again within its payment window creates a new PayPal
+order. If the first gateway response is lost, creating the same
 checkout may be retried only within five minutes, within both providers'
 idempotency windows. The payment window does not invalidate a genuine delayed
 receipt. Canceled, failed, or ambiguous gateway attempts must be reconciled by an

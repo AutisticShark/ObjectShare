@@ -238,6 +238,14 @@ type CreditTopUp struct {
 	CreatedAt            time.Time  `gorm:"column:created_at;not null"`
 	UpdatedAt            time.Time  `gorm:"column:updated_at;not null"`
 	User                 User       `gorm:"foreignKey:UserID;references:ID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE"`
+
+	// The provider checkout bound to this payment can stop being payable before
+	// ExpiresAt (a PayPal order lasts three hours). A replacement checkout
+	// increments CheckoutAttempt so it gets its own idempotency key. NULL times
+	// (rows written before these columns existed) fall back to CreatedAt.
+	CheckoutAttempt   int        `gorm:"column:checkout_attempt;not null;default:0"`
+	CheckoutStartedAt *time.Time `gorm:"column:checkout_started_at"`
+	CheckoutExpiresAt *time.Time `gorm:"column:checkout_expires_at"`
 }
 
 func (CreditTopUp) TableName() string { return "credit_topups" }

@@ -130,13 +130,22 @@ func checkInvoicePlan(tx *gorm.DB, invoice *Invoice, now time.Time) error {
 	// A gateway checkout only blocks other plan purchases while its payment
 	// window is open. Otherwise an abandoned checkout, or a provider failure
 	// after the gateway was reserved, would pin the account forever because no
-	// job moves stale pending invoices out of that state.
-	var count int64
-	if err := tx.Model(&Invoice{}).Where("user_id = ? AND id <> ? AND kind = 'plan' AND status = 'pending' AND gateway <> '' AND expires_at > ?", invoice.UserID, invoice.ID, now).Count(&count).Error; err != nil {
+	// job moves stale pending invoices out of that state. The provider checkout
+	// can expire before the invoice (a PayPal order lasts three hours); after
+	// that it can no longer be paid and stops blocking too.
+	var pending []Invoice
+	if err := tx.Where("user_id = ? AND id <> ? AND kind = 'plan' AND status = 'pending' AND gateway <> '' AND expires_at > ?", invoice.UserID, invoice.ID, now).Find(&pending).Error; err != nil {
 		return err
 	}
-	if count > 0 {
-		return ErrConflict
+	for _, other := range pending {
+		var payment CreditTopUp
+		err := tx.Where("id = ?", other.ID).First(&payment).Error
+		if errors.Is(err, gorm.ErrRecordNotFound) || (err == nil && payment.CheckoutDeadline().After(now)) {
+			return ErrConflict
+		}
+		if err != nil {
+			return err
+		}
 	}
 	var checkout BillingCheckout
 	if err := tx.Where("user_id = ?", invoice.UserID).First(&checkout).Error; err == nil && checkout.ExpiresAt.After(now) {
@@ -224,6 +233,48 @@ func (repo *GormRepository) PayInvoiceCredit(ctx context.Context, userID, id str
 	})
 }
 
+// billingBackfillSQL fills columns added after rows were written. Each
+// statement is idempotent and runs during every startup migration.
+var billingBackfillSQL = []string{
+	// Pending payments started before checkout deadlines were stored; matches
+	// CreditTopUp.CheckoutDeadline's fallback.
+	`UPDATE credit_topups SET checkout_started_at = created_at, checkout_expires_at = CASE
+		WHEN gateway = 'paypal' THEN LEAST(expires_at, created_at + INTERVAL '3 hours') ELSE expires_at END
+		WHERE status = 'pending' AND checkout_expires_at IS NULL`,
+}
+
+// PayPalCheckoutLifetime is how long a PayPal order can be paid: PayPal allows
+// three hours after creating an order to capture it.
+const PayPalCheckoutLifetime = 3 * time.Hour
+
+// CheckoutDeadline is when a provider checkout started at the given time stops
+// accepting payment. It never outlives the local payment window.
+func CheckoutDeadline(gateway string, started, windowEnd time.Time) time.Time {
+	if gateway == BillingGatewayPayPal && started.Add(PayPalCheckoutLifetime).Before(windowEnd) {
+		return started.Add(PayPalCheckoutLifetime)
+	}
+	return windowEnd
+}
+
+func (topUp *CreditTopUp) checkoutStart() time.Time {
+	if topUp.CheckoutStartedAt != nil {
+		return *topUp.CheckoutStartedAt
+	}
+	return topUp.CreatedAt
+}
+
+// CheckoutDeadline is when the provider checkout currently bound to this
+// payment stops accepting payment.
+func (topUp *CreditTopUp) CheckoutDeadline() time.Time {
+	if topUp.CheckoutExpiresAt != nil {
+		return *topUp.CheckoutExpiresAt
+	}
+	if topUp.CreatedAt.IsZero() {
+		return topUp.ExpiresAt
+	}
+	return CheckoutDeadline(topUp.Gateway, topUp.checkoutStart(), topUp.ExpiresAt)
+}
+
 func (repo *GormRepository) ReserveInvoiceGateway(ctx context.Context, userID, id, gateway string, now time.Time) (*CreditTopUp, error) {
 	var payment CreditTopUp
 	err := repo.connection.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
@@ -249,10 +300,28 @@ func (repo *GormRepository) ReserveInvoiceGateway(ctx context.Context, userID, i
 			if err := tx.Where("id = ?", invoice.ID).First(&payment).Error; err != nil {
 				return err
 			}
-			if payment.CheckoutURL == "" && now.Sub(payment.CreatedAt) > 5*time.Minute {
+			if payment.CheckoutDeadline().After(now) {
+				if payment.CheckoutURL == "" && now.Sub(payment.checkoutStart()) > 5*time.Minute {
+					return ErrConflict
+				}
+				return nil
+			}
+			// The provider checkout expired unpaid, so its saved URL is dead.
+			// Start a replacement under a new idempotency key, after checking
+			// that the purchase is still allowed.
+			if payment.Status != CreditTopUpPending {
 				return ErrConflict
 			}
-			return nil
+			if invoice.Kind == "plan" {
+				if err := checkInvoicePlan(tx, &invoice, now); err != nil {
+					return err
+				}
+			}
+			deadline := CheckoutDeadline(gateway, now, invoice.ExpiresAt)
+			payment.CheckoutAttempt++
+			payment.CheckoutURL, payment.GatewayReference, payment.CheckoutStartedAt, payment.CheckoutExpiresAt = "", nil, &now, &deadline
+			return tx.Model(&payment).Updates(map[string]any{"checkout_attempt": payment.CheckoutAttempt, "checkout_url": "", "gateway_reference": nil,
+				"checkout_started_at": now, "checkout_expires_at": deadline}).Error
 		}
 		if !invoice.ExpiresAt.After(now) {
 			return ErrConflict
@@ -262,7 +331,9 @@ func (repo *GormRepository) ReserveInvoiceGateway(ctx context.Context, userID, i
 				return err
 			}
 		}
-		payment = CreditTopUp{ID: invoice.ID, UserID: userID, Gateway: gateway, Credits: invoice.Credits, AmountMinor: invoice.AmountMinor, Currency: invoice.Currency, Status: CreditTopUpPending, ExpiresAt: invoice.ExpiresAt, CreatedAt: now}
+		deadline := CheckoutDeadline(gateway, now, invoice.ExpiresAt)
+		payment = CreditTopUp{ID: invoice.ID, UserID: userID, Gateway: gateway, Credits: invoice.Credits, AmountMinor: invoice.AmountMinor, Currency: invoice.Currency, Status: CreditTopUpPending, ExpiresAt: invoice.ExpiresAt, CreatedAt: now,
+			CheckoutStartedAt: &now, CheckoutExpiresAt: &deadline}
 		if err := tx.Create(&payment).Error; err != nil {
 			return err
 		}

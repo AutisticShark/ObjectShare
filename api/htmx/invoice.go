@@ -258,7 +258,7 @@ func (handler *Handler) PayInvoice(writer http.ResponseWriter, request *http.Req
 	if gatewayKey == db.BillingGatewayPayPal {
 		success = base + "/billing/paypal/topup/return?topup=" + url.QueryEscape(payment.ID)
 	}
-	result, err := gateway.TopUp(request.Context(), billingTopUpInput{TopUpID: payment.ID, UserID: invoice.UserID, Email: invoice.Email, Currency: invoice.Currency, Credits: invoice.Credits, AmountMinor: invoice.AmountMinor, Description: "Invoice " + invoice.ID + ": " + invoice.Name, SuccessURL: success, CancelURL: base + "/invoices/" + invoice.ID})
+	result, err := gateway.TopUp(request.Context(), billingTopUpInput{TopUpID: payment.ID, UserID: invoice.UserID, Email: invoice.Email, Currency: invoice.Currency, Credits: invoice.Credits, AmountMinor: invoice.AmountMinor, Description: "Invoice " + invoice.ID + ": " + invoice.Name, Attempt: payment.CheckoutAttempt, SuccessURL: success, CancelURL: base + "/invoices/" + invoice.ID})
 	if err != nil {
 		handler.logger.Error("create invoice payment", "error", err)
 		handler.billingProblem(writer, request, http.StatusInternalServerError, "The payment provider did not confirm checkout. A payment may still be in progress. Return to your invoice and check its status before trying again; contact the site administrator if it remains unresolved.")

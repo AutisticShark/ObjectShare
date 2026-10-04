@@ -111,7 +111,7 @@ func (client *stripeClient) TopUp(ctx context.Context, input billingTopUpInput) 
 		"metadata[purpose]": {"credit_topup"}, "metadata[topup_id]": {input.TopUpID},
 		"payment_intent_data[metadata][purpose]": {"credit_topup"}, "payment_intent_data[metadata][topup_id]": {input.TopUpID},
 	}
-	location, err := client.postForm(ctx, "/checkout/sessions", values, "objectshare-topup-"+input.TopUpID)
+	location, err := client.postForm(ctx, "/checkout/sessions", values, "objectshare-topup-"+checkoutIdempotencyKey(input))
 	return billingTopUpResult{Location: location}, err
 }
 

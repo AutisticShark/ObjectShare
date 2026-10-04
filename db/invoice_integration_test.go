@@ -282,6 +282,64 @@ func TestPostgresExpiredGatewayInvoiceDoesNotBlockLaterPlanPurchases(t *testing.
 	}
 }
 
+// A PayPal order can only be paid for three hours, far less than the invoice
+// window. Its dead approval URL must not keep blocking other plan purchases,
+// and paying the invoice again must create a new order.
+func TestPostgresExpiredPayPalCheckoutStopsBlockingAndIsReplaced(t *testing.T) {
+	repo := creditTestRepository(t)
+	user := creditTestUser(t, repo, 50)
+	plan := invoiceTestPlan(t, repo)
+	now := time.Now().UTC()
+	abandoned, err := repo.CreatePlanInvoice(t.Context(), user.ID, plan.ID, uuid.NewString(), "USD", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	payment, err := repo.ReserveInvoiceGateway(t.Context(), user.ID, abandoned.ID, BillingGatewayPayPal, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !payment.CheckoutDeadline().Equal(now.Add(PayPalCheckoutLifetime)) || payment.CheckoutAttempt != 0 {
+		t.Fatalf("PayPal checkout deadline = %v, attempt %d", payment.CheckoutDeadline(), payment.CheckoutAttempt)
+	}
+	const firstURL = "https://www.sandbox.paypal.com/checkoutnow?token=ORDER-1"
+	if err = repo.BindInvoiceCheckout(t.Context(), user.ID, abandoned.ID, BillingGatewayPayPal, "ORDER-1", firstURL); err != nil {
+		t.Fatal(err)
+	}
+	open := now.Add(2 * time.Hour)
+	reopened, err := repo.ReserveInvoiceGateway(t.Context(), user.ID, abandoned.ID, BillingGatewayPayPal, open)
+	if err != nil || reopened.CheckoutURL != firstURL {
+		t.Fatalf("open PayPal order was not reused: %#v %v", reopened, err)
+	}
+	blocked, err := repo.CreatePlanInvoice(t.Context(), user.ID, plan.ID, uuid.NewString(), "USD", open)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = repo.PayInvoiceCredit(t.Context(), user.ID, blocked.ID, open); !errors.Is(err, ErrConflict) {
+		t.Fatalf("an open PayPal order must block another plan purchase: %v", err)
+	}
+
+	later := now.Add(PayPalCheckoutLifetime + time.Minute)
+	next, err := repo.CreatePlanInvoice(t.Context(), user.ID, plan.ID, uuid.NewString(), "USD", later)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = repo.PayInvoiceCredit(t.Context(), user.ID, next.ID, later); err != nil {
+		t.Fatalf("an expired PayPal order still blocks plan purchases: %v", err)
+	}
+	replacement, err := repo.ReserveInvoiceGateway(t.Context(), user.ID, abandoned.ID, BillingGatewayPayPal, later)
+	if err != nil || replacement.CheckoutURL != "" || replacement.GatewayReference != nil || replacement.CheckoutAttempt != 1 || !replacement.CheckoutDeadline().Equal(later.Add(PayPalCheckoutLifetime)) {
+		t.Fatalf("expired PayPal order was not replaced: %#v %v", replacement, err)
+	}
+	const secondURL = "https://www.sandbox.paypal.com/checkoutnow?token=ORDER-2"
+	if err = repo.BindInvoiceCheckout(t.Context(), user.ID, abandoned.ID, BillingGatewayPayPal, "ORDER-2", secondURL); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err = repo.ReserveInvoiceGateway(t.Context(), user.ID, abandoned.ID, BillingGatewayPayPal, later.Add(time.Minute))
+	if err != nil || reopened.CheckoutURL != secondURL || reopened.CheckoutAttempt != 1 {
+		t.Fatalf("replacement order was not reused: %#v %v", reopened, err)
+	}
+}
+
 func TestPostgresInvoiceEmailRetriesBackOffAndStopAtTheCap(t *testing.T) {
 	repo := creditTestRepository(t)
 	user := creditTestUser(t, repo, 0)

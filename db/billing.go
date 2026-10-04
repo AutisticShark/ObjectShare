@@ -63,6 +63,11 @@ func (repo *GormRepository) CreateCreditTopUp(ctx context.Context, topUp *Credit
 	}
 	topUp.Currency = strings.ToUpper(topUp.Currency)
 	topUp.Status = CreditTopUpPending
+	if topUp.CreatedAt.IsZero() {
+		topUp.CreatedAt = time.Now().UTC()
+	}
+	started, deadline := topUp.CreatedAt, CheckoutDeadline(topUp.Gateway, topUp.CreatedAt, topUp.ExpiresAt)
+	topUp.CheckoutStartedAt, topUp.CheckoutExpiresAt = &started, &deadline
 	return repo.connection.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if _, err := lockInvoiceUser(tx, topUp.UserID); err != nil {
 			return err

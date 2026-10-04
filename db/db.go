@@ -291,6 +291,13 @@ func openPostgres(ctx context.Context, cfg *config.DatabaseConfig, pgxConfig *pg
 		_ = sqlDB.Close()
 		return nil, fmt.Errorf("backfill email verification history: %w", err)
 	}
+	for _, statement := range billingBackfillSQL {
+		if err := migration.Exec(statement).Error; err != nil {
+			_ = migration.Rollback().Error
+			_ = sqlDB.Close()
+			return nil, fmt.Errorf("backfill billing columns: %w", err)
+		}
+	}
 	if err := migration.Exec(dropLegacySessionsSQL).Error; err != nil {
 		_ = migration.Rollback().Error
 		_ = sqlDB.Close()

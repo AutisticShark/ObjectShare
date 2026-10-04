@@ -37,6 +37,11 @@ func TestPostgresMigrationCreditTopUpSchemaChanges(t *testing.T) {
 	if err := repo.CreateCreditTopUp(t.Context(), &topUp); err != nil {
 		t.Fatal(err)
 	}
+	paypalStarted := time.Now().UTC().Truncate(time.Second)
+	paypalTopUp := CreditTopUp{UserID: user.ID, Gateway: BillingGatewayPayPal, Credits: 5, AmountMinor: 500, Currency: "USD", ExpiresAt: paypalStarted.Add(24 * time.Hour), CreatedAt: paypalStarted}
+	if err := repo.CreateCreditTopUp(t.Context(), &paypalTopUp); err != nil {
+		t.Fatal(err)
+	}
 	if err := repo.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -49,6 +54,7 @@ func TestPostgresMigrationCreditTopUpSchemaChanges(t *testing.T) {
 	for _, statement := range []string{
 		"ALTER TABLE credit_topups DROP COLUMN checkout_url",
 		"ALTER TABLE credit_topups ALTER COLUMN amount_minor TYPE integer",
+		"ALTER TABLE credit_topups DROP COLUMN checkout_attempt, DROP COLUMN checkout_started_at, DROP COLUMN checkout_expires_at",
 	} {
 		if _, err := pool.ExecContext(t.Context(), statement); err != nil {
 			t.Fatal(err)
@@ -64,6 +70,14 @@ func TestPostgresMigrationCreditTopUpSchemaChanges(t *testing.T) {
 		}
 		if got.UserID != user.ID || got.Credits != 25 || got.AmountMinor != 2500 || got.Currency != "USD" || got.CheckoutURL != "" || got.Status != CreditTopUpPending || !got.ExpiresAt.Equal(expires) {
 			t.Fatalf("migration changed existing top-up: %+v", got)
+		}
+		// Pending payments gain the checkout deadline their provider enforces.
+		var paypal CreditTopUp
+		if err := repo.connection.First(&paypal, "id = ?", paypalTopUp.ID).Error; err != nil {
+			t.Fatal(err)
+		}
+		if paypal.CheckoutStartedAt == nil || !paypal.CheckoutStartedAt.Equal(paypalStarted) || paypal.CheckoutExpiresAt == nil || !paypal.CheckoutExpiresAt.Equal(paypalStarted.Add(PayPalCheckoutLifetime)) {
+			t.Fatalf("PayPal checkout deadline was not backfilled: %+v", paypal)
 		}
 		assertCreditState(t, repo, user.ID, 37, 0)
 		if err := repo.Close(); err != nil {

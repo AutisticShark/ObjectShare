@@ -294,3 +294,31 @@ func TestPayPalSignatureVerificationSendsWebhookEventAsJSON(t *testing.T) {
 		t.Fatalf("stale transmission verified=%v err=%v", verified, err)
 	}
 }
+
+func TestPayPalReplacementOrderUsesNewRequestID(t *testing.T) {
+	const topUpID = "33333333-3333-4333-8333-333333333333"
+	var requestIDs []string
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/v1/oauth2/token":
+			_, _ = io.WriteString(writer, `{"access_token":"token","expires_in":3600}`)
+		case "/v2/checkout/orders":
+			requestIDs = append(requestIDs, request.Header.Get("PayPal-Request-Id"))
+			_, _ = io.WriteString(writer, `{"id":"ORDER-1","links":[{"rel":"payer-action","href":"https://www.sandbox.paypal.com/checkoutnow?token=ORDER-1"}]}`)
+		default:
+			http.NotFound(writer, request)
+		}
+	}))
+	defer server.Close()
+	client := &paypalClient{settings: config.PayPalBillingConfig{Environment: "sandbox", ClientID: "client", ClientSecret: "secret"}, apiBase: server.URL, webBase: "https://www.sandbox.paypal.com", client: server.Client()}
+	for attempt := range 2 {
+		if _, err := client.TopUp(t.Context(), billingTopUpInput{TopUpID: topUpID, Credits: 25, AmountMinor: 2500, Currency: "USD", Attempt: attempt}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// A retry of the original order keeps its key; a replacement for an expired
+	// order must not be answered with the dead original.
+	if len(requestIDs) != 2 || requestIDs[0] != topUpID || requestIDs[1] != topUpID+"-1" {
+		t.Fatalf("PayPal-Request-Id values = %q", requestIDs)
+	}
+}
