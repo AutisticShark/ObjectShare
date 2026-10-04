@@ -72,3 +72,26 @@ func TestEnvironmentAddressBeatsLegacyFilePort(t *testing.T) {
 		t.Fatalf("OBJECTSHARE_PORT keeps its precedence: address %q, err %v", cfg.Address, err)
 	}
 }
+
+// The image's storage path is a fallback: a mounted config.json storage_path
+// must reach the first imported revision instead of the image's volume path.
+func TestImageStoragePathDefaultDoesNotOverrideConfigJSON(t *testing.T) {
+	t.Setenv("OBJECTSHARE_DEFAULT_STORAGE_PATH", "/var/lib/objectshare/objects") // Dockerfile ENV
+	for _, test := range []struct{ document, environment, want string }{
+		{`{"storage_path": "/data/objects", "auth": {"jwt_secret": "` + testJWTSecret + `"}}`, "", "/data/objects"},
+		{`{"auth": {"jwt_secret": "` + testJWTSecret + `"}}`, "", "/var/lib/objectshare/objects"},
+		{`{"storage_path": "/data/objects", "auth": {"jwt_secret": "` + testJWTSecret + `"}}`, "/explicit/objects", "/explicit/objects"},
+	} {
+		t.Setenv("OBJECTSHARE_STORAGE_PATH", test.environment) // empty, as Compose forwards it, means unset
+		cfg, err := LoadBootstrap(writeBootstrapConfig(t, test.document))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := cfg.Validate(); err != nil {
+			t.Fatal(err)
+		}
+		if seeded := RuntimeFromService(cfg).StoragePath; seeded != test.want {
+			t.Fatalf("seeded storage_path = %q, want %q (config %s, OBJECTSHARE_STORAGE_PATH=%q)", seeded, test.want, test.document, test.environment)
+		}
+	}
+}

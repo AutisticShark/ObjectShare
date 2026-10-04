@@ -74,6 +74,12 @@ func LoadBootstrap(path string) (*ServiceConfig, error) {
 
 func readUnvalidated(path string) (*ServiceConfig, error) {
 	cfg := defaults()
+	// The container image names its volume path here. Unlike an
+	// OBJECTSHARE_STORAGE_PATH override, it is only a default: a storage_path
+	// in config.json or an explicit OBJECTSHARE_STORAGE_PATH still wins.
+	if value := os.Getenv("OBJECTSHARE_DEFAULT_STORAGE_PATH"); value != "" {
+		cfg.StoragePath = value
+	}
 
 	if path != "" {
 		if err := readJSON(path, cfg); err != nil {
@@ -213,7 +219,7 @@ func applyEnvironment(cfg *ServiceConfig) error {
 	}
 	problems = append(problems, applyEmailEnvironment(cfg.Email))
 	applyBrandingEnvironment(&cfg.Branding)
-	if value, ok := os.LookupEnv("OBJECTSHARE_ADDRESS"); ok && value != "" {
+	if value, ok := lookupEnv("OBJECTSHARE_ADDRESS"); ok {
 		// An explicit listen address beats a legacy "port" from config.json,
 		// which would otherwise widen a loopback bind to every interface.
 		// OBJECTSHARE_PORT, when also set, still takes precedence as before.
@@ -308,7 +314,7 @@ func applyEnvironment(cfg *ServiceConfig) error {
 	problems = append(problems, setInt("OBJECTSHARE_RATE_LIMIT_SIGNUP", &cfg.RateLimit.SignupLimit))
 	problems = append(problems, setInt("OBJECTSHARE_RATE_LIMIT_UPLOAD", &cfg.RateLimit.UploadLimit))
 	problems = append(problems, setInt("OBJECTSHARE_RATE_LIMIT_DOWNLOAD", &cfg.RateLimit.DownloadLimit))
-	if value, ok := os.LookupEnv("OBJECTSHARE_TRUSTED_PROXY_CIDRS"); ok {
+	if value, ok := lookupEnv("OBJECTSHARE_TRUSTED_PROXY_CIDRS"); ok {
 		cfg.RateLimit.TrustedProxyCIDRs = splitCSV(value)
 	}
 	setString("OBJECTSHARE_STORAGE_SERVICE", &cfg.StorageService)
@@ -849,31 +855,27 @@ func decodeKey(value string) ([]byte, error) {
 	return hex.DecodeString(value)
 }
 
-// setString applies a string environment override. An empty value normally
-// overrides (OBJECTSHARE_REDIS_URL="" deliberately disables Redis), but for
-// credentials it means "not provided": Compose forwards every documented
-// variable, empty by default, and an empty OBJECTSHARE_SETTINGS_KEY or password
-// must not erase the value from config.json.
+// lookupEnv reports an environment override. A set but empty variable means
+// "not provided": Compose forwards every documented variable, empty unless the
+// operator set it, and that must not erase a value from config.json or replace
+// a built-in default. OBJECTSHARE_REDIS_URL is the one exception, because an
+// explicit empty URL deliberately disables Redis.
+func lookupEnv(name string) (string, bool) {
+	value, ok := os.LookupEnv(name)
+	if !ok || (value == "" && name != "OBJECTSHARE_REDIS_URL") {
+		return "", false
+	}
+	return value, true
+}
+
 func setString(name string, target *string) {
-	if value, ok := os.LookupEnv(name); ok && (value != "" || !isCredentialVariable(name)) {
+	if value, ok := lookupEnv(name); ok {
 		*target = value
 	}
 }
 
-func isCredentialVariable(name string) bool {
-	if strings.HasSuffix(name, "_KEY_PREFIX") {
-		return false
-	}
-	for _, marker := range []string{"SECRET", "PASSWORD", "TOKEN", "_KEY"} {
-		if strings.Contains(name, marker) {
-			return true
-		}
-	}
-	return false
-}
-
 func setInt(name string, target *int) error {
-	if value, ok := os.LookupEnv(name); ok {
+	if value, ok := lookupEnv(name); ok {
 		parsed, err := strconv.Atoi(value)
 		if err != nil {
 			return fmt.Errorf("%s must be an integer: %w", name, err)
@@ -884,7 +886,7 @@ func setInt(name string, target *int) error {
 }
 
 func setInt64(name string, target *int64) error {
-	if value, ok := os.LookupEnv(name); ok {
+	if value, ok := lookupEnv(name); ok {
 		parsed, err := strconv.ParseInt(value, 10, 64)
 		if err != nil {
 			return fmt.Errorf("%s must be an integer: %w", name, err)
@@ -895,7 +897,7 @@ func setInt64(name string, target *int64) error {
 }
 
 func setBool(name string, target *bool) error {
-	if value, ok := os.LookupEnv(name); ok {
+	if value, ok := lookupEnv(name); ok {
 		parsed, err := strconv.ParseBool(value)
 		if err != nil {
 			return fmt.Errorf("%s must be a boolean: %w", name, err)
@@ -906,7 +908,7 @@ func setBool(name string, target *bool) error {
 }
 
 func setDuration(name string, target *Duration) error {
-	if value, ok := os.LookupEnv(name); ok {
+	if value, ok := lookupEnv(name); ok {
 		parsed, err := time.ParseDuration(value)
 		if err != nil {
 			return fmt.Errorf("%s must be a duration: %w", name, err)

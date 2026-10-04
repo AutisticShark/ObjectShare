@@ -683,38 +683,44 @@ func TestGuestPendingUploadCapDefaultsEnvironmentAndValidation(t *testing.T) {
 	}
 }
 
-func TestEmptyCredentialEnvironmentVariablesDoNotEraseConfiguredValues(t *testing.T) {
-	for _, name := range []string{"OBJECTSHARE_SETTINGS_KEY", "OBJECTSHARE_JWT_SECRET", "OBJECTSHARE_DB_PASSWORD", "OBJECTSHARE_STRIPE_SECRET_KEY",
-		"OBJECTSHARE_R2_SECRET_ACCESS_KEY", "OBJECTSHARE_EMAIL_SMTP_PASSWORD", "OBJECTSHARE_S3_SESSION_TOKEN", "OBJECTSHARE_ENCRYPTION_KEY"} {
-		if !isCredentialVariable(name) {
-			t.Errorf("%s is not treated as a credential", name)
-		}
+func TestEmptyEnvironmentVariablesDoNotEraseConfiguredValues(t *testing.T) {
+	// Compose forwards every documented variable, empty unless the operator
+	// set it. Empty values must leave config.json values and built-in defaults
+	// alone, whatever their type.
+	for name, value := range map[string]string{
+		"OBJECTSHARE_SETTINGS_KEY": "", "OBJECTSHARE_DB_PASSWORD": "", "OBJECTSHARE_REDIS_URL": "",
+		"OBJECTSHARE_STORAGE_SERVICE": "", "OBJECTSHARE_STORAGE_PATH": "", "OBJECTSHARE_REDIS_KEY_PREFIX": "",
+		"OBJECTSHARE_EMAIL_FROM_NAME": "", "OBJECTSHARE_MAX_FILE_SIZE_MB": "", "OBJECTSHARE_GUEST_UPLOAD_ENABLED": "",
+		"OBJECTSHARE_JWT_LIFETIME": "", "OBJECTSHARE_TRUSTED_PROXY_CIDRS": "", "OBJECTSHARE_ADDRESS": "",
+	} {
+		t.Setenv(name, value)
 	}
-	for _, name := range []string{"OBJECTSHARE_REDIS_URL", "OBJECTSHARE_REDIS_KEY_PREFIX", "OBJECTSHARE_STORAGE_PATH", "OBJECTSHARE_EMAIL_FROM_NAME"} {
-		if isCredentialVariable(name) {
-			t.Errorf("%s must keep its explicit-empty override", name)
-		}
-	}
-
-	t.Setenv("OBJECTSHARE_SETTINGS_KEY", "")
-	t.Setenv("OBJECTSHARE_DB_PASSWORD", "")
-	t.Setenv("OBJECTSHARE_REDIS_URL", "")
 	cfg := testDefaults()
 	cfg.SettingsKey = "configured-settings-key-with-at-least-32-bytes"
 	cfg.Db.Password = "configured-database-password"
 	cfg.Redis.URL = "redis://redis:6379/0"
+	cfg.StorageService, cfg.StoragePath, cfg.Redis.KeyPrefix = "s3", "/data/objects", "configured:"
+	cfg.Email = &EmailConfig{FromName: "Configured"}
+	cfg.MaxFileSize, cfg.Upload.GuestEnabled = 500, false
+	cfg.Auth.TokenLifetime, cfg.RateLimit.TrustedProxyCIDRs, cfg.Address = Duration(time.Hour), []string{"10.0.0.0/8"}, "127.0.0.1:9000"
 	if err := applyEnvironment(cfg); err != nil {
-		t.Fatal(err)
+		t.Fatalf("empty variables must be ignored, not rejected: %v", err)
 	}
 	if cfg.SettingsKey != "configured-settings-key-with-at-least-32-bytes" || cfg.Db.Password != "configured-database-password" {
 		t.Fatalf("empty credential variables erased configured values: %q %q", cfg.SettingsKey, cfg.Db.Password)
+	}
+	if cfg.StorageService != "s3" || cfg.StoragePath != "/data/objects" || cfg.Redis.KeyPrefix != "configured:" || cfg.Email.FromName != "Configured" ||
+		cfg.MaxFileSize != 500 || cfg.Upload.GuestEnabled || cfg.Auth.TokenLifetime != Duration(time.Hour) ||
+		len(cfg.RateLimit.TrustedProxyCIDRs) != 1 || cfg.Address != "127.0.0.1:9000" {
+		t.Fatalf("empty variables replaced configured values: %+v", cfg)
 	}
 	if cfg.Redis.URL != "" {
 		t.Fatalf("an explicit empty OBJECTSHARE_REDIS_URL must still disable Redis, got %q", cfg.Redis.URL)
 	}
 	t.Setenv("OBJECTSHARE_SETTINGS_KEY", "environment-settings-key-with-at-least-32-bytes")
-	if err := applyEnvironment(cfg); err != nil || cfg.SettingsKey != "environment-settings-key-with-at-least-32-bytes" {
-		t.Fatalf("a non-empty credential variable must still override: %q %v", cfg.SettingsKey, err)
+	t.Setenv("OBJECTSHARE_STORAGE_PATH", "/environment/objects")
+	if err := applyEnvironment(cfg); err != nil || cfg.SettingsKey != "environment-settings-key-with-at-least-32-bytes" || cfg.StoragePath != "/environment/objects" {
+		t.Fatalf("a non-empty variable must still override: %q %q %v", cfg.SettingsKey, cfg.StoragePath, err)
 	}
 }
 

@@ -32,5 +32,7 @@ EXPOSE 8080
 HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 CMD ["/object-share", "-healthcheck"]
 # The image runs as a non-root user and the process default (data/objects) is
 # relative to an unwritable working directory, so default to the volume path.
-ENV OBJECTSHARE_STORAGE_PATH=/var/lib/objectshare/objects
+# This is only a default: storage_path in a mounted config.json or an explicit
+# OBJECTSHARE_STORAGE_PATH still takes precedence at the first import.
+ENV OBJECTSHARE_DEFAULT_STORAGE_PATH=/var/lib/objectshare/objects
 ENTRYPOINT ["/object-share"]
