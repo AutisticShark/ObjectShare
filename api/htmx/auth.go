@@ -131,10 +131,13 @@ func (handler *Handler) Authenticate(next http.Handler) http.Handler {
 	})
 }
 
+// authenticationToken returns the presented JWT and its transport. Only the
+// Bearer scheme selects bearer transport; any other Authorization scheme (such
+// as Basic credentials added by a reverse proxy) falls back to the JWT cookie.
+// A Bearer header without exactly one token returns an empty bearer token.
 func (handler *Handler) authenticationToken(request *http.Request) (string, string) {
-	if authorization := strings.TrimSpace(request.Header.Get("Authorization")); authorization != "" {
-		parts := strings.Fields(authorization)
-		if len(parts) == 2 && strings.EqualFold(parts[0], "Bearer") {
+	if parts := strings.Fields(request.Header.Get("Authorization")); len(parts) > 0 && strings.EqualFold(parts[0], "Bearer") {
+		if len(parts) == 2 {
 			return parts[1], transportBearer
 		}
 		return "", transportBearer

@@ -943,7 +943,7 @@ curl -i -X POST http://localhost:8080/api/v1/auth/logout \
   -H 'Authorization: Bearer <access_token>'
 ```
 
-Logout stores only a SHA-256 hash of the JWT ID until that token expires. Requests also reload the account and reject revoked JWTs, disabled/deleted users, stale token versions, or role mismatches. Bearer tokens take precedence over cookies and are never returned in a cookie by the API login endpoint.
+Logout stores only a SHA-256 hash of the JWT ID until that token expires. Requests also reload the account and reject revoked JWTs, disabled/deleted users, stale token versions, or role mismatches. Bearer tokens take precedence over cookies and are never returned in a cookie by the API login endpoint. Only the `Bearer` scheme selects bearer authentication; any other `Authorization` header, such as HTTP Basic credentials forwarded by an `auth_basic` reverse proxy, is ignored and the browser JWT cookie still applies.
 
 To bootstrap the initial administrator from the CLI instead of the web page, provide the password through a mounted/readable file so it does not appear in shell history or the process list:
 
