@@ -76,33 +76,37 @@ func (handler *Handler) Authenticate(next http.Handler) http.Handler {
 			return
 		}
 		rawToken, transport := handler.authenticationToken(request)
-		if rawToken == "" {
+		// An invalid cookie is cleared and the request continues anonymously,
+		// but a client that explicitly presented a bearer token must not be
+		// silently downgraded to a guest (for example a guest upload).
+		reject := func() {
+			if transport == transportBearer {
+				writer.Header().Set("Cache-Control", "private, no-store")
+				writer.Header().Set("WWW-Authenticate", `Bearer error="invalid_token"`)
+				http.Error(writer, "Invalid or expired access token.", http.StatusUnauthorized)
+				return
+			}
+			handler.clearJWTCookie(writer)
+			next.ServeHTTP(writer, request)
+		}
+		if rawToken == "" && transport != transportBearer {
 			next.ServeHTTP(writer, request)
 			return
 		}
 		claims, err := handler.jwt.Parse(rawToken)
 		if err != nil {
-			if transport == transportCookie {
-				handler.clearJWTCookie(writer)
-			}
-			next.ServeHTTP(writer, request)
+			reject()
 			return
 		}
 		parsedSubject, err := uuid.Parse(claims.Subject)
 		if err != nil || parsedSubject.String() != strings.ToLower(claims.Subject) {
-			if transport == transportCookie {
-				handler.clearJWTCookie(writer)
-			}
-			next.ServeHTTP(writer, request)
+			reject()
 			return
 		}
 		user, err := handler.users.UserByID(request.Context(), claims.Subject)
 		if err != nil {
 			if errors.Is(err, db.ErrNotFound) {
-				if transport == transportCookie {
-					handler.clearJWTCookie(writer)
-				}
-				next.ServeHTTP(writer, request)
+				reject()
 				return
 			}
 			handler.internalError(writer, request, "load JWT subject", err)
@@ -120,10 +124,7 @@ func (handler *Handler) Authenticate(next http.Handler) http.Handler {
 			return
 		}
 		if revoked || !user.CanAuthenticate() || user.Role != claims.Role || user.TokenVersion != claims.TokenVersion {
-			if transport == transportCookie {
-				handler.clearJWTCookie(writer)
-			}
-			next.ServeHTTP(writer, request)
+			reject()
 			return
 		}
 		ctx := context.WithValue(request.Context(), identityContextKey{}, &identity{User: user, Claims: claims, RawToken: rawToken, Transport: transport})

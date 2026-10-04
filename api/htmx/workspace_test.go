@@ -91,8 +91,11 @@ func TestWorkspaceAuthenticationAuthorizationAndEscaping(t *testing.T) {
 				res := httptest.NewRecorder()
 				h.Authenticate(protected).ServeHTTP(res, req)
 				want := 200
-				if role == "guest" || role == "disabled" {
+				if role == "guest" {
 					want = 303
+				} else if role == "disabled" {
+					// A rejected bearer token is a 401, not a guest redirect.
+					want = 401
 				} else if role == "banned" || (strings.HasPrefix(path, "/admin") && role != "admin") {
 					want = 403
 				}
