@@ -1,11 +1,14 @@
 package htmx
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -435,5 +438,91 @@ func TestMultipartSpoolFailureIsALoggedServerError(t *testing.T) {
 				t.Fatalf("spool failure was not logged or left a reservation: records=%d log=%q", len(repository.files), logs.String())
 			}
 		})
+	}
+}
+
+func multipartBatchRequest(t *testing.T, files ...string) *http.Request {
+	t.Helper()
+	body := new(bytes.Buffer)
+	form := multipart.NewWriter(body)
+	for index, content := range files {
+		part, err := form.CreateFormFile("file", fmt.Sprintf("batch-%d.txt", index))
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, _ = part.Write([]byte(content))
+	}
+	if err := form.Close(); err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/upload", body)
+	request.Header.Set("Content-Type", form.FormDataContentType())
+	return request
+}
+
+// The batch path reports a busy cipher like the single-file path: as a
+// retryable 503, not an internal error.
+func TestProxiedBatchReportsBusyEncryptionAsRetryable(t *testing.T) {
+	repository := &memoryRepository{files: make(map[string]*db.FileList)}
+	cfg := &config.ServiceConfig{MaxFileSize: 1, StorageService: "filesystem",
+		Encryption: &config.EncryptionConfig{Enabled: true, Method: "aes-256-gcm", Key: "QkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkI="}}
+	handler := newTestHandlerConfig(t, cfg, repository, &memoryStorage{objects: make(map[string][]byte)})
+	held := 0
+	for handler.acquireCipherSlot() {
+		held++
+	}
+	defer func() {
+		for range held {
+			handler.releaseCipherSlot()
+		}
+	}()
+	for _, request := range []*http.Request{multipartUploadRequest(t, []byte("one")), multipartBatchRequest(t, "one", "two")} {
+		response := httptest.NewRecorder()
+		handler.Upload(response, request)
+		if response.Code != http.StatusServiceUnavailable || len(repository.files) != 0 {
+			t.Fatalf("busy cipher: status=%d records=%d", response.Code, len(repository.files))
+		}
+	}
+}
+
+// putFailingStorage stores the first object, then fails every later Put and
+// every Delete, like an object store that goes away during a batch.
+type putFailingStorage struct {
+	*memoryStorage
+	puts int
+}
+
+func (storage *putFailingStorage) Put(ctx context.Context, key string, reader io.Reader, size int64, contentType string) error {
+	if storage.puts++; storage.puts > 1 {
+		return errors.New("object store unavailable")
+	}
+	return storage.memoryStorage.Put(ctx, key, reader, size, contentType)
+}
+
+func (*putFailingStorage) Delete(context.Context, string) error {
+	return errors.New("object store unavailable")
+}
+
+// Rolling back a batch must not leave an already completed file usable when
+// its object cannot be deleted; it is claimed for deletion so the background
+// sweep retries it instead.
+func TestBatchRollbackWithdrawsCompletedFilesEvenWhenDeleteFails(t *testing.T) {
+	handler, repo, storage, existing, _ := sharingTestHandler(t)
+	delete(repo.files, existing.FileID)
+	handler.repository = &claimingRepository{authMemoryRepository: repo}
+	handler.storage = &putFailingStorage{memoryStorage: storage}
+	response := httptest.NewRecorder()
+	handler.Upload(response, multipartBatchRequest(t, "first", "second"))
+	if response.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d: %s", response.Code, response.Body.String())
+	}
+	// The completed first file is withdrawn as "deleting" (retention retries it);
+	// the failed second reservation is "aborting" (expiry cleanup retries it).
+	statuses := map[string]int{}
+	for _, file := range repo.files {
+		statuses[file.UploadStatus]++
+	}
+	if len(repo.files) != 2 || statuses["deleting"] != 1 || statuses["aborting"] != 1 {
+		t.Fatalf("records after rollback: %v, want one deleting and one aborting", statuses)
 	}
 }

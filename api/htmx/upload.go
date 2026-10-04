@@ -224,6 +224,10 @@ func (handler *Handler) uploadMultiple(writer http.ResponseWriter, request *http
 				handler.writeUploadError(writer, request, "store upload batch", err)
 			} else if errors.As(err, &quotaError) {
 				http.Error(writer, "This upload batch would exceed your account storage quota.", http.StatusRequestEntityTooLarge)
+			} else if errors.Is(err, errCipherBusy) {
+				http.Error(writer, "Encryption capacity is busy; retry shortly.", http.StatusServiceUnavailable)
+			} else if errors.Is(err, errIncompleteUpload) {
+				http.Error(writer, "Unable to read the complete uploaded file.", http.StatusBadRequest)
 			} else if errors.Is(err, errInvalidUpload) {
 				http.Error(writer, err.Error(), http.StatusBadRequest)
 			} else {
@@ -436,8 +440,15 @@ func (handler *Handler) discardUpload(request *http.Request, fileID string, dele
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(request.Context()), 5*time.Second)
 	defer cancel()
 	if deleteObject {
+		// Take the record out of service before touching storage, so a failed
+		// object delete cannot leave a usable file for an upload the client was
+		// told failed (a batch rollback discards files that already completed).
+		// The claimed record is kept for a background retry: expiry cleanup
+		// retries "aborting" reservations and the retention sweep retries
+		// stale "deleting" files.
+		handler.claimDiscardedUpload(ctx, fileID)
 		if err := handler.storage.Delete(ctx, fileID); err != nil {
-			handler.logger.Warn("discard failed upload object", "file_id", fileID, "error", err)
+			handler.logger.Warn("discard failed upload object; background cleanup will retry", "file_id", fileID, "error", err)
 			return
 		}
 	}
@@ -448,6 +459,18 @@ func (handler *Handler) discardUpload(request *http.Request, fileID string, dele
 
 // emptyUploadMessage explains why a zero-byte file is a bad request, not too large.
 const emptyUploadMessage = "The file is empty. Choose a file that contains data."
+
+// claimDiscardedUpload marks a pending reservation "aborting", or a completed
+// file "deleting" when the repository supports that claim.
+func (handler *Handler) claimDiscardedUpload(ctx context.Context, fileID string) {
+	err := handler.repository.ClaimPendingUploadDeletion(ctx, fileID)
+	if claimer, ok := handler.repository.(db.FileDeletionClaimer); ok && errors.Is(err, db.ErrNotFound) {
+		err = claimer.ClaimFileDeletion(ctx, fileID, time.Now().UTC())
+	}
+	if err != nil && !errors.Is(err, db.ErrNotFound) {
+		handler.logger.Warn("claim discarded upload", "file_id", fileID, "error", err)
+	}
+}
 
 func safeFileName(value string) (string, error) {
 	value = path.Base(strings.ReplaceAll(strings.TrimSpace(value), "\\", "/"))
