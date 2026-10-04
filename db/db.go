@@ -338,6 +338,11 @@ type legacySubscription struct {
 func (legacySubscription) TableName() string { return "subscriptions" }
 
 func postgresConfig(cfg *config.DatabaseConfig) (*pgx.ConnConfig, *time.Location, error) {
+	// Go resolves "Local" to the host's zone, but PostgreSQL has no such zone
+	// name and would refuse every connection at start-up.
+	if strings.EqualFold(cfg.TimeZone, "Local") {
+		return nil, nil, fmt.Errorf("PostgreSQL time zone %q is not supported; use an IANA name such as UTC or Asia/Taipei", cfg.TimeZone)
+	}
 	location, err := time.LoadLocation(cfg.TimeZone)
 	if err != nil {
 		return nil, nil, fmt.Errorf("load PostgreSQL time zone %q: %w", cfg.TimeZone, err)

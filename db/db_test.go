@@ -233,6 +233,21 @@ func TestPostgresConfigRejectsUnknownTimeZone(t *testing.T) {
 	}
 }
 
+// Go accepts "Local" but PostgreSQL rejects it at connect time, so it must
+// fail validation with an actionable message while IANA names keep working.
+func TestPostgresConfigRejectsLocalTimeZone(t *testing.T) {
+	for _, zone := range []string{"Local", "local"} {
+		cfg := &config.DatabaseConfig{Host: "localhost", Port: 5432, User: "objectshare", Database: "objectshare", SSLMode: "disable", TimeZone: zone}
+		if _, _, err := postgresConfig(cfg); err == nil || !strings.Contains(err.Error(), "IANA") {
+			t.Fatalf("time zone %q accepted or unclear: %v", zone, err)
+		}
+	}
+	cfg := &config.DatabaseConfig{Host: "localhost", Port: 5432, User: "objectshare", Database: "objectshare", SSLMode: "disable", TimeZone: "America/Argentina/Buenos_Aires"}
+	if parsed, _, err := postgresConfig(cfg); err != nil || parsed.RuntimeParams["timezone"] != cfg.TimeZone {
+		t.Fatalf("multi-segment IANA zone changed or rejected: %v", err)
+	}
+}
+
 func TestLocalPlanFieldsPreserveExistingPricingColumns(t *testing.T) {
 	plan, err := schema.Parse(&PaidPlan{}, &sync.Map{}, schema.NamingStrategy{})
 	if err != nil {
