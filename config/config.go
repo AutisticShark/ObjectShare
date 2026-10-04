@@ -557,7 +557,10 @@ func (cfg *ServiceConfig) Validate() error {
 		return errors.New("invalid database connection pool limits")
 	}
 
-	switch strings.ToLower(cfg.StorageService) {
+	// Store the canonical name: the dashboard selects the active service by
+	// exact match, so a seeded "R2" would otherwise be replaced on the next save.
+	cfg.StorageService = strings.ToLower(strings.TrimSpace(cfg.StorageService))
+	switch cfg.StorageService {
 	case "filesystem":
 		if cfg.StoragePath == "" {
 			return errors.New("storage_path is required for filesystem storage")
