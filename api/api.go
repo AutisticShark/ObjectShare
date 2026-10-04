@@ -20,6 +20,7 @@ func Router(handler *htmx.Handler, logger *slog.Logger) http.Handler {
 	router.Use(requestID)
 	router.Use(requestIDHeader)
 	router.Use(accessLog(logger))
+	router.Use(serveHeadAsGet)
 	router.Use(middleware.Recoverer)
 	router.Use(securityHeaders(handler.CaptchaCSPEnabled(), handler.BrandingImageSources(), handler.DirectUploadConnectSources()...))
 	router.Use(handler.Authenticate)
@@ -46,7 +47,7 @@ func Router(handler *htmx.Handler, logger *slog.Logger) http.Handler {
 		router.Get("/uploads/complete", handler.UploadResults)
 		router.Get("/plans", handler.Plans)
 		router.Post("/api/v1/billing/{gateway}/webhook", handler.BillingWebhook)
-		router.Get("/billing/paypal/topup/return", handler.PayPalTopUpReturn)
+		router.With(getOnly).Get("/billing/paypal/topup/return", handler.PayPalTopUpReturn)
 		router.Get("/login", handler.LoginPage)
 		router.Get("/login/mfa", handler.MFAChallenge)
 		router.With(requireSameOrigin).Post("/login/mfa", handler.VerifyMFA)
@@ -56,7 +57,7 @@ func Router(handler *htmx.Handler, logger *slog.Logger) http.Handler {
 		router.With(requireSameOrigin).Post("/login", handler.Login)
 		router.Get("/oauth/{provider}/start", handler.OAuthStart)
 		router.With(requireSameOrigin).Post("/oauth/{provider}/start", handler.OAuthStart)
-		router.Get("/oauth/{provider}/callback", handler.OAuthCallback)
+		router.With(getOnly).Get("/oauth/{provider}/callback", handler.OAuthCallback)
 		router.Get("/signup", handler.SignupPage)
 		router.Get("/verify-email", handler.VerifyEmailPage)
 		router.With(requireSameOrigin).Post("/verify-email", handler.VerifyEmail)
@@ -110,7 +111,7 @@ func Router(handler *htmx.Handler, logger *slog.Logger) http.Handler {
 			router.With(requireSameOrigin).Post("/uploads/direct/batch", handler.BeginDirectUploadBatch)
 			router.With(requireSameOrigin).Post("/uploads/direct/{id}/complete", handler.CompleteDirectUpload)
 			router.With(requireSameOrigin).Post("/uploads/direct/{id}/abort", handler.AbortDirectUpload)
-			router.Get("/download/{id}", handler.Download)
+			router.With(getOnly).Get("/download/{id}", handler.Download)
 			router.With(requireSameOrigin).Post("/download/{id}", handler.Download)
 			router.With(requireSameOrigin).Post("/delete/{id}", handler.Delete)
 			router.With(requireSameOrigin).Delete("/delete/{id}", handler.Delete)
@@ -145,6 +146,36 @@ func upstreamRequestID(request *http.Request) string {
 		}
 	}
 	return value
+}
+
+type headRequestKey struct{}
+
+// serveHeadAsGet answers HEAD with the matching GET route. The handler sees a
+// GET request, so method checks inside handlers keep their GET meaning (they
+// treat any other method as a form submission); net/http discards the body
+// because the connection's request is still HEAD. Routes without GET answer
+// 405, so HEAD never reaches a POST handler.
+func serveHeadAsGet(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.Method == http.MethodHead {
+			request = request.WithContext(context.WithValue(request.Context(), headRequestKey{}, true))
+			request.Method = http.MethodGet
+		}
+		next.ServeHTTP(writer, request)
+	})
+}
+
+// getOnly keeps HEAD away from GET routes that change state (payment capture,
+// OAuth login) or stream a whole object only for its body to be discarded.
+func getOnly(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if head, _ := request.Context().Value(headRequestKey{}).(bool); head {
+			writer.Header().Set("Allow", http.MethodGet)
+			http.Error(writer, "Method not allowed.", http.StatusMethodNotAllowed)
+			return
+		}
+		next.ServeHTTP(writer, request)
+	})
 }
 
 // requestIDHeader echoes the request ID that access and error logs record, so a
