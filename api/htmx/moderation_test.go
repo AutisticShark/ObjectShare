@@ -259,6 +259,7 @@ func TestAdminModerationAuthorizationAndForms(t *testing.T) {
 		{"missing", admin, user.ID, "", transportBearer, 200, ""},
 		{"duplicate", admin, user.ID, "moderation_status=&moderation_status=banned", transportBearer, 200, ""},
 		{"self", admin, admin.ID, "moderation_status=banned", transportBearer, 200, ""},
+		{"self-uppercase", admin, strings.ToUpper(admin.ID), "moderation_status=shadowbanned", transportBearer, 200, ""},
 		{"shadowban", admin, user.ID, "moderation_status=shadowbanned&csrf_token=csrf", transportCookie, 303, db.ModerationShadowbanned},
 		{"ban", admin, user.ID, "moderation_status=banned", transportBearer, 303, db.ModerationBanned},
 		{"restore", admin, user.ID, "moderation_status=", transportBearer, 303, ""},
@@ -283,6 +284,29 @@ func TestAdminModerationAuthorizationAndForms(t *testing.T) {
 	h.RequireAdmin(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { t.Fatal("shadowbanned admin retained privileges") })).ServeHTTP(response, req)
 	if response.Code != 403 {
 		t.Fatal("shadowbanned admin not rejected")
+	}
+}
+
+// PostgreSQL matches uuid values case-insensitively, so an uppercase path ID
+// must still be recognized as the acting administrator's own account.
+func TestAdminUserActionsCanonicalizeTheTargetID(t *testing.T) {
+	repo := newAuthMemoryRepository()
+	actor := &db.User{ID: uuid.NewString(), Email: "actor@example.com", Role: db.RoleAdmin, Active: true, TokenVersion: 1}
+	other := &db.User{ID: uuid.NewString(), Email: "other@example.com", Role: db.RoleAdmin, Active: true, TokenVersion: 1}
+	repo.users[actor.ID], repo.users[other.ID] = actor, other
+	h := newAuthTestHandler(t, repo, false)
+	router := chi.NewRouter()
+	router.With(h.RequireAdmin).Post("/{id}", h.AdminUpdateAccess)
+	req := httptest.NewRequest("POST", "/"+strings.ToUpper(actor.ID), strings.NewReader("role=user&active=true"))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("HX-Request", "true")
+	req = req.WithContext(context.WithValue(req.Context(), identityContextKey{}, &identity{User: actor, Transport: transportBearer, Claims: &appauth.Claims{CSRF: "csrf"}}))
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, req)
+	// A self-demotion must go back through authentication instead of
+	// re-rendering the administrator directory for a former administrator.
+	if response.Code != http.StatusNoContent || response.Header().Get("HX-Redirect") != "/admin/users?message=updated" || actor.Role != db.RoleUser {
+		t.Fatalf("status=%d redirect=%q role=%s body=%s", response.Code, response.Header().Get("HX-Redirect"), actor.Role, response.Body.String())
 	}
 }
 

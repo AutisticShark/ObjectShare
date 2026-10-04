@@ -190,11 +190,16 @@ func (handler *Handler) adminUserAction(writer http.ResponseWriter, request *htt
 	if !ok {
 		return
 	}
-	id := chi.URLParam(request, "id")
-	if parsed, err := uuid.Parse(id); err != nil || parsed.String() != strings.ToLower(id) {
+	rawID := chi.URLParam(request, "id")
+	parsed, err := uuid.Parse(rawID)
+	if err != nil || parsed.String() != strings.ToLower(rawID) {
 		http.NotFound(writer, request)
 		return
 	}
+	// PostgreSQL matches uuid values case-insensitively, so compare the
+	// canonical lowercase form with the actor's ID in every self-protection
+	// check rather than the raw path segment.
+	id := parsed.String()
 	if err := action(request.Context(), id); err != nil {
 		if errors.Is(err, db.ErrLastAdmin) {
 			handler.renderAdminError(writer, request, identity, "The final active administrator cannot be disabled, demoted, banned, shadowbanned, or deleted.")
