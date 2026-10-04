@@ -135,10 +135,6 @@ func (handler *Handler) beginMFA(writer http.ResponseWriter, request *http.Reque
 			retryAt = slot.LockedUntil
 			return errMFACooldown
 		}
-		if now.Before(slot.SentAt.Add(time.Minute)) {
-			retryAt = slot.SentAt.Add(time.Minute)
-			return errMFACooldown
-		}
 		method = state.Method
 		if strings.HasPrefix(action, "setup-") {
 			if method != "" {
@@ -151,10 +147,19 @@ func (handler *Handler) beginMFA(writer http.ResponseWriter, request *http.Reque
 		if method == "email" && action == "setup-email" && (!handler.mfaEmailAvailable() || current.EmailVerifiedAt == nil) {
 			return errors.New("Email MFA needs a verified address and configured email delivery.")
 		}
+		// The one-minute cooldown limits how often codes are emailed. An
+		// authenticator challenge sends nothing, so it may restart at once.
+		if method == "email" && now.Before(slot.SentAt.Add(time.Minute)) {
+			retryAt = slot.SentAt.Add(time.Minute)
+			return errMFACooldown
+		}
 		slot.Challenge, slot.Action = appauth.TokenHash(claims.ID), action
 		slot.PendingMethod, slot.PendingSecret = method, sealed
 		slot.Email, slot.EmailHash = current.Email, ""
-		slot.Expires, slot.SentAt = claims.ExpiresAt.Time, now
+		slot.Expires = claims.ExpiresAt.Time
+		if method == "email" {
+			slot.SentAt = now
+		}
 		// Starting a new challenge does not reset failed attempts. Only a
 		// successful proof or the end of a lockout resets the slot's budget.
 		if !slot.LockedUntil.IsZero() {

@@ -118,6 +118,31 @@ func TestMFAPasswordAPILoginRecoveryAndReplay(t *testing.T) {
 	}
 }
 
+// The one-minute start cooldown exists to limit emailed codes. Authenticator
+// users must be able to start another sign-in straight away (for example after
+// abandoning one), while email-code sign-ins keep the cooldown.
+func TestMFAStartCooldownAppliesOnlyToEmailCodes(t *testing.T) {
+	h, _, user, secret := mfaFixture(t, "totp")
+	first := apiChallenge(t, h)
+	second := apiChallenge(t, h) // apiChallenge fails the test unless it gets a challenge
+	if first == second {
+		t.Fatal("a new sign-in did not issue a new challenge")
+	}
+	code, _ := appauth.TOTPCode(secret, time.Now().Unix()/30)
+	if verifyAPI(h, first, code).Code != http.StatusUnauthorized || verifyAPI(h, second, code).Code != http.StatusOK || user.LastLoginAt == nil {
+		t.Fatal("the newer authenticator challenge did not supersede the earlier one")
+	}
+
+	h, _, _, _ = mfaFixture(t, "email")
+	apiChallenge(t, h)
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/auth/login", strings.NewReader(`{"email":"mfa@example.com","password":"a sufficiently long password"}`))
+	w := httptest.NewRecorder()
+	h.APILogin(w, request)
+	if w.Code != http.StatusTooManyRequests || w.Header().Get("Retry-After") == "" || len(h.emailSender.(*fakeEmailSender).messages) != 1 {
+		t.Fatalf("an email-code sign-in restarted within the cooldown: %d %s", w.Code, w.Body.String())
+	}
+}
+
 func TestMFAEmailDeliveryResendAndFailureBudget(t *testing.T) {
 	h, _, user, _ := mfaFixture(t, "email")
 	challenge := apiChallenge(t, h)

@@ -526,8 +526,8 @@ Challenges expire after five minutes. Each account has one active sign-in
 challenge and, separately, one active account-management challenge (enrollment,
 disabling, or recovery-code replacement), each with its own failed-attempt
 budget, so managing MFA never cancels or locks out a sign-in.
-Starting another challenge or sending another email has a one-minute
-cooldown. Resending replaces the email code without extending the challenge or
+Starting another email-code challenge or sending another email has a one-minute
+cooldown; authenticator-app challenges send nothing and can restart at once. Resending replaces the email code without extending the challenge or
 resetting failed attempts. Five failed codes lock that kind of verification for
 15 minutes, including across new challenges and application replicas. These database limits
 remain active when configurable request rate limiting is disabled. When request
