@@ -95,7 +95,7 @@ The signed-in navigation separates the common tasks:
   validation includes encryption overhead; the server still enforces all limits.
   File and display names may not contain control characters or invisible
   formatting characters such as bidirectional overrides, which can disguise a
-  name (zero-width joiners remain allowed).
+  name (zero-width joiners remain allowed). Empty files are rejected with `400`.
   If a direct-upload batch is interrupted, keep the page open and choose **Retry
   unfinished uploads**. Completed files have links and are skipped on retry.
   The retry reuses the original uploads and encrypted bytes; it does not create

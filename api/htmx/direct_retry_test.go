@@ -119,7 +119,7 @@ func TestDirectUploadEndpointsShareRejectionStatuses(t *testing.T) {
 		text   string
 	}{
 		{"oversized", fmt.Sprintf(`{"file_name":"big.bin","file_size":%d,"content_type":"text/plain"}`, oversized), http.StatusRequestEntityTooLarge, "File size must be between"},
-		{"empty", `{"file_name":"empty.txt","file_size":0,"content_type":"text/plain"}`, http.StatusRequestEntityTooLarge, "File size must be between"},
+		{"empty", `{"file_name":"empty.txt","file_size":0,"content_type":"text/plain"}`, http.StatusBadRequest, "The file is empty."},
 		{"bad name", `{"file_name":"..","file_size":3,"content_type":"text/plain"}`, http.StatusBadRequest, "Invalid file name."},
 		{"bad type", `{"file_name":"a.txt","file_size":3,"content_type":"not a media type"}`, http.StatusBadRequest, "Invalid content type."},
 		{"bad share mode", `{"file_name":"a.txt","file_size":3,"content_type":"text/plain","share_mode":"nope"}`, http.StatusBadRequest, "Invalid upload access option."},

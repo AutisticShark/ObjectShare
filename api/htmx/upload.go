@@ -97,7 +97,11 @@ func (handler *Handler) Upload(writer http.ResponseWriter, request *http.Request
 		return
 	}
 	defer fileObject.Close()
-	if header.Size <= 0 || header.Size > maxBytes {
+	if header.Size <= 0 {
+		http.Error(writer, emptyUploadMessage, http.StatusBadRequest)
+		return
+	}
+	if header.Size > maxBytes {
 		http.Error(writer, "Invalid file size.", http.StatusRequestEntityTooLarge)
 		return
 	}
@@ -403,6 +407,9 @@ func (handler *Handler) discardUpload(request *http.Request, fileID string, dele
 		handler.logger.Warn("discard failed upload reservation", "file_id", fileID, "error", err)
 	}
 }
+
+// emptyUploadMessage explains why a zero-byte file is a bad request, not too large.
+const emptyUploadMessage = "The file is empty. Choose a file that contains data."
 
 func safeFileName(value string) (string, error) {
 	value = path.Base(strings.ReplaceAll(strings.TrimSpace(value), "\\", "/"))

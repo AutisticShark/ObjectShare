@@ -155,7 +155,10 @@ func (handler *Handler) authorizeDirectUpload(request *http.Request, input direc
 	if maxBytes > handler.directPolicy.MaxSize {
 		maxBytes = handler.directPolicy.MaxSize
 	}
-	if input.FileSize <= 0 || input.FileSize > maxBytes {
+	if input.FileSize <= 0 {
+		return directUploadAuthorization{}, nil, &uploadRejection{http.StatusBadRequest, emptyUploadMessage}
+	}
+	if input.FileSize > maxBytes {
 		return directUploadAuthorization{}, nil, &uploadRejection{http.StatusRequestEntityTooLarge, fmt.Sprintf("File size must be between 1 byte and %s.", humanSize(maxBytes))}
 	}
 	contentType := strings.TrimSpace(input.ContentType)
