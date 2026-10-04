@@ -75,6 +75,15 @@ func (handler *Handler) RateLimitAPI(next http.Handler) http.Handler {
 }
 
 func (handler *Handler) allowRequest(writer http.ResponseWriter, request *http.Request, scope string, limit int) bool {
+	return handler.allowRequestOr(writer, request, scope, limit, func() {
+		http.Error(writer, "Too many requests. Try again later.", http.StatusTooManyRequests)
+	})
+}
+
+// allowRequestOr consumes the rate limit like allowRequest. When the request is
+// limited it sets the rate-limit headers and calls reject, which must write a
+// 429 response, so a form can answer with its own page instead of plain text.
+func (handler *Handler) allowRequestOr(writer http.ResponseWriter, request *http.Request, scope string, limit int, reject func()) bool {
 	settings := handler.rateLimitSettings()
 	if !settings.Enabled || limit <= 0 {
 		return true
@@ -105,7 +114,7 @@ func (handler *Handler) allowRequest(writer http.ResponseWriter, request *http.R
 	writer.Header().Set("Retry-After", fmt.Sprint(retrySeconds))
 	writer.Header().Set("X-RateLimit-Limit", fmt.Sprint(limit))
 	writer.Header().Set("X-RateLimit-Scope", scope)
-	http.Error(writer, "Too many requests. Try again later.", http.StatusTooManyRequests)
+	reject()
 	return false
 }
 

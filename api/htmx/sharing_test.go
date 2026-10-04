@@ -271,6 +271,39 @@ func TestSelectedAccountLookupsAreRateLimited(t *testing.T) {
 	}
 }
 
+// htmx drops 4xx responses unless htmx-errors.js finds the form's .page target
+// in them, so a throttled save must answer with the sharing page and its error
+// alert rather than plain text, keeping what the owner entered.
+func TestThrottledRecipientLookupRendersTheSharingPage(t *testing.T) {
+	h, _, _, file, owner := sharingTestHandler(t)
+	h.config.RateLimit = &config.RateLimitConfig{Enabled: true, Window: config.Duration(time.Minute)}
+	save := func(htmx bool) *httptest.ResponseRecorder {
+		request := sharingRequest("POST", file.FileID, url.Values{"share_mode": {db.ShareSelected}, "recipients": {"owner@example.com, other@example.com"}}.Encode(), owner)
+		if htmx {
+			request.Header.Set("HX-Request", "true")
+		}
+		response := httptest.NewRecorder()
+		h.UpdateSharing(response, request)
+		return response
+	}
+	for range sharingRecipientLookupLimit {
+		save(true)
+	}
+	for _, htmx := range []bool{true, false} {
+		response := save(htmx)
+		body := response.Body.String()
+		if response.Code != http.StatusTooManyRequests || response.Header().Get("Retry-After") == "" ||
+			!strings.HasPrefix(response.Header().Get("Content-Type"), "text/html") || !strings.Contains(body, `<div class="page">`) ||
+			!strings.Contains(body, `<div class="alert alert-danger" role="alert">Too many recipient lookups. Try again later.</div>`) ||
+			!strings.Contains(body, "owner@example.com, other@example.com</textarea>") || !strings.Contains(body, `data-unsaved="true"`) {
+			t.Fatalf("throttled save (HTMX %v): %d %q %s", htmx, response.Code, response.Header().Get("Content-Type"), body)
+		}
+	}
+	if file.ShareMode != db.ShareLink {
+		t.Fatalf("a throttled save changed the policy to %q", file.ShareMode)
+	}
+}
+
 func TestAccountOwnerCookieCannotBypassJWT(t *testing.T) {
 	h, _, storage, file, owner := sharingTestHandler(t)
 	file.ShareMode = db.SharePrivate

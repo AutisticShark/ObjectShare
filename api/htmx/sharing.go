@@ -111,6 +111,10 @@ func (handler *Handler) SharingPage(writer http.ResponseWriter, request *http.Re
 }
 
 func (handler *Handler) renderSharing(writer http.ResponseWriter, request *http.Request, file *db.FileList, mode, recipients, formError, message string) {
+	handler.renderSharingStatus(writer, request, http.StatusOK, file, mode, recipients, formError, message)
+}
+
+func (handler *Handler) renderSharingStatus(writer http.ResponseWriter, request *http.Request, status int, file *db.FileList, mode, recipients, formError, message string) {
 	csrf := identityCSRF(request)
 	if identityUser(request) == nil {
 		csrf = guestSharingCSRF(file)
@@ -119,7 +123,7 @@ func (handler *Handler) renderSharing(writer http.ResponseWriter, request *http.
 	if handler.config.Billing != nil && handler.config.Billing.PublicURL != "" {
 		shareURL = handler.config.Billing.PublicURL + shareURL
 	}
-	handler.render(writer, "sharing.html", sharingPageData{
+	handler.renderStatus(writer, status, "sharing.html", sharingPageData{
 		Version: config.GetVersion(), CSRF: csrf, FileID: file.FileID, FileName: file.FileName,
 		ClientEncrypted: file.ClientEncryption != "", ShareURL: shareURL, Mode: mode, Recipients: recipients, Error: formError, Message: message,
 		ClientEncryption: file.ClientEncryption, SavedMode: fileShareMode(file),
@@ -147,11 +151,11 @@ func (handler *Handler) UpdateSharing(writer http.ResponseWriter, request *http.
 	}
 	mode, recipients := request.FormValue("share_mode"), request.FormValue("recipients")
 	fail := func(message string) {
-		writer.Header().Set("Content-Type", "text/html; charset=utf-8")
+		status := http.StatusOK // HTMX swaps only successful responses by default.
 		if request.Header.Get("HX-Request") != "true" {
-			writer.WriteHeader(http.StatusBadRequest)
+			status = http.StatusBadRequest
 		}
-		handler.renderSharing(writer, request, file, mode, recipients, message, "")
+		handler.renderSharingStatus(writer, request, status, file, mode, recipients, message, "")
 	}
 	if !db.ValidShareMode(mode) {
 		fail("Choose a valid access option.")
@@ -171,7 +175,12 @@ func (handler *Handler) UpdateSharing(writer http.ResponseWriter, request *http.
 		// The reply reveals whether the addresses belong to accounts, and guest
 		// owners need no account, so recipient lookups are throttled per account
 		// or, for guests, per client address.
-		if !handler.allowRequest(writer, request, "sharing-recipients", sharingRecipientLookupLimit) {
+		// Answer with the sharing page itself, keeping the entered recipients, so
+		// the refusal shows in the page's error alert (htmx-errors.js swaps in
+		// error pages that contain the form's .page target).
+		if !handler.allowRequestOr(writer, request, "sharing-recipients", sharingRecipientLookupLimit, func() {
+			handler.renderSharingStatus(writer, request, http.StatusTooManyRequests, file, mode, recipients, "Too many recipient lookups. Try again later.", "")
+		}) {
 			return
 		}
 		seen := map[string]bool{}
