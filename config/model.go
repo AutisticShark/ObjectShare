@@ -48,6 +48,9 @@ type ServiceConfig struct {
 	MaxFileSize     int64    `json:"max_file_size"`
 	SecureCookies   bool     `json:"secure_cookies"`
 	SettingsKey     string   `json:"settings_key,omitempty"`
+	// SettingsKeyPrevious is the settings key being replaced. When set, start-up
+	// re-seals data still protected by it with SettingsKey.
+	SettingsKeyPrevious string `json:"settings_key_previous,omitempty"`
 	// SettingsKeyDerived reports that settings_key was empty and the JWT secret
 	// is being used in its place, which ties JWT rotation to the encrypted
 	// settings and MFA secrets. It is informational and never serialized.

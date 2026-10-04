@@ -60,10 +60,17 @@ func run() error {
 	// Opening PostgreSQL runs every schema migration in one transaction, which
 	// can legitimately outlast the short budget for the rest of start-up.
 	if cfg.SettingsKeyDerived {
-		logger.Warn("settings_key is not set, so the JWT secret also protects encrypted settings and MFA secrets; rotating the JWT secret would make them unreadable. Set OBJECTSHARE_SETTINGS_KEY (or settings_key) to an independent key")
+		logger.Warn("settings_key is not set, so the JWT secret also protects encrypted settings and MFA secrets; rotating the JWT secret would make them unreadable. To move to an independent key, set OBJECTSHARE_SETTINGS_KEY to a new random key and OBJECTSHARE_SETTINGS_KEY_PREVIOUS to the current JWT secret on every replica, then restart; start-up re-seals the stored data")
 	}
 	migrationContext, cancelMigration := context.WithTimeout(context.Background(), cfg.Db.MigrationTimeout.Duration())
 	repository, err := db.Open(migrationContext, cfg.Db)
+	if err == nil {
+		// Re-keying shares the migration budget: it is a one-time rewrite of
+		// every MFA-enabled account, sized like a migration.
+		if err = rotateSettingsKey(migrationContext, repository, cfg, logger); err != nil {
+			_ = repository.Close()
+		}
+	}
 	cancelMigration()
 	if err != nil {
 		return err
@@ -146,6 +153,9 @@ func loadDatabaseConfiguration(ctx context.Context, repository db.SettingsReposi
 	}
 	runtime, err := config.OpenRuntime(setting.Value, cfg.SettingsKey)
 	if err != nil {
+		if cfg.SettingsKeyPrevious == "" {
+			return fmt.Errorf("open database configuration: %w (after changing the settings key, set OBJECTSHARE_SETTINGS_KEY_PREVIOUS to the key it replaced, or to the JWT secret if settings_key was unset, so start-up can re-seal the stored data)", err)
+		}
 		return fmt.Errorf("open database configuration: %w", err)
 	}
 	if err := config.ApplyRuntime(cfg, runtime); err != nil {

@@ -54,6 +54,7 @@ func LoadBootstrap(path string) (*ServiceConfig, error) {
 	bootstrap.IdleTimeout, bootstrap.ShutdownTimeout = cfg.IdleTimeout, cfg.ShutdownTimeout
 	bootstrap.ConfigReload = cfg.ConfigReload
 	bootstrap.Db, bootstrap.SettingsKey = cfg.Db, cfg.SettingsKey
+	bootstrap.SettingsKeyPrevious = cfg.SettingsKeyPrevious
 	bootstrap.Redis = cfg.Redis
 	bootstrap.Auth.JWTSecret, bootstrap.Auth.TokenLifetime = cfg.Auth.JWTSecret, cfg.Auth.TokenLifetime
 	bootstrap.Auth.SetupToken = cfg.Auth.SetupToken
@@ -66,6 +67,7 @@ func LoadBootstrap(path string) (*ServiceConfig, error) {
 	cfg.ConfigReload = bootstrap.ConfigReload
 	cfg.Db, cfg.SettingsKey = bootstrap.Db, bootstrap.SettingsKey
 	cfg.SettingsKeyDerived = bootstrap.SettingsKeyDerived
+	cfg.SettingsKeyPrevious = bootstrap.SettingsKeyPrevious
 	cfg.Redis = bootstrap.Redis
 	cfg.Auth.JWTSecret, cfg.Auth.TokenLifetime = bootstrap.Auth.JWTSecret, bootstrap.Auth.TokenLifetime
 	cfg.Auth.SetupToken = bootstrap.Auth.SetupToken
@@ -228,6 +230,7 @@ func applyEnvironment(cfg *ServiceConfig) error {
 	problems = append(problems, setInt64("OBJECTSHARE_MAX_FILE_SIZE_MB", &cfg.MaxFileSize))
 	problems = append(problems, setBool("OBJECTSHARE_SECURE_COOKIES", &cfg.SecureCookies))
 	setString("OBJECTSHARE_SETTINGS_KEY", &cfg.SettingsKey)
+	setString("OBJECTSHARE_SETTINGS_KEY_PREVIOUS", &cfg.SettingsKeyPrevious)
 	if cfg.Upload == nil {
 		cfg.Upload = &UploadConfig{GuestEnabled: true, MaxFilesPerBatch: 10, MaxPendingGuestMiB: DefaultMaxPendingGuestMiB}
 	}
@@ -513,6 +516,16 @@ func (cfg *ServiceConfig) Validate() error {
 	}
 	if len(cfg.SettingsKey) < 32 || cfg.SettingsKey == "replace-with-at-least-32-random-bytes" || cfg.SettingsKey == "replace-with-a-different-32-byte-random-secret" {
 		return errors.New("settings_key must contain at least 32 non-placeholder bytes")
+	}
+	if cfg.SettingsKeyPrevious != "" {
+		switch {
+		case cfg.SettingsKeyDerived:
+			return errors.New("settings_key_previous requires settings_key: set settings_key to the new key and settings_key_previous to the key it replaces")
+		case len(cfg.SettingsKeyPrevious) < 32:
+			return errors.New("settings_key_previous must contain at least 32 bytes")
+		case cfg.SettingsKeyPrevious == cfg.SettingsKey:
+			return errors.New("settings_key_previous must differ from settings_key")
+		}
 	}
 	if cfg.Auth.TokenLifetime.Duration() < 5*time.Minute || cfg.Auth.TokenLifetime.Duration() > 24*time.Hour {
 		return errors.New("auth token_lifetime must be between 5 minutes and 24 hours")

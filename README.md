@@ -66,6 +66,7 @@ File links are unlisted by default; owners can restrict details and downloads to
 - [x] Redis caching and shared request rate limits
 - [x] Searchable, paginated account file workspace
 - [x] Server-side encryption & decryption
+- [x] Settings key rotation that re-seals stored configuration and MFA secrets
 - [x] Single-file and multiple-file upload modes
 - [x] Third-party OAuth login support
 - [x] Unified workspace and administrator navigation
@@ -439,12 +440,21 @@ Bootstrap infrastructure and secrets remain file/environment-owned:
 | `OBJECTSHARE_REDIS_*` | see below | Optional Redis connection, namespace, timeouts, and public plan cache; bootstrap settings requiring a restart |
 | `OBJECTSHARE_JWT_SECRET` | none (required) | JWT HMAC signing secret, at least 32 random bytes |
 | `OBJECTSHARE_SETUP_TOKEN` (`auth.setup_token` in `config.json`) | empty (setup stays open) | Optional secret, at least 16 characters, that `/setup` requires before it creates the first administrator, so nobody who reaches a fresh instance first can claim it. Bootstrap setting: never stored in the database configuration. Unset it, or create the administrator with `-create-admin`, when you prefer. |
-| `OBJECTSHARE_SETTINGS_KEY` (`settings_key`) | JWT secret (deprecated fallback) | Independent key protecting encrypted settings and MFA secrets. When unset, the JWT secret is used and ObjectShare logs a warning at start-up, because rotating the JWT secret would then make those values unreadable |
+| `OBJECTSHARE_SETTINGS_KEY` (`settings_key`) | JWT secret (deprecated fallback) | Independent key protecting encrypted settings and MFA secrets. When unset, the JWT secret is used and ObjectShare logs a warning at start-up, because rotating the JWT secret would then make those values unreadable. Change it only with `OBJECTSHARE_SETTINGS_KEY_PREVIOUS` as described below |
+| `OBJECTSHARE_SETTINGS_KEY_PREVIOUS` (`settings_key_previous`) | empty | Set only while rotating the settings key: the key being replaced, or the JWT secret when `settings_key` was never set. Start-up then re-seals the stored configuration document and every authenticator secret with `OBJECTSHARE_SETTINGS_KEY`. Requires an explicit `OBJECTSHARE_SETTINGS_KEY`, at least 32 bytes, and a different value. Bootstrap setting: never stored in the database |
 | `OBJECTSHARE_JWT_LIFETIME` | `12h` | JWT lifetime (`5m` to `24h`) |
 | `OBJECTSHARE_CONFIG_RELOAD_INTERVAL` | `30s` | How often a replica checks PostgreSQL for a newer configuration revision and activates it without a restart; `0` disables polling and `1s` to `24h` are accepted |
 | `OBJECTSHARE_SETTINGS_KEY` | JWT secret for upgrade compatibility | Independent key that encrypts the database configuration document; set it before the first import and keep it stable |
 
 Generate separate JWT and settings secrets with `openssl rand -base64 48`, provide the same values to every replica, and keep the settings key with database backups. The fallback to the JWT secret exists only so an older deployment can upgrade without a new mandatory variable; a new deployment should always set an independent `OBJECTSHARE_SETTINGS_KEY`. Losing or changing that key makes the database configuration unreadable and startup fails closed. Rotating the JWT secret invalidates every issued JWT but does not affect database configuration when the independent settings key is configured.
+
+To rotate the settings key, or to move a deployment that relies on the JWT-secret fallback to an independent key, back up the database and then, on every replica at the same restart:
+
+1. Set `OBJECTSHARE_SETTINGS_KEY_PREVIOUS` (`settings_key_previous`) to the current key: the old `OBJECTSHARE_SETTINGS_KEY`, or the current `OBJECTSHARE_JWT_SECRET` if no settings key was set.
+2. Set `OBJECTSHARE_SETTINGS_KEY` (`settings_key`) to a new random key, for example from `openssl rand -base64 48`.
+3. Restart. Before opening the configuration, start-up re-seals the stored configuration document and every account's authenticator secrets with the new key in one PostgreSQL transaction, bounded by `OBJECTSHARE_DB_MIGRATION_TIMEOUT`, and logs `settings key rotated`. Replicas starting together serialize on the configuration row, and a repeated start does nothing more because the document already opens with the new key. If neither key opens the document, start-up fails without changing anything.
+
+Email and recovery codes are stored only as keyed hashes, which cannot be re-keyed. A pending email code simply expires; request a new one. Existing recovery codes are marked as previous-key codes and keep working while `OBJECTSHARE_SETTINGS_KEY_PREVIOUS` stays set. Each start logs how many accounts still hold such codes; ask those users to generate new recovery codes on their MFA page. When the log reports that nothing depends on the previous key, remove `OBJECTSHARE_SETTINGS_KEY_PREVIOUS` and restart; any previous-key recovery codes left then stop working. Replicas still running the old key cannot read the re-sealed configuration, so do not keep them serving after the restart. When the old key was the JWT secret, you can rotate `OBJECTSHARE_JWT_SECRET` independently afterwards.
 
 The dashboard stores the entire operational document as authenticated AES-GCM ciphertext. Secret inputs are write-only: an empty field preserves its stored value, while an explicit checkbox clears it. A save validates the complete candidate before one optimistic, revision-checked database update; a stale admin page cannot overwrite a newer revision. Saving also activates the revision without a restart. The replica builds a complete new snapshot — storage clients, encryption, OAuth, CAPTCHA CSP, cookies, and proxy trust together — and swaps it in atomically, so no subsystem changes on its own and a request already in progress finishes against the configuration it started with. If the snapshot cannot be built, the stored revision stays saved, the replica keeps serving the previous snapshot, and the dashboard reports that this replica did not activate it; the reason is in the application log. Other replicas activate the stored revision at their next configuration reload (`config_reload_interval` / `OBJECTSHARE_CONFIG_RELOAD_INTERVAL`, default 30 seconds), or immediately when sent `SIGHUP` (`docker compose kill -s HUP app`). Bootstrap settings — listen address, database connection, JWT secret, settings key, server timeouts, and the reload interval itself — are not part of the document and still require a restart. Changing a storage provider, bucket, or filesystem path does not migrate existing objects, and changing the object-encryption key does not re-encrypt them; complete those data migrations separately before activating such changes.
 
@@ -580,8 +590,9 @@ Email and recovery codes are stored as context-bound HMAC hashes. This uses the
 existing **`OBJECTSHARE_SETTINGS_KEY`** (top-level `settings_key` in bootstrap
 `config.json`), with domain separation from runtime configuration encryption.
 Keep this key stable, identical on every replica, and with database backups.
-Losing or changing it also makes existing authenticator secrets and recovery-code
-hashes unusable. The normal startup migration adds private MFA state without
+Losing it, or changing it without `OBJECTSHARE_SETTINGS_KEY_PREVIOUS` (see the
+settings-key rotation steps above), also makes existing authenticator secrets and
+recovery-code hashes unusable. The normal startup migration adds private MFA state without
 enabling MFA or changing existing account data. No new configuration options or
 dependencies are required.
 
@@ -1142,7 +1153,7 @@ for product and deployment release gates, the available local evidence, and
 checks that still require a browser or staging environment.
 
 - Put the service behind HTTPS and enable secure cookies.
-- Set stable, independent, high-entropy JWT and database-settings keys on every replica; rotate the JWT only when intentionally invalidating all tokens and never change the settings key without a supported re-encryption migration.
+- Set stable, independent, high-entropy JWT and database-settings keys on every replica; rotate the JWT only when intentionally invalidating all tokens and change the settings key only through the `OBJECTSHARE_SETTINGS_KEY_PREVIOUS` rotation procedure.
 - Disable public signup if accounts should be invitation-only.
 - Use a long, unique PostgreSQL password and TLS (`ssl_mode=require` or stronger) for external databases.
 - Keep the database private; only publish the application port.

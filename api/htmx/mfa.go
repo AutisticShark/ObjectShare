@@ -309,9 +309,8 @@ func (handler *Handler) completeMFA(writer http.ResponseWriter, request *http.Re
 		setup := strings.HasPrefix(claims.Action, "setup-")
 		// Recovery codes cannot confirm a new factor.
 		if !setup {
-			hash := appauth.MFAHash(handler.settingsKey, user.ID+":recovery", code)
 			for i, saved := range state.Recovery {
-				if subtle.ConstantTimeCompare([]byte(hash), []byte(saved)) == 1 {
+				if handler.recoveryCodeMatches(user.ID, code, saved) {
 					state.Recovery = append(state.Recovery[:i:i], state.Recovery[i+1:]...)
 					success = true
 					break
@@ -327,7 +326,7 @@ func (handler *Handler) completeMFA(writer http.ResponseWriter, request *http.Re
 			if setup {
 				sealed, last = s.PendingSecret, 0
 			}
-			secret, openErr := appauth.OpenMFASecret(handler.settingsKey, user.ID, sealed)
+			secret, openErr := handler.openMFASecret(user.ID, sealed)
 			if openErr != nil {
 				return openErr
 			}

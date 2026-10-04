@@ -6,6 +6,7 @@
   "shutdown_timeout": "15s",
   "config_reload_interval": "30s",
   "settings_key": "replace-with-a-different-32-byte-random-secret",
+  "settings_key_previous": "",
   "redis": {
     "url": "",
     "password": "",

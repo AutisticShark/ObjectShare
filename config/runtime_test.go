@@ -2,6 +2,7 @@ package config
 
 import (
 	"encoding/json"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -128,5 +129,74 @@ func TestWithRuntimeBuildsSnapshotsFromAnUnchangedBootstrap(t *testing.T) {
 	}
 	if cfg.MaxFileSize != 100 {
 		t.Fatal("a rejected document mutated the bootstrap configuration")
+	}
+}
+
+// A deployment that used the JWT-derived settings key moves to an independent
+// key by setting settings_key to the new key and settings_key_previous to the
+// old one. The stored document must re-seal without losing a byte.
+func TestSettingsKeyRotationResealsTheStoredDocument(t *testing.T) {
+	path := t.TempDir() + "/config.json"
+	if err := os.WriteFile(path, []byte(`{"auth": {"jwt_secret": "`+testJWTSecret+`"}, "db": {"password": "x"}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("OBJECTSHARE_SETTINGS_KEY", "")
+	legacy, err := LoadBootstrap(path)
+	if err != nil || !legacy.SettingsKeyDerived {
+		t.Fatalf("expected the derived legacy key: %v", err)
+	}
+	legacy.R2.SecretAccessKey = "storage-secret-kept-across-rotation"
+	if err := legacy.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	sealed, err := SealRuntime(RuntimeFromService(legacy), legacy.SettingsKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv("OBJECTSHARE_SETTINGS_KEY", "an-independent-settings-key-of-32-bytes-or-more")
+	t.Setenv("OBJECTSHARE_SETTINGS_KEY_PREVIOUS", testJWTSecret)
+	upgraded, err := LoadBootstrap(path)
+	if err != nil || upgraded.SettingsKeyDerived || upgraded.SettingsKeyPrevious != testJWTSecret {
+		t.Fatalf("rotation bootstrap: derived=%v previous set=%v err=%v", upgraded.SettingsKeyDerived, upgraded.SettingsKeyPrevious != "", err)
+	}
+	if _, err := OpenRuntime(sealed, upgraded.SettingsKey); err == nil {
+		t.Fatal("the new key opened a document sealed with the old key")
+	}
+	resealed, changed, err := ResealRuntime(sealed, upgraded.SettingsKey, upgraded.SettingsKeyPrevious)
+	if err != nil || !changed {
+		t.Fatalf("reseal: changed=%v err=%v", changed, err)
+	}
+	before, _ := openRuntimePlaintext(sealed, legacy.SettingsKey)
+	after, err := openRuntimePlaintext(resealed, upgraded.SettingsKey)
+	if err != nil || string(after) != string(before) {
+		t.Fatalf("re-sealed document differs or does not open with the new key: %v", err)
+	}
+	if again, changed, err := ResealRuntime(resealed, upgraded.SettingsKey, upgraded.SettingsKeyPrevious); err != nil || changed || again != resealed {
+		t.Fatalf("a repeated rotation must be a no-op: changed=%v err=%v", changed, err)
+	}
+	if _, _, err := ResealRuntime(sealed, upgraded.SettingsKey, "a-wrong-previous-settings-key-with-32-bytes"); err == nil {
+		t.Fatal("a wrong previous key re-sealed the document")
+	}
+}
+
+func TestSettingsKeyPreviousValidation(t *testing.T) {
+	for name, test := range map[string]struct {
+		settingsKey, previous, contains string
+	}{
+		"requires an explicit settings key": {"", "previous-settings-key-with-at-least-32-bytes", "requires settings_key"},
+		"too short":                         {"current-settings-key-with-at-least-32-bytes", "short", "at least 32"},
+		"same as the current key":           {"current-settings-key-with-at-least-32-bytes", "current-settings-key-with-at-least-32-bytes", "must differ"},
+	} {
+		cfg := testDefaults()
+		cfg.SettingsKey, cfg.SettingsKeyPrevious = test.settingsKey, test.previous
+		if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), test.contains) {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+	cfg := testDefaults()
+	cfg.SettingsKey, cfg.SettingsKeyPrevious = "current-settings-key-with-at-least-32-bytes", testJWTSecret
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("a valid rotation was rejected: %v", err)
 	}
 }

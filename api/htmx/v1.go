@@ -70,6 +70,7 @@ type Handler struct {
 	billing            db.BillingRepository
 	billingGateways    map[string]billingGateway
 	settingsKey        string
+	priorSettingsKey   string
 	localRateLimits    *localRateLimiter
 	trustedProxies     []*net.IPNet
 	reloadConfig       func(context.Context) error
@@ -217,7 +218,7 @@ func New(cfg *config.ServiceConfig, repository db.Repository, storage service.Ob
 		if err != nil {
 			return nil, fmt.Errorf("configure JWT authentication: %w", err)
 		}
-		handler.settingsKey = cfg.SettingsKey
+		handler.settingsKey, handler.priorSettingsKey = cfg.SettingsKey, cfg.SettingsKeyPrevious
 		oauthSecret := sha256.Sum256([]byte("objectshare-oauth-flow-v1\x00" + cfg.Auth.JWTSecret))
 		handler.oauthSecret = oauthSecret[:]
 		handler.oauthProviders = appauth.NewOAuthProviders(cfg.Auth.OAuth)

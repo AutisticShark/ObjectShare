@@ -200,6 +200,10 @@ func SealRuntime(runtime RuntimeConfig, settingsKey string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("encode database configuration: %w", err)
 	}
+	return sealRuntimePlaintext(plaintext, settingsKey)
+}
+
+func sealRuntimePlaintext(plaintext []byte, settingsKey string) (string, error) {
 	aead, err := runtimeAEAD(settingsKey)
 	if err != nil {
 		return "", err
@@ -214,24 +218,9 @@ func SealRuntime(runtime RuntimeConfig, settingsKey string) (string, error) {
 
 func OpenRuntime(value, settingsKey string) (RuntimeConfig, error) {
 	var runtime RuntimeConfig
-	if len(value) <= len(sealedRuntimePrefix) || value[:len(sealedRuntimePrefix)] != sealedRuntimePrefix {
-		return runtime, errors.New("database configuration has an unsupported encryption format")
-	}
-	payload, err := base64.RawURLEncoding.DecodeString(value[len(sealedRuntimePrefix):])
-	if err != nil {
-		return runtime, errors.New("database configuration is not valid base64")
-	}
-	aead, err := runtimeAEAD(settingsKey)
+	plaintext, err := openRuntimePlaintext(value, settingsKey)
 	if err != nil {
 		return runtime, err
-	}
-	if len(payload) < aead.NonceSize() {
-		return runtime, errors.New("database configuration is truncated")
-	}
-	nonce, ciphertext := payload[:aead.NonceSize()], payload[aead.NonceSize():]
-	plaintext, err := aead.Open(nil, nonce, ciphertext, []byte(sealedRuntimePrefix))
-	if err != nil {
-		return runtime, errors.New("decrypt database configuration: bootstrap settings key does not match or the value was modified")
 	}
 	decoder := json.NewDecoder(bytes.NewReader(plaintext))
 	decoder.DisallowUnknownFields()
@@ -244,6 +233,48 @@ func OpenRuntime(value, settingsKey string) (RuntimeConfig, error) {
 	}
 	fillNewProviderDefaults(&runtime)
 	return runtime, nil
+}
+
+func openRuntimePlaintext(value, settingsKey string) ([]byte, error) {
+	if len(value) <= len(sealedRuntimePrefix) || value[:len(sealedRuntimePrefix)] != sealedRuntimePrefix {
+		return nil, errors.New("database configuration has an unsupported encryption format")
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(value[len(sealedRuntimePrefix):])
+	if err != nil {
+		return nil, errors.New("database configuration is not valid base64")
+	}
+	aead, err := runtimeAEAD(settingsKey)
+	if err != nil {
+		return nil, err
+	}
+	if len(payload) < aead.NonceSize() {
+		return nil, errors.New("database configuration is truncated")
+	}
+	nonce, ciphertext := payload[:aead.NonceSize()], payload[aead.NonceSize():]
+	plaintext, err := aead.Open(nil, nonce, ciphertext, []byte(sealedRuntimePrefix))
+	if err != nil {
+		return nil, errors.New("decrypt database configuration: bootstrap settings key does not match or the value was modified")
+	}
+	return plaintext, nil
+}
+
+// ResealRuntime moves a stored document from previousKey to currentKey during
+// a settings-key rotation, carrying the plaintext over byte for byte. It
+// reports changed=false, and returns value unchanged, when the document already
+// opens with currentKey, so repeating a rotation is harmless.
+func ResealRuntime(value, currentKey, previousKey string) (string, bool, error) {
+	if _, err := openRuntimePlaintext(value, currentKey); err == nil {
+		return value, false, nil
+	}
+	plaintext, err := openRuntimePlaintext(value, previousKey)
+	if err != nil {
+		return "", false, fmt.Errorf("neither the settings key nor the previous settings key opens the stored configuration: %w", err)
+	}
+	sealed, err := sealRuntimePlaintext(plaintext, currentKey)
+	if err != nil {
+		return "", false, err
+	}
+	return sealed, true, nil
 }
 
 // fillNewProviderDefaults gives object-storage providers added after a document
