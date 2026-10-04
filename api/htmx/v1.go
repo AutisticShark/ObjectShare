@@ -53,7 +53,8 @@ type Handler struct {
 	captchaJS          []byte
 	adminUsersJS       []byte
 	adminUsersCSS      []byte
-	cipher             *appcrypto.Cipher
+	cipher             *appcrypto.Cipher // encrypts new uploads; nil while encryption is off
+	readCipher         *appcrypto.Cipher // decrypts stored objects whenever a key is configured
 	cipherSlot         chan struct{}
 	logger             *slog.Logger
 	users              db.AuthRepository
@@ -215,16 +216,27 @@ func New(cfg *config.ServiceConfig, repository db.Repository, storage service.Ob
 		handler.oauthSecret = oauthSecret[:]
 		handler.oauthProviders = appauth.NewOAuthProviders(cfg.Auth.OAuth)
 	}
-	if cfg.Encryption != nil && cfg.Encryption.Enabled {
+	// Objects stored while encryption was on stay readable after an
+	// administrator turns it off for new uploads, as long as the key remains.
+	if cfg.Encryption != nil && cfg.Encryption.Key != "" {
 		key, err := config.DecodeEncryptionKey(cfg.Encryption.Key)
-		if err != nil {
+		if err == nil {
+			handler.readCipher, err = appcrypto.New(key)
+		}
+		if err != nil && cfg.Encryption.Enabled {
+			return nil, err
+		} else if err != nil {
+			logger.Warn("the stored encryption key is invalid; existing server-side encrypted files cannot be downloaded", "error", err)
+		} else {
+			handler.cipherSlot = make(chan struct{}, 1)
+		}
+	}
+	if cfg.Encryption != nil && cfg.Encryption.Enabled {
+		if handler.readCipher == nil {
+			_, err := config.DecodeEncryptionKey(cfg.Encryption.Key)
 			return nil, err
 		}
-		handler.cipher, err = appcrypto.New(key)
-		if err != nil {
-			return nil, err
-		}
-		handler.cipherSlot = make(chan struct{}, 1)
+		handler.cipher = handler.readCipher
 	} else {
 		handler.direct, _ = storage.(service.DirectUploader)
 		if handler.direct != nil {
@@ -429,7 +441,7 @@ func (handler *Handler) Download(writer http.ResponseWriter, request *http.Reque
 	writer.Header().Set("Content-Disposition", mime.FormatMediaType("attachment", map[string]string{"filename": downloadName}))
 	writer.Header().Set("Cache-Control", "private, no-store")
 	if file.IsEncrypted {
-		if handler.cipher == nil {
+		if handler.readCipher == nil {
 			handler.internalError(writer, request, "decrypt object", errors.New("encryption key is unavailable"))
 			return
 		}
@@ -476,12 +488,12 @@ func (handler *Handler) decryptObject(body io.Reader, file *db.FileList) ([]byte
 		return nil, errCipherBusy
 	}
 	defer handler.releaseCipherSlot()
-	limit := min(max(file.FileSize, 0), config.MaxEncryptedFileSizeMiB*mebibyte) + int64(handler.cipher.Overhead()) + 1
+	limit := min(max(file.FileSize, 0), config.MaxEncryptedFileSizeMiB*mebibyte) + int64(handler.readCipher.Overhead()) + 1
 	ciphertext, err := io.ReadAll(io.LimitReader(body, limit))
 	if err != nil || int64(len(ciphertext)) >= limit {
 		return nil, fmt.Errorf("read encrypted object: %w", errors.Join(err, errors.New("object exceeds the encrypted size limit")))
 	}
-	return handler.cipher.DecryptFor(file.FileID, ciphertext)
+	return handler.readCipher.DecryptFor(file.FileID, ciphertext)
 }
 
 func (handler *Handler) fileHasDirectLinks(ctx context.Context, file *db.FileList) bool {

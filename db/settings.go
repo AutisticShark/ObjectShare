@@ -41,3 +41,15 @@ func (repo *GormRepository) SaveApplicationSettings(ctx context.Context, value, 
 }
 
 var _ SettingsRepository = (*GormRepository)(nil)
+
+// EncryptedFileChecker reports whether any stored object depends on the
+// server-side encryption key, so the key cannot be changed out from under it.
+type EncryptedFileChecker interface {
+	HasEncryptedFiles(context.Context) (bool, error)
+}
+
+func (repo *GormRepository) HasEncryptedFiles(ctx context.Context) (bool, error) {
+	var found bool
+	err := repo.connection.WithContext(ctx).Raw("SELECT EXISTS (SELECT 1 FROM file_lists WHERE is_encrypted)").Scan(&found).Error
+	return found, err
+}

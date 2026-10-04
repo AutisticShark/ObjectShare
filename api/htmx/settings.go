@@ -73,8 +73,17 @@ func (handler *Handler) AdminSaveSettings(writer http.ResponseWriter, request *h
 		handler.renderSettings(writer, identity, setting, runtime, "Configuration changed in another administrator session. Review the current values and submit again.", "")
 		return
 	}
+	previousEncryptionKey := runtime.Encryption.Key
 	if err := updateRuntimeFromForm(&runtime, request); err != nil {
 		handler.renderSettings(writer, identity, setting, runtime, err.Error(), "")
+		return
+	}
+	if problem, err := handler.encryptionKeyChangeProblem(request, previousEncryptionKey, runtime.Encryption.Key); err != nil {
+		handler.internalError(writer, request, "check for server-side encrypted files", err)
+		return
+	} else if problem != "" {
+		runtime.Encryption.Key = previousEncryptionKey
+		handler.renderSettings(writer, identity, setting, runtime, problem, "")
 		return
 	}
 	normalized, err := config.NormalizeRuntime(handler.config, runtime)
@@ -117,6 +126,32 @@ func (handler *Handler) activateSavedSettings(request *http.Request) string {
 		return "saved-inactive"
 	}
 	return "activated"
+}
+
+// encryptionKeyChangeProblem refuses to replace or clear the server-side
+// encryption key while files encrypted with it exist, because those files would
+// become permanently unreadable. Re-entering the same key in another encoding
+// is not a change. Turning encryption off for new uploads is always allowed.
+func (handler *Handler) encryptionKeyChangeProblem(request *http.Request, previous, next string) (string, error) {
+	if previous == next {
+		return "", nil
+	}
+	previousKey, err := config.DecodeEncryptionKey(previous)
+	if err != nil || len(previousKey) != 32 {
+		return "", nil // no object can have been encrypted with an unusable key
+	}
+	if nextKey, err := config.DecodeEncryptionKey(next); err == nil && subtle.ConstantTimeCompare(previousKey, nextKey) == 1 {
+		return "", nil
+	}
+	checker, ok := handler.repository.(db.EncryptedFileChecker)
+	if !ok {
+		return "", nil
+	}
+	found, err := checker.HasEncryptedFiles(request.Context())
+	if err != nil || !found {
+		return "", err
+	}
+	return "Server-side encrypted files exist, so the encryption key cannot be changed or cleared: those files would become unrecoverable. To stop encrypting new uploads, turn encryption off and keep the stored key.", nil
 }
 
 func (handler *Handler) readDatabaseSettings(request *http.Request) (*db.ApplicationSetting, config.RuntimeConfig, error) {
