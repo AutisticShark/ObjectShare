@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"math"
 	"net/http"
-	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -101,13 +100,8 @@ func (handler *Handler) BillingTopUp(writer http.ResponseWriter, request *http.R
 	}
 	// Keep the reservation on ambiguous gateway failures: a payment may have
 	// succeeded remotely and its verified receipt must still be settleable.
-	successURL := settings.PublicURL + "/invoices/" + topUp.ID
-	if gatewayKey == db.BillingGatewayPayPal {
-		successURL = settings.PublicURL + "/billing/paypal/topup/return?topup=" + url.QueryEscape(topUp.ID)
-	}
-	result, err := gateway.TopUp(request.Context(), billingTopUpInput{TopUpID: topUp.ID, UserID: identity.User.ID, Email: identity.User.Email,
-		Currency: topUp.Currency, Credits: topUp.Credits, AmountMinor: topUp.AmountMinor,
-		SuccessURL: successURL, CancelURL: settings.PublicURL + "/invoices/" + topUp.ID})
+	result, err := gateway.TopUp(request.Context(), handler.invoiceCheckoutInput(&db.Invoice{ID: topUp.ID, UserID: identity.User.ID, Email: identity.User.Email, Kind: "topup",
+		Currency: topUp.Currency, Credits: topUp.Credits, AmountMinor: topUp.AmountMinor}, gatewayKey, topUp.CheckoutAttempt))
 	if err != nil {
 		handler.internalError(writer, request, "create "+billingGatewayLabel(gatewayKey)+" credit top-up", err)
 		return

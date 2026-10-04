@@ -253,12 +253,7 @@ func (handler *Handler) PayInvoice(writer http.ResponseWriter, request *http.Req
 		http.Redirect(writer, request, payment.CheckoutURL, http.StatusSeeOther)
 		return
 	}
-	base := handler.config.Billing.PublicURL
-	success := base + "/invoices/" + invoice.ID
-	if gatewayKey == db.BillingGatewayPayPal {
-		success = base + "/billing/paypal/topup/return?topup=" + url.QueryEscape(payment.ID)
-	}
-	result, err := gateway.TopUp(request.Context(), billingTopUpInput{TopUpID: payment.ID, UserID: invoice.UserID, Email: invoice.Email, Currency: invoice.Currency, Credits: invoice.Credits, AmountMinor: invoice.AmountMinor, Description: "Invoice " + invoice.ID + ": " + invoice.Name, Attempt: payment.CheckoutAttempt, SuccessURL: success, CancelURL: base + "/invoices/" + invoice.ID})
+	result, err := gateway.TopUp(request.Context(), handler.invoiceCheckoutInput(invoice, gatewayKey, payment.CheckoutAttempt))
 	if err != nil {
 		handler.logger.Error("create invoice payment", "error", err)
 		handler.billingProblem(writer, request, http.StatusInternalServerError, "The payment provider did not confirm checkout. A payment may still be in progress. Return to your invoice and check its status before trying again; contact the site administrator if it remains unresolved.")
@@ -269,6 +264,22 @@ func (handler *Handler) PayInvoice(writer http.ResponseWriter, request *http.Req
 		return
 	}
 	http.Redirect(writer, request, result.Location, http.StatusSeeOther)
+}
+
+// invoiceCheckoutInput builds the gateway request for an invoice. A top-up
+// started from Billing and a retry from its invoice share one idempotency key,
+// so both paths must send identical parameters.
+func (handler *Handler) invoiceCheckoutInput(invoice *db.Invoice, gatewayKey string, attempt int) billingTopUpInput {
+	base := handler.config.Billing.PublicURL
+	input := billingTopUpInput{TopUpID: invoice.ID, UserID: invoice.UserID, Email: invoice.Email, Currency: invoice.Currency, Credits: invoice.Credits, AmountMinor: invoice.AmountMinor,
+		Attempt: attempt, SuccessURL: base + "/invoices/" + invoice.ID, CancelURL: base + "/invoices/" + invoice.ID}
+	if invoice.Kind != "topup" {
+		input.Description = "Invoice " + invoice.ID + ": " + invoice.Name
+	}
+	if gatewayKey == db.BillingGatewayPayPal {
+		input.SuccessURL = base + "/billing/paypal/topup/return?topup=" + url.QueryEscape(invoice.ID)
+	}
+	return input
 }
 
 // RunInvoiceEmails is a durable, leased outbox. Provider acceptance is recorded

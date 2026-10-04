@@ -323,3 +323,60 @@ func TestInvoiceEmailBackoffDoublesAndIsCapped(t *testing.T) {
 		t.Fatal("out-of-range attempts must stay within 5 minutes and 6 hours")
 	}
 }
+
+type checkoutRetryRepository struct {
+	*invoiceTestRepository
+	payment db.CreditTopUp
+}
+
+func (repo *checkoutRetryRepository) ReserveInvoiceGateway(_ context.Context, user, id, gateway string, _ time.Time) (*db.CreditTopUp, error) {
+	if user != repo.invoice.UserID || id != repo.payment.ID || gateway != repo.payment.Gateway {
+		return nil, db.ErrConflict
+	}
+	payment := repo.payment
+	return &payment, nil
+}
+func (repo *checkoutRetryRepository) BindInvoiceCheckout(context.Context, string, string, string, string, string) error {
+	return nil
+}
+
+// A top-up started from Billing whose gateway response was lost is retried
+// from its invoice under the same idempotency key. Stripe rejects a reused key
+// with different parameters, so the retry must repeat the original request.
+func TestTopUpRetryFromInvoiceRepeatsTheOriginalCheckoutRequest(t *testing.T) {
+	for _, gatewayKey := range []string{db.BillingGatewayStripe, db.BillingGatewayPayPal} {
+		t.Run(gatewayKey, func(t *testing.T) {
+			user := &db.User{ID: "11111111-1111-4111-8111-111111111111", Email: "user@example.com"}
+			repo := &checkoutRetryRepository{invoiceTestRepository: &invoiceTestRepository{entitlementRepository: &entitlementRepository{memoryRepository: &memoryRepository{files: make(map[string]*db.FileList)}}}}
+			handler := newTestHandler(t, repo, &memoryStorage{objects: make(map[string][]byte)})
+			handler.config.Billing = &config.BillingConfig{PublicURL: "https://share.example.com", CreditCurrency: "USD", MinTopUpCredits: 5, MaxTopUpCredits: 1000}
+			gateway := &checkoutGatewayStub{}
+			handler.billingGateways = map[string]billingGateway{gatewayKey: gateway}
+			router := chi.NewRouter()
+			router.Post("/billing/top-up/{gateway}", handler.BillingTopUp)
+			router.Post("/invoices/{id}/pay", handler.PayInvoice)
+			call := func(path, form string) {
+				t.Helper()
+				request := httptest.NewRequest(http.MethodPost, path, strings.NewReader(form))
+				request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+				request = request.WithContext(context.WithValue(request.Context(), identityContextKey{}, &identity{User: user, Transport: transportBearer}))
+				response := httptest.NewRecorder()
+				router.ServeHTTP(response, request)
+				if response.Code != http.StatusSeeOther {
+					t.Fatalf("%s: status=%d body=%q", path, response.Code, response.Body.String())
+				}
+			}
+			call("/billing/top-up/"+gatewayKey, "credits=25")
+			first, topUp := *gateway.topUpInput, *repo.topUp
+			// The stored invoice mirrors what CreateCreditTopUp records.
+			repo.invoice = db.Invoice{ID: topUp.ID, UserID: user.ID, Kind: "topup", Name: "25 account credits", Email: user.Email, Credits: topUp.Credits,
+				AmountMinor: topUp.AmountMinor, Currency: topUp.Currency, Status: "pending", Gateway: gatewayKey, CreatedAt: topUp.CreatedAt, ExpiresAt: topUp.ExpiresAt}
+			repo.payment = topUp
+			gateway.topUpInput = nil
+			call("/invoices/"+topUp.ID+"/pay", "gateway="+gatewayKey)
+			if gateway.topUpInput == nil || *gateway.topUpInput != first {
+				t.Fatalf("retry request differs:\nfirst %#v\nretry %#v", first, gateway.topUpInput)
+			}
+		})
+	}
+}
