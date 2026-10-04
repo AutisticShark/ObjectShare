@@ -102,8 +102,12 @@
   globalThis.ObjectShareCrypto = {createVault, unlockVault, encryptFile, decryptFile, fileKey, b64, unb64, accountKey};
   if (typeof document === "undefined") return; // Allows the same Web Crypto implementation to be tested in Node.
 
-  const setup = document.querySelector("#encryption-setup");
-  if (setup) {
+  // My account replaces its .page after an HTMX form error, which brings a new
+  // setup form; initialize each setup form once, including replacements.
+  const initSetup = () => {
+    const setup = document.querySelector("#encryption-setup");
+    if (!setup || setup.dataset.ready === "true") return;
+    setup.dataset.ready = "true";
     const status = setup.querySelector("[role='status']"), button = setup.querySelector("button[type='submit']");
     loadVault().then(state => {
       if (!state.vault) button.disabled = false;
@@ -133,7 +137,9 @@
         saveBlob(new Blob([JSON.stringify(state.vault, null, 2)], {type: "application/json"}), "objectshare-encrypted-key.json");
       } catch (error) { status.textContent = error.message; }
     });
-  }
+  };
+  initSetup();
+  document.addEventListener("htmx:afterSwap", initSetup);
 
   const download = document.querySelector("#encrypted-download");
   if (!download) return;

@@ -45,7 +45,7 @@
       <a class="nav-link" href="/">Upload</a><a class="nav-link" href="/files">My files</a><a class="nav-link" href="/billing">Billing</a>
       {{if eq .User.Role "admin"}}<a class="nav-link" href="/admin">Administration</a>{{end}}
       <a class="nav-link" href="/account" title="{{.User.DisplayName}}">My account</a>
-      <form action="/logout" method="post" hx-post="/logout" hx-disabled-elt="button">
+      <form action="/logout" method="post" hx-post="/logout" hx-select=".page" hx-target=".page" hx-swap="outerHTML" hx-disabled-elt="button">
         <input type="hidden" name="csrf_token" value="{{.CSRF}}">
         <button class="btn btn-outline-secondary btn-sm" type="submit">Log out</button>
       </form>

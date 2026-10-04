@@ -116,3 +116,37 @@ test('uploader honors optional encryption through proxied/direct single/batch fl
     }
   }
 });
+
+test('account key setup works again after HTMX replaces the account page', async () => {
+  const listeners = {};
+  const setupForm = () => {
+    const button = {disabled: true}, status = {textContent: ''};
+    const events = {};
+    return {
+      button, status, events, dataset: {},
+      querySelector: selector => selector === "[role='status']" ? status : selector === "button[type='submit']" ? button : selector === '#encryption-backup' ? {addEventListener: (name, listener) => { events[`backup-${name}`] = listener; }} : null,
+      addEventListener: (name, listener) => { assert.equal(events[name], undefined, `duplicate ${name} listener`); events[name] = listener; },
+    };
+  };
+  let current = setupForm();
+  const first = current;
+  const document = {
+    querySelector: selector => selector === '#encryption-setup' ? current : null,
+    addEventListener: (name, listener) => { listeners[name] = listener; },
+  };
+  const fetch = async () => ({ok: true, json: async () => ({user_id: 'alice', vault: null})});
+  const source = fs.readFileSync(path.join(__dirname, '../template/client-encryption.js'), 'utf8');
+  vm.runInNewContext(source, {document, fetch, TextEncoder, crypto: globalThis.crypto, btoa, atob, Blob, URL, setTimeout});
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(typeof first.events.submit, 'function');
+  assert.equal(first.button.disabled, false);
+
+  listeners['htmx:afterSwap']();
+  listeners['htmx:afterSwap'](); // the same form is set up only once
+  current = setupForm();
+  listeners['htmx:afterSwap']();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(typeof current.events.submit, 'function', 'the replacement setup form has no submit handler');
+  assert.equal(typeof current.events['backup-click'], 'function', 'the replacement backup button has no handler');
+  assert.equal(current.button.disabled, false, 'the replacement setup form stays disabled');
+});

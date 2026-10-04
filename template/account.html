@@ -12,26 +12,26 @@
       {{if .User.EmailVerifiedAt}}<span class="badge bg-green-lt">Verified</span> {{.User.Email}}
       {{else}}<span class="badge bg-yellow-lt">Unverified</span> {{.User.Email}}
       <p class="mt-2">Verify your address using the link in your email. Changing your email requires verification again.{{if .VerificationPurchases}} Verification is required before purchasing a plan.{{end}}{{if .VerificationUploads}} Verification is required before uploading files to your account.{{end}}</p>
-      {{if .VerificationEnabled}}<form action="/account/email/resend" method="post" hx-post="/account/email/resend" hx-disabled-elt="button"><input type="hidden" name="csrf_token" value="{{.CSRF}}"><button class="btn btn-primary" type="submit">Send verification email</button><div class="form-hint mt-2">Links expire after 24 hours. Wait one minute between requests; a new link replaces the previous one.</div></form>{{else}}<p class="text-secondary mb-0">Email verification is not configured. Contact the administrator if you need to verify your account.</p>{{end}}{{end}}
+      {{if .VerificationEnabled}}<form action="/account/email/resend" method="post" hx-post="/account/email/resend" hx-select=".page" hx-target=".page" hx-swap="outerHTML" hx-disabled-elt="button"><input type="hidden" name="csrf_token" value="{{.CSRF}}"><button class="btn btn-primary" type="submit">Send verification email</button><div class="form-hint mt-2">Links expire after 24 hours. Wait one minute between requests; a new link replaces the previous one.</div></form>{{else}}<p class="text-secondary mb-0">Email verification is not configured. Contact the administrator if you need to verify your account.</p>{{end}}{{end}}
     </div></div>
     <div class="card mb-3"><div class="card-body"><h3 class="card-title">Multi-factor authentication</h3><p>{{if .User.MFA.Method}}Enabled with {{if eq .User.MFA.Method "totp"}}an authenticator app{{else}}email codes{{end}}.{{else}}Add a second verification step to password and OAuth sign-ins using email codes or an authenticator app.{{end}}</p><a class="btn btn-primary" href="/account/mfa">Manage multi-factor authentication</a></div></div>
     <div class="row row-cards">
       {{template "billing-summary" .}}
-      <div class="col-12 col-lg-6"><form class="card" action="/account/profile" method="post" hx-post="/account/profile" hx-disabled-elt="button">
+      <div class="col-12 col-lg-6"><form class="card" action="/account/profile" method="post" hx-post="/account/profile" hx-select=".page" hx-target=".page" hx-swap="outerHTML" hx-disabled-elt="button">
         <input type="hidden" name="csrf_token" value="{{.CSRF}}"><div class="card-header"><h3 class="card-title">Profile</h3></div><div class="card-body">
           <div class="mb-3"><label class="form-label" for="display-name">Display name</label><input class="form-control" id="display-name" name="display_name" value="{{.User.DisplayName}}" maxlength="100" required></div>
           <div><label class="form-label" for="email">Email</label><input class="form-control" id="email" name="email" type="email" value="{{.User.Email}}" maxlength="320" required></div>
           {{if .HasPassword}}<div class="mt-3"><label class="form-label" for="profile-current-password">Current password</label><input class="form-control" id="profile-current-password" name="current_password" type="password" autocomplete="current-password" maxlength="512"><small class="form-hint">Required only to change your email address.</small></div>{{else}}<small class="form-hint mt-3">To change your email address, sign out and sign in again, then save within five minutes.</small>{{end}}
         </div><div class="card-footer text-end"><button class="btn btn-primary" type="submit">Save profile</button></div>
       </form></div>
-      <div class="col-12 col-lg-6"><form class="card" action="/account/password" method="post" hx-post="/account/password" hx-disabled-elt="button">
+      <div class="col-12 col-lg-6"><form class="card" action="/account/password" method="post" hx-post="/account/password" hx-select=".page" hx-target=".page" hx-swap="outerHTML" hx-disabled-elt="button">
 		<input type="hidden" name="csrf_token" value="{{.CSRF}}"><div class="card-header"><h3 class="card-title">{{if .HasPassword}}Change password{{else}}Set a password{{end}}</h3></div><div class="card-body">
 		  {{if .HasPassword}}<div class="mb-3"><label class="form-label" for="current-password">Current password</label><input class="form-control" id="current-password" name="current_password" type="password" autocomplete="current-password" required></div>{{else}}<p class="text-secondary">Add a password if you also want to log in with your email address.</p>{{end}}
 		  <div class="mb-3"><label class="form-label" for="password">New password</label><input class="form-control" id="password" name="password" type="password" autocomplete="new-password" minlength="12" maxlength="512" required></div>
 		  <div><label class="form-label" for="password-confirm">Confirm new password</label><input class="form-control" id="password-confirm" name="password_confirm" type="password" autocomplete="new-password" minlength="12" maxlength="512" required></div>
         </div><div class="card-footer text-end"><button class="btn btn-primary" type="submit">{{if .HasPassword}}Change password{{else}}Set password{{end}}</button></div>
       </form></div>
-	  <div class="col-12 col-lg-6"><form class="card" action="/account/theme" method="post" hx-post="/account/theme" hx-disabled-elt="button">
+	  <div class="col-12 col-lg-6"><form class="card" action="/account/theme" method="post" hx-post="/account/theme" hx-select=".page" hx-target=".page" hx-swap="outerHTML" hx-disabled-elt="button">
 		<input type="hidden" name="csrf_token" value="{{.CSRF}}"><div class="card-header"><h3 class="card-title">Appearance</h3></div><div class="card-body">
 		  <label class="form-label" for="theme">Theme</label><select class="form-select" id="theme" name="theme"><option value="light"{{if not .User.DarkMode}} selected{{end}}>Light</option><option value="dark"{{if .User.DarkMode}} selected{{end}}>Dark</option></select>
 		  <div class="form-hint">Your choice is saved to your account and follows you across browsers.</div>
@@ -39,7 +39,7 @@
 	  </form></div>
 	  {{if .OAuthProviders}}<div class="col-12"><div class="card"><div class="card-header"><h3 class="card-title">OAuth login</h3></div><div class="list-group list-group-flush">
 		{{range .OAuthProviders}}<div class="list-group-item"><div class="row align-items-center"><div class="col"><div class="fw-bold">{{.Label}}</div><div class="text-secondary small">{{if .Linked}}Linked to this account{{else if .Configured}}Not linked{{else}}Provider is no longer configured{{end}}</div></div><div class="col-auto">
-		  {{if .Linked}}<form action="/account/oauth/{{.Key}}/unlink" method="post" hx-post="/account/oauth/{{.Key}}/unlink" hx-disabled-elt="button" hx-confirm="Remove {{.Label}} login from this account?"><input type="hidden" name="csrf_token" value="{{$.CSRF}}"><button class="btn btn-outline-danger btn-sm" type="submit">Unlink</button></form>{{else if .Configured}}<a class="btn btn-primary btn-sm" href="/oauth/{{.Key}}/start">Link {{.Label}}</a>{{end}}
+		  {{if .Linked}}<form action="/account/oauth/{{.Key}}/unlink" method="post" hx-post="/account/oauth/{{.Key}}/unlink" hx-select=".page" hx-target=".page" hx-swap="outerHTML" hx-disabled-elt="button" hx-confirm="Remove {{.Label}} login from this account?"><input type="hidden" name="csrf_token" value="{{$.CSRF}}"><button class="btn btn-outline-danger btn-sm" type="submit">Unlink</button></form>{{else if .Configured}}<a class="btn btn-primary btn-sm" href="/oauth/{{.Key}}/start">Link {{.Label}}</a>{{end}}
 		</div></div></div>{{end}}
 	  </div></div></div>{{end}}
       <div class="col-12" id="client-encryption"><form id="encryption-setup" class="card" method="post">

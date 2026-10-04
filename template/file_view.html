@@ -89,7 +89,7 @@
               <div class="row g-3 align-items-end">
                 <div class="col-12 col-md">
                   <form class="row g-2" action="/api/v1/update/{{.FileID}}" method="post"
-                        hx-post="/api/v1/update/{{.FileID}}" hx-disabled-elt="button">
+                        hx-post="/api/v1/update/{{.FileID}}" hx-select=".page" hx-target=".page" hx-swap="outerHTML" hx-disabled-elt="button">
                     {{if .User}}<input type="hidden" name="csrf_token" value="{{.CSRF}}">{{end}}
                     <div class="col">
                       <label class="form-label" for="name">Rename file</label>
@@ -102,7 +102,7 @@
                 </div>
                 <div class="col-auto">
                   <form action="/api/v1/delete/{{.FileID}}" method="post"
-                        hx-post="/api/v1/delete/{{.FileID}}" hx-disabled-elt="button"
+                        hx-post="/api/v1/delete/{{.FileID}}" hx-select=".page" hx-target=".page" hx-swap="outerHTML" hx-disabled-elt="button"
                         hx-confirm="Permanently delete this file? This cannot be undone.">
                     {{if .User}}<input type="hidden" name="csrf_token" value="{{.CSRF}}">{{end}}
                     <button class="btn btn-danger" type="submit">Delete permanently</button>
