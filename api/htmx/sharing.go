@@ -138,7 +138,7 @@ func (handler *Handler) UpdateSharing(writer http.ResponseWriter, request *http.
 		return
 	}
 	if identityUser(request) == nil {
-		if subtle.ConstantTimeCompare([]byte(request.FormValue("csrf_token")), []byte(guestSharingCSRF(file))) != 1 {
+		if subtle.ConstantTimeCompare([]byte(request.PostFormValue("csrf_token")), []byte(guestSharingCSRF(file))) != 1 {
 			http.Error(writer, "Invalid CSRF token.", http.StatusForbidden)
 			return
 		}

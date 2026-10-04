@@ -271,7 +271,7 @@ func (handler *Handler) VerifyMFA(writer http.ResponseWriter, request *http.Requ
 		return
 	}
 	claims, err := handler.readMFA(request)
-	if err != nil || subtle.ConstantTimeCompare([]byte(claims.CSRF), []byte(request.FormValue("csrf_token"))) != 1 {
+	if err != nil || subtle.ConstantTimeCompare([]byte(claims.CSRF), []byte(request.PostFormValue("csrf_token"))) != 1 {
 		http.Error(writer, "Invalid verification request.", http.StatusForbidden)
 		return
 	}
@@ -427,7 +427,7 @@ func (handler *Handler) ResendMFA(writer http.ResponseWriter, request *http.Requ
 		return
 	}
 	claims, err := handler.readMFA(request)
-	if err != nil || subtle.ConstantTimeCompare([]byte(claims.CSRF), []byte(request.FormValue("csrf_token"))) != 1 {
+	if err != nil || subtle.ConstantTimeCompare([]byte(claims.CSRF), []byte(request.PostFormValue("csrf_token"))) != 1 {
 		http.Error(writer, "Invalid verification request.", http.StatusForbidden)
 		return
 	}

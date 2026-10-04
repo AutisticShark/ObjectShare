@@ -236,7 +236,7 @@ func (handler *Handler) Setup(writer http.ResponseWriter, request *http.Request)
 		!handler.parseAuthForm(writer, request) || !handler.verifyPreAuthCSRF(writer, request) {
 		return
 	}
-	if expected := handler.setupToken(); expected != "" && subtle.ConstantTimeCompare([]byte(request.FormValue("setup_token")), []byte(expected)) != 1 {
+	if expected := handler.setupToken(); expected != "" && subtle.ConstantTimeCompare([]byte(request.PostFormValue("setup_token")), []byte(expected)) != 1 {
 		csrf := handler.preAuthCSRF(writer, request)
 		if csrf != "" {
 			handler.renderStatus(writer, http.StatusForbidden, "setup.html", authPageData{Version: config.GetVersion(), CSRF: csrf, Error: "The setup token is incorrect.", Email: request.FormValue("email"), DisplayName: request.FormValue("display_name"), Setup: true, SetupTokenRequired: true})

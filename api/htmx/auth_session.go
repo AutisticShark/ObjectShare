@@ -104,7 +104,7 @@ func (handler *Handler) verifyJWTCSRF(writer http.ResponseWriter, request *http.
 	}
 	provided := request.Header.Get("X-CSRF-Token")
 	if provided == "" {
-		provided = request.FormValue("csrf_token")
+		provided = request.PostFormValue("csrf_token")
 	}
 	if identity == nil || subtle.ConstantTimeCompare([]byte(provided), []byte(identity.Claims.CSRF)) != 1 {
 		http.Error(writer, "Invalid CSRF token.", http.StatusForbidden)
@@ -165,7 +165,7 @@ func (handler *Handler) verifyPreAuthCSRFWithSecret(writer http.ResponseWriter, 
 	mac := hmac.New(sha256.New, secret)
 	_, _ = mac.Write([]byte(cookie.Value))
 	want := base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
-	if subtle.ConstantTimeCompare([]byte(request.FormValue("csrf_token")), []byte(want)) != 1 {
+	if subtle.ConstantTimeCompare([]byte(request.PostFormValue("csrf_token")), []byte(want)) != 1 {
 		http.Error(writer, "Invalid CSRF token.", http.StatusForbidden)
 		return false
 	}
