@@ -15,6 +15,10 @@ const (
 	loginWindow      = 15 * time.Minute
 	loginLockout     = 15 * time.Minute
 	maxLoginFailures = 5
+	// maxAccountLoginFailures caps attempts against one account summed over
+	// every client network. It is higher than the per-network limit so a few
+	// typos from the owner's own devices never reach it.
+	maxAccountLoginFailures = 20
 )
 
 func translateConflict(err error) error {
@@ -397,6 +401,16 @@ func (repo *GormRepository) RecordLoginFailure(ctx context.Context, key string, 
 // ClearLoginFailures on success, so concurrent guesses cannot all pass a
 // separate check before any failure is recorded.
 func (repo *GormRepository) ReserveLoginAttempt(ctx context.Context, key string, now time.Time) (bool, time.Time, error) {
+	return repo.reserveLoginAttempt(ctx, key, now, maxLoginFailures)
+}
+
+// ReserveAccountLoginAttempt is ReserveLoginAttempt for an account-wide key
+// shared by every client, with the higher maxAccountLoginFailures threshold.
+func (repo *GormRepository) ReserveAccountLoginAttempt(ctx context.Context, key string, now time.Time) (bool, time.Time, error) {
+	return repo.reserveLoginAttempt(ctx, key, now, maxAccountLoginFailures)
+}
+
+func (repo *GormRepository) reserveLoginAttempt(ctx context.Context, key string, now time.Time, maxFailures int) (bool, time.Time, error) {
 	allowed, retryAt := true, time.Time{}
 	err := repo.connection.WithContext(ctx).Transaction(func(transaction *gorm.DB) error {
 		if err := lockLoginThrottle(transaction, key, now); err != nil {
@@ -411,7 +425,7 @@ func (repo *GormRepository) ReserveLoginAttempt(ctx context.Context, key string,
 			allowed, retryAt = false, *throttle.LockedUntil
 			return nil
 		}
-		return countLoginFailure(transaction, key, now)
+		return countLoginFailure(transaction, key, now, maxFailures)
 	})
 	return allowed, retryAt, err
 }
@@ -427,11 +441,11 @@ func recordLoginFailure(transaction *gorm.DB, key string, now time.Time) error {
 	if err := lockLoginThrottle(transaction, key, now); err != nil {
 		return err
 	}
-	return countLoginFailure(transaction, key, now)
+	return countLoginFailure(transaction, key, now, maxLoginFailures)
 }
 
 // countLoginFailure must run under the advisory lock taken by lockLoginThrottle.
-func countLoginFailure(transaction *gorm.DB, key string, now time.Time) error {
+func countLoginFailure(transaction *gorm.DB, key string, now time.Time, maxFailures int) error {
 	var throttle LoginThrottle
 	err := transaction.Clauses(clause.Locking{Strength: "UPDATE"}).Where("key = ?", key).First(&throttle).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -446,7 +460,7 @@ func countLoginFailure(transaction *gorm.DB, key string, now time.Time) error {
 		throttle.LockedUntil = nil
 	}
 	throttle.Failures++
-	if throttle.Failures >= maxLoginFailures {
+	if throttle.Failures >= maxFailures {
 		lockedUntil := now.Add(loginLockout)
 		throttle.LockedUntil = &lockedUntil
 	}

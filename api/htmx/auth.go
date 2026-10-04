@@ -404,6 +404,21 @@ func (handler *Handler) authenticateCredentials(request *http.Request, emailValu
 	if !allowed {
 		return nil, true, retryAt, nil
 	}
+	// Attempts also count against the account across every client network, so
+	// rotating networks cannot guess without limit. When login CAPTCHA is on,
+	// each guess already costs a solved challenge and the account-wide lock is
+	// skipped: otherwise anyone able to solve CAPTCHAs could keep the owner out.
+	accountKey := ""
+	if emailErr == nil && !handler.captchaEnabled("login") {
+		accountKey = loginAccountThrottleKey(email)
+		allowed, retryAt, err = handler.users.ReserveAccountLoginAttempt(request.Context(), accountKey, time.Now().UTC())
+		if err != nil {
+			return nil, false, time.Time{}, err
+		}
+		if !allowed {
+			return nil, true, retryAt, nil
+		}
+	}
 	var user *db.User
 	if emailErr == nil {
 		user, err = handler.users.UserByEmail(request.Context(), email)
@@ -426,8 +441,13 @@ func (handler *Handler) authenticateCredentials(request *http.Request, emailValu
 	if user == nil || !user.CanAuthenticate() || !passwordCorrect {
 		return nil, false, time.Time{}, nil
 	}
-	if err := handler.users.ClearLoginFailures(request.Context(), throttleKey); err != nil {
-		handler.logger.Error("clear login failures", "error", err)
+	for _, key := range []string{throttleKey, accountKey} {
+		if key == "" {
+			continue
+		}
+		if err := handler.users.ClearLoginFailures(request.Context(), key); err != nil {
+			handler.logger.Error("clear login failures", "error", err)
+		}
 	}
 	handler.upgradePasswordHash(request, user, password)
 	return user, false, time.Time{}, nil

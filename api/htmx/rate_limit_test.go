@@ -5,10 +5,12 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
 
+	appauth "github.com/AutisticShark/ObjectShare/auth"
 	"github.com/AutisticShark/ObjectShare/config"
 	"github.com/AutisticShark/ObjectShare/db"
 )
@@ -196,5 +198,124 @@ func TestClientIPReadsEveryForwardedForLine(t *testing.T) {
 	request.Header.Add("X-Forwarded-For", "203.0.113.9, 10.0.0.6") // appended by trusted proxies
 	if got := handler.clientIP(request); got != "203.0.113.9" {
 		t.Fatalf("clientIP = %q, want the proxy-reported client 203.0.113.9", got)
+	}
+}
+
+func TestClientNetworkBucketsIPv6By64(t *testing.T) {
+	handler := &Handler{}
+	network := func(remote string) string {
+		request := httptest.NewRequest(http.MethodGet, "/", nil)
+		request.RemoteAddr = remote
+		return handler.clientNetwork(request)
+	}
+	if got := network("198.51.100.4:1234"); got != "198.51.100.4" {
+		t.Fatalf("IPv4 network = %q", got)
+	}
+	if got := network("[::ffff:198.51.100.4]:1234"); got != "198.51.100.4" {
+		t.Fatalf("IPv4-mapped IPv6 network = %q, want the IPv4 address", got)
+	}
+	first, rotated := network("[2001:db8:1:2::1]:1234"), network("[2001:db8:1:2:ffff:ffff:ffff:fffe]:1234")
+	if first != "2001:db8:1:2::/64" || rotated != first {
+		t.Fatalf("addresses in one /64 map to %q and %q", first, rotated)
+	}
+	if other := network("[2001:db8:1:3::1]:1234"); other == first {
+		t.Fatal("a different /64 shares the bucket")
+	}
+}
+
+func loginTestHandler(t *testing.T) *Handler {
+	t.Helper()
+	repository := newAuthMemoryRepository()
+	hash, _ := appauth.HashPassword("the correct password")
+	repository.users["60c628c1-85cb-4463-b895-a629c31bfa55"] = &db.User{ID: "60c628c1-85cb-4463-b895-a629c31bfa55", Email: "victim@example.com", DisplayName: "Victim", PasswordHash: hash, Role: db.RoleUser, Active: true, TokenVersion: 1}
+	return newAuthTestHandler(t, repository, false)
+}
+
+func apiLoginFrom(handler *Handler, remote, password string) int {
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/auth/login", strings.NewReader(fmt.Sprintf(`{"email":"victim@example.com","password":%q}`, password)))
+	request.Header.Set("Content-Type", "application/json")
+	request.RemoteAddr = remote
+	response := httptest.NewRecorder()
+	handler.APILogin(response, request)
+	return response.Code
+}
+
+// Rotating addresses inside one IPv6 /64 must not reset the per-client lockout.
+func TestLoginLockoutCoversWholeIPv6Slash64(t *testing.T) {
+	handler := loginTestHandler(t)
+	page := httptest.NewRecorder()
+	handler.LoginPage(page, httptest.NewRequest(http.MethodGet, "/login", nil))
+	csrf, preAuthCookie := strings.TrimSpace(page.Body.String()), page.Result().Cookies()[0]
+	login := func(remote, password string) *httptest.ResponseRecorder {
+		request := formRequest("/login", url.Values{"csrf_token": {csrf}, "email": {"victim@example.com"}, "password": {password}})
+		request.AddCookie(preAuthCookie)
+		request.RemoteAddr = remote
+		response := httptest.NewRecorder()
+		handler.Login(response, request)
+		return response
+	}
+	for range 5 {
+		login("[2001:db8:1:2::1]:4000", "wrong guess")
+	}
+	for host := 2; host <= 40; host++ {
+		if response := login(fmt.Sprintf("[2001:db8:1:2::%x]:4000", host), "wrong guess"); response.Code != http.StatusTooManyRequests {
+			t.Fatalf("guess from a rotated address in the locked /64 returned %d", response.Code)
+		}
+	}
+	if response := login("[2001:db8:1:2::ffff]:4000", "the correct password"); response.Code != http.StatusTooManyRequests {
+		t.Fatalf("correct password from the locked /64 returned %d", response.Code)
+	}
+	if response := login("[2001:db8:1:3::1]:4000", "the correct password"); response.Code != http.StatusSeeOther {
+		t.Fatalf("correct password from another /64 returned %d", response.Code)
+	}
+}
+
+// Guesses spread across many networks are capped per account.
+func TestLoginAccountLimitSpansClientNetworks(t *testing.T) {
+	handler := loginTestHandler(t)
+	for network := range 5 {
+		for range 4 {
+			if code := apiLoginFrom(handler, fmt.Sprintf("198.51.100.%d:4000", network+1), "wrong guess"); code != http.StatusUnauthorized {
+				t.Fatalf("guess below the account limit returned %d", code)
+			}
+		}
+	}
+	if code := apiLoginFrom(handler, "203.0.113.1:4000", "wrong guess"); code != http.StatusTooManyRequests {
+		t.Fatalf("guess past the account limit from a fresh network returned %d", code)
+	}
+	if code := apiLoginFrom(handler, "203.0.113.2:4000", "the correct password"); code != http.StatusTooManyRequests {
+		t.Fatalf("correct password on a locked account returned %d", code)
+	}
+}
+
+func TestSuccessfulLoginClearsTheAccountLimit(t *testing.T) {
+	handler := loginTestHandler(t)
+	guess := func(round int) {
+		for network := range 19 {
+			if code := apiLoginFrom(handler, fmt.Sprintf("198.51.%d.%d:4000", round, network+1), "wrong guess"); code != http.StatusUnauthorized {
+				t.Fatalf("round %d guess %d returned %d", round, network+1, code)
+			}
+		}
+	}
+	guess(100)
+	if code := apiLoginFrom(handler, "203.0.113.1:4000", "the correct password"); code != http.StatusOK {
+		t.Fatalf("owner login below the account limit returned %d", code)
+	}
+	guess(101)
+}
+
+// With login CAPTCHA each guess already costs a solved challenge, so the
+// account-wide lock is not applied and cannot be used to keep the owner out.
+func TestLoginCaptchaReplacesTheAccountLock(t *testing.T) {
+	handler := loginTestHandler(t)
+	handler.config.Captcha = &config.CaptchaConfig{Provider: "turnstile", SiteKey: "site", SecretKey: "secret", ProtectLogin: true}
+	handler.captcha = captchaVerifierFunc(func(context.Context, string, string, string) error { return nil })
+	for network := range 30 {
+		if code := apiLoginFrom(handler, fmt.Sprintf("198.51.100.%d:4000", network+1), "wrong guess"); code != http.StatusUnauthorized {
+			t.Fatalf("CAPTCHA-verified guess %d returned %d", network+1, code)
+		}
+	}
+	if code := apiLoginFrom(handler, "203.0.113.1:4000", "the correct password"); code != http.StatusOK {
+		t.Fatalf("owner login after CAPTCHA-verified guesses returned %d", code)
 	}
 }

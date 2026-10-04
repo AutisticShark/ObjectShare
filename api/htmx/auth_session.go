@@ -135,9 +135,16 @@ func (handler *Handler) preAuthCookieName() string {
 }
 
 func (handler *Handler) loginThrottleKey(request *http.Request, email string) string {
-	// clientIP honours the trusted-proxy list, so clients behind Cloudflare or a
-	// reverse proxy are throttled individually instead of sharing the proxy IP.
-	return appauth.TokenHash(strings.ToLower(strings.TrimSpace(email)) + "|" + handler.clientIP(request))
+	// clientNetwork honours the trusted-proxy list, so clients behind Cloudflare
+	// or a reverse proxy are throttled individually instead of sharing the proxy
+	// IP, and buckets IPv6 by /64 so address rotation does not reset the lockout.
+	return appauth.TokenHash(strings.ToLower(strings.TrimSpace(email)) + "|" + handler.clientNetwork(request))
+}
+
+// loginAccountThrottleKey counts password attempts against one account from
+// every client, capping guesses spread across many networks.
+func loginAccountThrottleKey(email string) string {
+	return appauth.TokenHash("login-account|" + strings.ToLower(strings.TrimSpace(email)))
 }
 
 // loginDestinations is the single allow-list of pages a login may return to.

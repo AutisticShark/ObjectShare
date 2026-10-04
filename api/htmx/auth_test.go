@@ -404,9 +404,15 @@ func (repository *authMemoryRepository) RehashPassword(_ context.Context, id, ol
 	return nil
 }
 func (repository *authMemoryRepository) ReserveLoginAttempt(_ context.Context, key string, _ time.Time) (bool, time.Time, error) {
+	return repository.reserveLoginAttempt(key, 5)
+}
+func (repository *authMemoryRepository) ReserveAccountLoginAttempt(_ context.Context, key string, _ time.Time) (bool, time.Time, error) {
+	return repository.reserveLoginAttempt(key, 20)
+}
+func (repository *authMemoryRepository) reserveLoginAttempt(key string, maxFailures int) (bool, time.Time, error) {
 	repository.throttleMu.Lock()
 	defer repository.throttleMu.Unlock()
-	if repository.throttles[key] >= 5 {
+	if repository.throttles[key] >= maxFailures {
 		return false, time.Now().Add(15 * time.Minute), nil
 	}
 	repository.throttles[key]++

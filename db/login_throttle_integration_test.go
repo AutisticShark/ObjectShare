@@ -64,6 +64,27 @@ func TestPostgresReserveLoginAttemptIsAtomicAndClearsOnSuccess(t *testing.T) {
 	}
 }
 
+func TestPostgresAccountLoginAttemptsLockAtTheHigherThresholdAndExpire(t *testing.T) {
+	repo := creditTestRepository(t)
+	key := strings.ReplaceAll(uuid.NewString()+uuid.NewString(), "-", "")
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	for attempt := range maxAccountLoginFailures {
+		if allowed, _, err := repo.ReserveAccountLoginAttempt(t.Context(), key, now); err != nil || !allowed {
+			t.Fatalf("attempt %d below the account threshold: allowed=%v err=%v", attempt+1, allowed, err)
+		}
+	}
+	allowed, retryAt, err := repo.ReserveAccountLoginAttempt(t.Context(), key, now.Add(time.Minute))
+	if err != nil || allowed || !retryAt.Equal(now.Add(loginLockout)) {
+		t.Fatalf("account past its threshold: allowed=%v retryAt=%v err=%v", allowed, retryAt, err)
+	}
+	if allowed, _, err = repo.ReserveAccountLoginAttempt(t.Context(), key, now.Add(loginLockout+time.Second)); err != nil || !allowed {
+		t.Fatalf("account lock did not expire: %v %v", allowed, err)
+	}
+	if err = repo.ClearLoginFailures(t.Context(), key); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestPostgresClaimUnverifiedAccountRemovesTheSquattersAccess(t *testing.T) {
 	repo := creditTestRepository(t)
 	suffix := uuid.NewString()

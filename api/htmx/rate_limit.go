@@ -79,7 +79,7 @@ func (handler *Handler) allowRequest(writer http.ResponseWriter, request *http.R
 	if !settings.Enabled || limit <= 0 {
 		return true
 	}
-	identityKey := "ip:" + handler.clientIP(request)
+	identityKey := "ip:" + handler.clientNetwork(request)
 	if identity := currentIdentity(request); identity != nil {
 		identityKey = "user:" + identity.User.ID
 	}
@@ -137,6 +137,21 @@ func (handler *Handler) clientIP(request *http.Request) string {
 		}
 	}
 	return remoteIP.String()
+}
+
+// clientNetwork is the client identity for rate-limit and login-throttle keys.
+// IPv4 clients (including IPv4-mapped IPv6) are keyed by address. IPv6 clients
+// are keyed by their /64, the smallest prefix normally assigned to one
+// subscriber, so rotating addresses inside it does not yield fresh buckets.
+func (handler *Handler) clientNetwork(request *http.Request) string {
+	ip := net.ParseIP(handler.clientIP(request))
+	if ip == nil {
+		return "unknown"
+	}
+	if ipv4 := ip.To4(); ipv4 != nil {
+		return ipv4.String()
+	}
+	return ip.Mask(net.CIDRMask(64, 128)).String() + "/64"
 }
 
 func parseRemoteIP(value string) net.IP {
