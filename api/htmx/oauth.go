@@ -50,6 +50,7 @@ type oauthFlow struct {
 	LinkTokenVersion int    `json:"link_token_version,omitempty"`
 	LinkJTIHash      string `json:"link_jti_hash,omitempty"`
 	LinkJWTExpiresAt int64  `json:"link_jwt_expires_at,omitempty"`
+	LinkAuthTime     int64  `json:"link_auth_time,omitempty"`
 	ExpiresAt        int64  `json:"expires_at"`
 }
 
@@ -97,6 +98,7 @@ func (handler *Handler) OAuthStart(writer http.ResponseWriter, request *http.Req
 		flow.LinkTokenVersion = identity.User.TokenVersion
 		flow.LinkJTIHash = appauth.TokenHash(identity.Claims.ID)
 		flow.LinkJWTExpiresAt = identity.Claims.ExpiresAt.Time.Unix()
+		flow.LinkAuthTime = identityAuthTime(identity).Unix()
 		flow.Next = ""
 	}
 	cookieValue, err := handler.signOAuthFlow(flow)
@@ -202,7 +204,13 @@ func (handler *Handler) finishOAuthLink(writer http.ResponseWriter, request *htt
 			return
 		}
 	}
-	if err := handler.startJWT(writer, request, user, true); err != nil {
+	// Linking re-issues the session JWT but keeps the sign-in time it started
+	// from: proving a provider account is not signing in to this account.
+	var authTime time.Time
+	if flow.LinkAuthTime > 0 {
+		authTime = time.Unix(flow.LinkAuthTime, 0)
+	}
+	if err := handler.replaceJWT(writer, request, user, authTime, true); err != nil {
 		handler.internalError(writer, request, "issue JWT after OAuth link", err)
 		return
 	}

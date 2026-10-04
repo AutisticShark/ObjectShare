@@ -66,6 +66,51 @@ func TestJWTRejectsExpiredAndStaleStructure(t *testing.T) {
 	}
 }
 
+func TestJWTAuthTimeIsCarriedForwardAndValidated(t *testing.T) {
+	manager, err := NewJWTManager(testJWTSecret, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC().Truncate(time.Second)
+	encoded, _, err := manager.Issue("60c628c1-85cb-4463-b895-a629c31bfa55", "user", 1, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsed, err := manager.Parse(encoded)
+	if err != nil || parsed.AuthTime == nil || !parsed.AuthTime.Time.Equal(now) {
+		t.Fatalf("a sign-in token must carry auth_time = iat: %#v %v", parsed, err)
+	}
+	signedIn := now.Add(-3 * time.Hour)
+	encoded, _, err = manager.Reissue("60c628c1-85cb-4463-b895-a629c31bfa55", "user", 2, now, signedIn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if parsed, err = manager.Parse(encoded); err != nil || parsed.AuthTime == nil || !parsed.AuthTime.Time.Equal(signedIn) || !parsed.IssuedAt.Time.Equal(now) {
+		t.Fatalf("a re-issued token must keep the original auth_time: %#v %v", parsed, err)
+	}
+	encoded, _, err = manager.Reissue("60c628c1-85cb-4463-b895-a629c31bfa55", "user", 2, now, time.Time{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if parsed, err = manager.Parse(encoded); err != nil || parsed.AuthTime != nil {
+		t.Fatalf("a re-issue without a sign-in time must omit auth_time: %#v %v", parsed, err)
+	}
+	if _, _, err = manager.Reissue("60c628c1-85cb-4463-b895-a629c31bfa55", "user", 2, now, now.Add(time.Minute)); err == nil {
+		t.Fatal("auth_time after iat was issued")
+	}
+	if _, mfa, err := manager.IssueMFA("60c628c1-85cb-4463-b895-a629c31bfa55", "user", 1, "login", "", "cookie", now); err != nil || mfa.AuthTime != nil {
+		t.Fatalf("MFA challenges must not carry auth_time: %#v %v", mfa, err)
+	}
+	for name, authTime := range map[string]*jwt.NumericDate{"after iat": jwt.NewNumericDate(now.Add(time.Minute)), "at the epoch": jwt.NewNumericDate(time.Unix(0, 0))} {
+		claims := validClaims(now)
+		claims.AuthTime = authTime
+		value, _ := jwt.NewWithClaims(jwt.SigningMethodHS256, claims).SignedString(manager.key)
+		if _, err := manager.Parse(value); err == nil {
+			t.Fatalf("a token with auth_time %s was accepted", name)
+		}
+	}
+}
+
 func TestJWTManagerRejectsWeakSecret(t *testing.T) {
 	if _, err := NewJWTManager("too-short", time.Hour); err == nil {
 		t.Fatal("weak JWT secret was accepted")

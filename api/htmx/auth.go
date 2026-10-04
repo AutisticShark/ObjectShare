@@ -737,6 +737,11 @@ func (handler *Handler) UpdateOwnPassword(writer http.ResponseWriter, request *h
 			handler.renderAccount(writer, request, identity, "Current password is incorrect.", "")
 			return
 		}
+	} else if !recentlyAuthenticated(identity) {
+		// A passwordless account proves nothing with a password, so setting the
+		// first one needs a fresh sign-in, like other login-method changes.
+		handler.renderAccount(writer, request, identity, "To set a password, sign out and sign in again, then set it within five minutes.", "")
+		return
 	}
 	password := request.FormValue("password")
 	if password != request.FormValue("password_confirm") {
@@ -757,7 +762,7 @@ func (handler *Handler) UpdateOwnPassword(writer http.ResponseWriter, request *h
 		handler.internalError(writer, request, "change password", err)
 		return
 	}
-	if err := handler.startJWT(writer, request, updatedUser, false); err != nil {
+	if err := handler.replaceJWT(writer, request, updatedUser, identityAuthTime(identity), false); err != nil {
 		handler.internalError(writer, request, "issue JWT after password change", err)
 		return
 	}

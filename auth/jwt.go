@@ -27,6 +27,11 @@ type Claims struct {
 	Role         string `json:"role"`
 	TokenVersion int    `json:"ver"`
 	CSRF         string `json:"csrf"`
+	// AuthTime is when the user last proved a login factor (password, OAuth,
+	// completed login MFA, signup). Re-issued tokens carry it forward
+	// unchanged, so it alone decides whether a session signed in recently.
+	// Tokens without it never count as a recent sign-in.
+	AuthTime *jwt.NumericDate `json:"auth_time,omitempty"`
 	jwt.RegisteredClaims
 }
 
@@ -40,6 +45,9 @@ func (claims Claims) Validate() error {
 	}
 	if !claims.ExpiresAt.Time.After(claims.NotBefore.Time) || !claims.ExpiresAt.Time.After(claims.IssuedAt.Time) {
 		return errors.New("JWT contains invalid temporal claims")
+	}
+	if claims.AuthTime != nil && (claims.AuthTime.Unix() <= 0 || claims.AuthTime.Time.After(claims.IssuedAt.Time)) {
+		return errors.New("JWT contains an invalid authentication time")
 	}
 	return nil
 }
@@ -81,7 +89,15 @@ func newJWTParser(audience string) *jwt.Parser {
 	)
 }
 
+// Issue signs a token for a user who has just authenticated, so its auth_time is
+// now.
 func (manager *JWTManager) Issue(userID, role string, tokenVersion int, now time.Time) (string, *Claims, error) {
+	return manager.Reissue(userID, role, tokenVersion, now, now)
+}
+
+// Reissue signs a replacement token that keeps the original sign-in time. A zero
+// authTime omits auth_time, so the token never counts as a recent sign-in.
+func (manager *JWTManager) Reissue(userID, role string, tokenVersion int, now, authTime time.Time) (string, *Claims, error) {
 	jti, _, err := NewToken()
 	if err != nil {
 		return "", nil, fmt.Errorf("generate JWT ID: %w", err)
@@ -98,6 +114,9 @@ func (manager *JWTManager) Issue(userID, role string, tokenVersion int, now time
 			ExpiresAt: jwt.NewNumericDate(now.Add(manager.lifetime)), NotBefore: jwt.NewNumericDate(now),
 			IssuedAt: jwt.NewNumericDate(now), ID: jti,
 		},
+	}
+	if !authTime.IsZero() {
+		claims.AuthTime = jwt.NewNumericDate(authTime.UTC())
 	}
 	if err := claims.Validate(); err != nil {
 		return "", nil, err
@@ -121,6 +140,7 @@ func (manager *JWTManager) IssueMFA(userID, role string, version int, action, ne
 		return "", nil, err
 	}
 	claims.Purpose, claims.Action, claims.Next, claims.Transport = "mfa", action, next, transport
+	claims.AuthTime = nil
 	claims.Audience = jwt.ClaimStrings{jwtAudience + "-mfa"}
 	claims.ExpiresAt = jwt.NewNumericDate(now.Add(5 * time.Minute))
 	token, err := jwt.NewWithClaims(jwt.SigningMethodHS256, claims).SignedString(manager.mfaKey)

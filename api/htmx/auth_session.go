@@ -14,21 +14,52 @@ import (
 	"github.com/AutisticShark/ObjectShare/db"
 )
 
+// startJWT signs user in after they proved a login factor (password, OAuth,
+// completed login MFA, signup). The cookie JWT's auth_time is now.
 func (handler *Handler) startJWT(writer http.ResponseWriter, request *http.Request, user *db.User, recordLogin bool) error {
 	token, _, err := handler.issueJWT(request, user, recordLogin)
 	if err != nil {
 		return err
 	}
-	http.SetCookie(writer, &http.Cookie{Name: handler.jwtCookieName(), Value: token, Path: "/", HttpOnly: true, Secure: handler.config.SecureCookies, SameSite: http.SameSiteStrictMode})
+	handler.setJWTCookie(writer, token)
 	return nil
 }
 
+// replaceJWT re-issues the cookie JWT (for example after a token version bump)
+// without counting as a sign-in: authTime is carried forward unchanged.
+func (handler *Handler) replaceJWT(writer http.ResponseWriter, request *http.Request, user *db.User, authTime time.Time, recordLogin bool) error {
+	token, _, err := handler.issueReplacementJWT(request, user, authTime, recordLogin)
+	if err != nil {
+		return err
+	}
+	handler.setJWTCookie(writer, token)
+	return nil
+}
+
+func (handler *Handler) setJWTCookie(writer http.ResponseWriter, token string) {
+	http.SetCookie(writer, &http.Cookie{Name: handler.jwtCookieName(), Value: token, Path: "/", HttpOnly: true, Secure: handler.config.SecureCookies, SameSite: http.SameSiteStrictMode})
+}
+
+// issueJWT signs a token for a user who has just authenticated.
 func (handler *Handler) issueJWT(request *http.Request, user *db.User, recordLogin bool) (string, *appauth.Claims, error) {
+	return handler.signJWT(request, user, true, time.Time{}, recordLogin)
+}
+
+// issueReplacementJWT signs a token that keeps an earlier sign-in time. A zero
+// authTime yields a token that never counts as a recent sign-in.
+func (handler *Handler) issueReplacementJWT(request *http.Request, user *db.User, authTime time.Time, recordLogin bool) (string, *appauth.Claims, error) {
+	return handler.signJWT(request, user, false, authTime, recordLogin)
+}
+
+func (handler *Handler) signJWT(request *http.Request, user *db.User, fresh bool, authTime time.Time, recordLogin bool) (string, *appauth.Claims, error) {
 	if user.TokenVersion < 1 {
 		user.TokenVersion = 1
 	}
 	now := time.Now().UTC()
-	token, claims, err := handler.jwt.Issue(user.ID, user.Role, user.TokenVersion, now)
+	if fresh {
+		authTime = now
+	}
+	token, claims, err := handler.jwt.Reissue(user.ID, user.Role, user.TokenVersion, now, authTime)
 	if err != nil {
 		return "", nil, err
 	}
@@ -217,9 +248,21 @@ func (handler *Handler) verifyCurrentPassword(request *http.Request, user *db.Us
 // login methods (linked providers, MFA enrolment for passwordless accounts).
 const recentAuthWindow = 5 * time.Minute
 
-// recentlyAuthenticated reports whether the JWT behind identity was issued
-// recently enough to count as a fresh sign-in.
+// recentlyAuthenticated reports whether the user behind identity proved a login
+// factor recently. It uses the auth_time claim, which only a real sign-in sets
+// and every re-issued token carries forward, so refreshing a token (iat) never
+// turns an old session into a recent one. Tokens without auth_time are not
+// recent.
 func recentlyAuthenticated(identity *identity) bool {
-	return identity != nil && identity.Claims != nil && identity.Claims.IssuedAt != nil &&
-		time.Since(identity.Claims.IssuedAt.Time) < recentAuthWindow
+	return identity != nil && identity.Claims != nil && identity.Claims.AuthTime != nil &&
+		time.Since(identity.Claims.AuthTime.Time) < recentAuthWindow
+}
+
+// identityAuthTime is the sign-in time a replacement for identity's JWT keeps,
+// or zero when the JWT has none.
+func identityAuthTime(identity *identity) time.Time {
+	if identity == nil || identity.Claims == nil || identity.Claims.AuthTime == nil {
+		return time.Time{}
+	}
+	return identity.Claims.AuthTime.Time
 }

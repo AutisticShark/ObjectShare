@@ -223,7 +223,7 @@ func TestDiscordOAuthIsPresentedAndCanBeUnlinked(t *testing.T) {
 	request := oauthRouteRequest(http.MethodPost, "/account/oauth/discord/unlink", "discord")
 	request.Body = io.NopCloser(strings.NewReader(url.Values{"csrf_token": {"signed-csrf"}}.Encode()))
 	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	request = request.WithContext(context.WithValue(request.Context(), identityContextKey{}, &identity{User: user, Claims: &appauth.Claims{CSRF: "signed-csrf", RegisteredClaims: jwt.RegisteredClaims{IssuedAt: jwt.NewNumericDate(time.Now())}}, Transport: transportCookie}))
+	request = request.WithContext(context.WithValue(request.Context(), identityContextKey{}, &identity{User: user, Claims: &appauth.Claims{CSRF: "signed-csrf", AuthTime: jwt.NewNumericDate(time.Now()), RegisteredClaims: jwt.RegisteredClaims{IssuedAt: jwt.NewNumericDate(time.Now())}}, Transport: transportCookie}))
 	response := httptest.NewRecorder()
 	handler.OAuthUnlink(response, request)
 	if response.Code != http.StatusSeeOther || response.Header().Get("Location") != "/account?message=oauth-unlinked" || len(repository.identities) != 0 {
@@ -247,6 +247,97 @@ func TestOAuthOnlyUserCanSetPasswordWithoutCurrentPassword(t *testing.T) {
 	handler.UpdateOwnPassword(response, request)
 	if response.Code != http.StatusSeeOther || !appauth.VerifyPassword("a newly configured password", repository.users[user.ID].PasswordHash) || repository.users[user.ID].TokenVersion != 2 {
 		t.Fatalf("set password status=%d user=%#v body=%q", response.Code, repository.users[user.ID], response.Body.String())
+	}
+}
+
+// responseJWT returns the session JWT a response set, or "" when it set none.
+func responseJWT(response *httptest.ResponseRecorder) string {
+	for _, cookie := range response.Result().Cookies() {
+		if strings.HasSuffix(cookie.Name, "objectshare_jwt") && cookie.Value != "" {
+			return cookie.Value
+		}
+	}
+	return ""
+}
+
+// A session older than recentAuthWindow must not set the first password of a
+// passwordless account: that would need no proof at all, and the JWT it
+// re-issues would then pass for a fresh sign-in.
+func TestSettingAFirstPasswordRequiresARecentSignIn(t *testing.T) {
+	repository := newAuthMemoryRepository()
+	verifiedAt := time.Now().Add(-24 * time.Hour)
+	user := &db.User{ID: "60c628c1-85cb-4463-b895-a629c31bfa55", Email: "owner@example.com", DisplayName: "Owner", Role: db.RoleUser, Active: true, TokenVersion: 1, EmailVerifiedAt: &verifiedAt}
+	repository.users[user.ID] = user
+	repository.identities["google\x00owner-google"] = &db.OAuthIdentity{UserID: user.ID, Provider: "google", Subject: "owner-google", Email: user.Email}
+	handler := newAuthTestHandler(t, repository, false)
+	serve := func(next http.HandlerFunc, request *http.Request, token string) *httptest.ResponseRecorder {
+		request.AddCookie(&http.Cookie{Name: "objectshare_jwt", Value: token})
+		response := httptest.NewRecorder()
+		handler.Authenticate(handler.RequireUser(next)).ServeHTTP(response, request)
+		return response
+	}
+	setPassword := func(token, csrf string) *httptest.ResponseRecorder {
+		return serve(handler.UpdateOwnPassword, formRequest("/account/password", url.Values{"csrf_token": {csrf}, "password": {"an attacker chosen password"}, "password_confirm": {"an attacker chosen password"}}), token)
+	}
+	unlink := func(token, csrf string) *httptest.ResponseRecorder {
+		request := formRequest("/account/oauth/google/unlink", url.Values{"csrf_token": {csrf}})
+		routeContext := chi.NewRouteContext()
+		routeContext.URLParams.Add("provider", "google")
+		return serve(handler.OAuthUnlink, request.WithContext(context.WithValue(request.Context(), chi.RouteCtxKey, routeContext)), token)
+	}
+
+	stale, staleClaims, err := handler.jwt.Issue(user.ID, user.Role, user.TokenVersion, time.Now().UTC().Add(-2*time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := setPassword(stale, staleClaims.CSRF)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "sign in again") || responseJWT(response) != "" || user.PasswordHash != "" || user.TokenVersion != 1 {
+		t.Fatalf("a stale session set the first password: status=%d jwt=%v body=%q", response.Code, responseJWT(response) != "", response.Body.String())
+	}
+	if unlink(stale, staleClaims.CSRF); len(repository.identities) != 1 {
+		t.Fatal("a stale session removed the only OAuth login")
+	}
+
+	// A recent sign-in may set it, and the replacement JWT keeps the original
+	// sign-in time rather than starting a new one.
+	signedIn := time.Now().UTC().Add(-4 * time.Minute).Truncate(time.Second)
+	recent, recentClaims, err := handler.jwt.Issue(user.ID, user.Role, user.TokenVersion, signedIn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response = setPassword(recent, recentClaims.CSRF)
+	replacement, err := handler.jwt.Parse(responseJWT(response))
+	if response.Code != http.StatusSeeOther || err != nil || user.PasswordHash == "" || user.TokenVersion != 2 {
+		t.Fatalf("a recent session could not set a password: status=%d err=%v body=%q", response.Code, err, response.Body.String())
+	}
+	if replacement.AuthTime == nil || !replacement.AuthTime.Time.Equal(signedIn) || !replacement.IssuedAt.Time.After(signedIn) {
+		t.Fatalf("replacement JWT auth_time=%v iat=%v, want auth_time %v carried forward", replacement.AuthTime, replacement.IssuedAt, signedIn)
+	}
+}
+
+// Changing a password re-issues the JWT. The replacement must keep the old
+// sign-in time, so an old session cannot launder itself into a recent one.
+func TestPasswordChangeDoesNotRefreshTheSignInTime(t *testing.T) {
+	repository := newAuthMemoryRepository()
+	hash, _ := appauth.HashPassword("the current password")
+	user := &db.User{ID: "60c628c1-85cb-4463-b895-a629c31bfa55", Email: "owner@example.com", DisplayName: "Owner", PasswordHash: hash, Role: db.RoleUser, Active: true, TokenVersion: 1}
+	repository.users[user.ID] = user
+	handler := newAuthTestHandler(t, repository, false)
+	signedIn := time.Now().UTC().Add(-2 * time.Hour).Truncate(time.Second)
+	stale, claims, err := handler.jwt.Issue(user.ID, user.Role, user.TokenVersion, signedIn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := formRequest("/account/password", url.Values{"csrf_token": {claims.CSRF}, "current_password": {"the current password"}, "password": {"a brand new password"}, "password_confirm": {"a brand new password"}})
+	request.AddCookie(&http.Cookie{Name: "objectshare_jwt", Value: stale})
+	response := httptest.NewRecorder()
+	handler.Authenticate(handler.RequireUser(http.HandlerFunc(handler.UpdateOwnPassword))).ServeHTTP(response, request)
+	replacement, err := handler.jwt.Parse(responseJWT(response))
+	if response.Code != http.StatusSeeOther || err != nil {
+		t.Fatalf("password change status=%d err=%v body=%q", response.Code, err, response.Body.String())
+	}
+	if replacement.AuthTime == nil || !replacement.AuthTime.Time.Equal(signedIn) || recentlyAuthenticated(&identity{User: user, Claims: replacement}) {
+		t.Fatalf("password change refreshed the sign-in time: auth_time=%v", replacement.AuthTime)
 	}
 }
 

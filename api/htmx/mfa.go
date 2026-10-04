@@ -375,7 +375,13 @@ func (handler *Handler) completeMFA(writer http.ResponseWriter, request *http.Re
 		return
 	}
 	http.SetCookie(writer, &http.Cookie{Name: handler.mfaCookieName(), Path: "/", MaxAge: -1, HttpOnly: true, Secure: handler.config.SecureCookies, SameSite: http.SameSiteStrictMode})
-	if err := handler.startJWT(writer, request, user, claims.Action == "login"); err != nil {
+	if claims.Action == "login" {
+		err = handler.startJWT(writer, request, user, true)
+	} else {
+		// Managing MFA re-issues the session JWT; it is not a new sign-in.
+		err = handler.replaceJWT(writer, request, user, identityAuthTime(currentIdentity(request)), false)
+	}
+	if err != nil {
 		handler.internalError(writer, request, "issue MFA JWT", err)
 		return
 	}
