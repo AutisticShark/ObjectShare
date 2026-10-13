@@ -53,7 +53,8 @@ func TestOAuthLoginCreatesJWTAccountWithoutPersistingProviderToken(t *testing.T)
 	callback.AddCookie(flowCookie)
 	response := httptest.NewRecorder()
 	handler.OAuthCallback(response, callback)
-	if response.Code != http.StatusSeeOther || response.Header().Get("Location") != "/admin/users" || len(repository.users) != 1 || len(repository.identities) != 1 {
+	// The callback continues through a same-site page, not a redirect: see continueAfterOAuth.
+	if response.Code != http.StatusOK || response.Body.String() != "continue=/admin/users" || len(repository.users) != 1 || len(repository.identities) != 1 {
 		t.Fatalf("OAuth callback status=%d location=%q users=%d identities=%d body=%q", response.Code, response.Header().Get("Location"), len(repository.users), len(repository.identities), response.Body.String())
 	}
 	user, err := repository.UserByEmail(context.Background(), "user@example.com")
@@ -76,8 +77,8 @@ func TestOAuthLoginCreatesJWTAccountWithoutPersistingProviderToken(t *testing.T)
 	forgedCallback.AddCookie(forgedFlowCookie)
 	forgedResponse := httptest.NewRecorder()
 	handler.OAuthCallback(forgedResponse, forgedCallback)
-	if forgedResponse.Code != http.StatusSeeOther || forgedResponse.Header().Get("Location") != "/account" {
-		t.Fatalf("forged OAuth destination status=%d location=%q", forgedResponse.Code, forgedResponse.Header().Get("Location"))
+	if forgedResponse.Code != http.StatusOK || forgedResponse.Body.String() != "continue=/account" {
+		t.Fatalf("forged OAuth destination status=%d body=%q", forgedResponse.Code, forgedResponse.Body.String())
 	}
 }
 
@@ -168,7 +169,7 @@ func TestOAuthLinkIsBoundToLiveJWTAndFinalLoginMethodIsPreserved(t *testing.T) {
 	callback.AddCookie(cookie)
 	response = httptest.NewRecorder()
 	handler.OAuthCallback(response, callback)
-	if response.Code != http.StatusSeeOther || len(repository.identities) != 1 {
+	if response.Code != http.StatusOK || response.Body.String() != "continue=/account?message=oauth-linked" || len(repository.identities) != 1 {
 		t.Fatalf("linked callback status=%d identities=%d body=%q", response.Code, len(repository.identities), response.Body.String())
 	}
 
@@ -192,7 +193,7 @@ func TestOAuthSignupDisabledStillAllowsLinkedIdentity(t *testing.T) {
 	callback.AddCookie(cookie)
 	response := httptest.NewRecorder()
 	handler.OAuthCallback(response, callback)
-	if response.Code != http.StatusSeeOther || response.Header().Get("Location") != "/account" {
+	if response.Code != http.StatusOK || response.Body.String() != "continue=/account" {
 		t.Fatalf("linked OAuth login with signup disabled status=%d body=%q", response.Code, response.Body.String())
 	}
 }
@@ -504,7 +505,7 @@ func TestVerifiedOAuthEmailReclaimsAnUnverifiedSquattedAccount(t *testing.T) {
 	callback.AddCookie(cookie)
 	response := httptest.NewRecorder()
 	handler.OAuthCallback(response, callback)
-	if response.Code != http.StatusSeeOther || response.Header().Get("Location") != "/account" {
+	if response.Code != http.StatusOK || response.Body.String() != "continue=/account" {
 		t.Fatalf("verified owner was not signed in: status=%d location=%q body=%q", response.Code, response.Header().Get("Location"), response.Body.String())
 	}
 	claimed := repository.users[squatted.ID]

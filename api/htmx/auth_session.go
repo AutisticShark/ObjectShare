@@ -226,13 +226,16 @@ func (handler *Handler) redirectToLogin(writer http.ResponseWriter, request *htt
 }
 
 func (handler *Handler) redirectAfterLogin(writer http.ResponseWriter, request *http.Request, destination string) {
+	handler.redirect(writer, request, loginDestinationPath(destination))
+}
+
+func loginDestinationPath(destination string) string {
 	for _, candidate := range loginDestinations {
 		if destination == candidate.key {
-			handler.redirect(writer, request, candidate.path)
-			return
+			return candidate.path
 		}
 	}
-	handler.redirect(writer, request, "/account")
+	return "/account"
 }
 
 // verifyCurrentPassword re-checks a signed-in user's password for a sensitive

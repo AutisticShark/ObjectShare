@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="refresh" content="0;url={{.Location}}">
+  <title>Signing in · {{(branding).SiteName}}</title>{{template "tabler-head" .}}
+</head>
+<body class="d-flex flex-column">
+  <div class="page page-center"><div class="container container-tight py-4">
+    <div class="text-center mb-4"><a href="/" class="navbar-brand navbar-brand-autodark justify-content-center">{{template "brand" .}}</a></div>
+    <div class="card card-md"><div class="card-body text-center">
+      <h2 class="h2 mb-4">Signed in</h2>
+      <p class="text-secondary">Taking you back to {{(branding).SiteName}}.</p>
+      <a class="btn btn-primary w-100" href="{{.Location}}">Continue</a>
+    </div></div>
+  </div></div>
+  {{template "footer" .}}
+</body>
+</html>

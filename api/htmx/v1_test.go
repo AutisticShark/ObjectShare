@@ -570,6 +570,20 @@ func TestAllProductionTemplatesParse(t *testing.T) {
 			t.Errorf("render %s: %v", render.name, err)
 		}
 	}
+	// The OAuth continue page must move on by itself to the same-site page,
+	// and the template must never turn a destination into a script URL.
+	for location, want := range map[string]string{
+		"/account?message=oauth-linked": `content="0;url=/account?message=oauth-linked"`,
+		"javascript:alert(1)":           `content="0;url=#ZgotmplZ"`,
+	} {
+		var page strings.Builder
+		if err := parsed.ExecuteTemplate(&page, "oauth_continue.html", struct{ Version, Location string }{"test", location}); err != nil {
+			t.Fatalf("render oauth_continue.html: %v", err)
+		}
+		if !strings.Contains(page.String(), want) || !strings.Contains(page.String(), "by Cat") {
+			t.Errorf("oauth_continue.html for %q does not contain %q and the footer credit", location, want)
+		}
+	}
 	for _, name := range []string{"account.html", "admin_users.html"} {
 		contents, err := os.ReadFile("../../template/" + name)
 		if err != nil {

@@ -41,6 +41,16 @@ type oauthErrorData struct {
 	User                            *db.User
 }
 
+// continueAfterOAuth sends a browser on from an OAuth callback to an
+// ObjectShare page. The callback is a navigation started by the provider's
+// site, and browsers keep that cross-site origin through any redirect, so the
+// SameSite=Strict JWT cookie just set would not be sent to the next page and
+// it would show as signed out. A page that moves on by itself starts a new,
+// same-site navigation that carries the cookie.
+func (handler *Handler) continueAfterOAuth(writer http.ResponseWriter, location string) {
+	handler.renderStatus(writer, http.StatusOK, "oauth_continue.html", struct{ Version, Location string }{config.GetVersion(), location})
+}
+
 type oauthFlow struct {
 	State            string `json:"state"`
 	Verifier         string `json:"verifier"`
@@ -214,7 +224,7 @@ func (handler *Handler) finishOAuthLink(writer http.ResponseWriter, request *htt
 		handler.internalError(writer, request, "issue JWT after OAuth link", err)
 		return
 	}
-	handler.redirect(writer, request, "/account?message=oauth-linked")
+	handler.continueAfterOAuth(writer, "/account?message=oauth-linked")
 }
 
 func (handler *Handler) finishOAuthLogin(writer http.ResponseWriter, request *http.Request, flow oauthFlow, identity *db.OAuthIdentity, email, displayName string) {
@@ -287,7 +297,7 @@ func (handler *Handler) finishOAuthUser(writer http.ResponseWriter, request *htt
 		handler.internalError(writer, request, "issue OAuth login JWT", err)
 		return
 	}
-	handler.redirectAfterLogin(writer, request, flow.Next)
+	handler.continueAfterOAuth(writer, loginDestinationPath(flow.Next))
 }
 
 func (handler *Handler) OAuthUnlink(writer http.ResponseWriter, request *http.Request) {
