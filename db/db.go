@@ -433,7 +433,8 @@ func (repo *GormRepository) ReserveGuestUpload(ctx context.Context, file *FileLi
 		}
 		var pending int64
 		if err := transaction.Model(&FileList{}).Select("COALESCE(SUM(file_size), 0)").
-			Where("file_owner IS NULL AND upload_status IN ?", []string{"pending", "publishing"}).Scan(&pending).Error; err != nil {
+			Where("file_owner IS NULL AND upload_status IN ?", []string{"pending", "publishing"}).
+			Where(liveReservation, time.Now().UTC().Add(-ReservationCancelGrace)).Scan(&pending).Error; err != nil {
 			return err
 		}
 		if exceedsQuota(pending, file.FileSize, maxPendingBytes) {
@@ -480,11 +481,23 @@ func effectiveUploadQuota(connection *gorm.DB, userID string, accountQuota int64
 	return accountQuota, nil
 }
 
+// liveReservation excludes a pending upload whose reservation expired more
+// than ReservationCancelGrace ago: completion refuses it and cleanup removes
+// it, so it is canceled and must not hold quota until cleanup reaches it. The
+// grace covers a completion that passed its expiry check just before expiry
+// and claims the upload moments later.
+const liveReservation = "(upload_status <> 'pending' OR upload_expires_at IS NULL OR upload_expires_at >= ?)"
+
+// ReservationCancelGrace is how long after its expiry a pending reservation
+// still holds quota.
+const ReservationCancelGrace = 5 * time.Minute
+
 func uploadBytesUsed(connection *gorm.DB, userID string) (int64, error) {
 	active := []string{"pending", "publishing", "complete", "deleting", "aborting"}
 	var used int64
 	if err := connection.Model(&FileList{}).Select("COALESCE(SUM(file_size), 0)").
-		Where("upload_status IN ? AND file_owner = ?", active, userID).Scan(&used).Error; err != nil {
+		Where("upload_status IN ? AND file_owner = ?", active, userID).
+		Where(liveReservation, time.Now().UTC().Add(-ReservationCancelGrace)).Scan(&used).Error; err != nil {
 		return 0, err
 	}
 	return used, nil

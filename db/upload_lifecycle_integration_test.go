@@ -219,3 +219,55 @@ func TestPostgresUploadReservationExtendsOnlyLivePendingUploads(t *testing.T) {
 		}
 	}
 }
+
+// A pending reservation that expired more than ReservationCancelGrace ago is
+// canceled: it no longer holds account or guest quota while it waits for
+// cleanup. Within the grace a completion may still claim it, so it counts.
+func TestPostgresExpiredReservationsAreCanceled(t *testing.T) {
+	repo := creditTestRepository(t)
+	if err := repo.connection.AutoMigrate(&FileList{}); err != nil {
+		t.Fatal(err)
+	}
+	user := creditTestUser(t, repo, 0)
+	if err := repo.connection.Model(&User{}).Where("id = ?", user.ID).Update("upload_quota_bytes", 10).Error; err != nil {
+		t.Fatal(err)
+	}
+	recent, expired := time.Now().UTC().Add(-time.Minute), time.Now().UTC().Add(-ReservationCancelGrace-time.Minute)
+	reserve := func(owner *string, size int64, expires time.Time) (string, error) {
+		file := FileList{FileID: uuid.NewString(), FileName: "reserved.txt", FileSize: size, FileOwner: owner, UploadStatus: "pending", UploadExpiresAt: &expires, ShareUserIDs: []string{}}
+		if owner == nil {
+			return file.FileID, repo.ReserveGuestUpload(t.Context(), &file, 10)
+		}
+		return file.FileID, repo.ReserveUpload(t.Context(), &file)
+	}
+
+	abandoned, err := reserve(&user.ID, 8, time.Now().UTC().Add(time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := reserve(&user.ID, 8, time.Now().UTC().Add(time.Hour)); err == nil {
+		t.Fatal("a live reservation did not hold the account quota")
+	}
+	if err := repo.connection.Model(&FileList{}).Where("file_id = ?", abandoned).Update("upload_expires_at", recent).Error; err != nil {
+		t.Fatal(err)
+	}
+	if usage, err := repo.UploadUsage(t.Context(), user.ID); err != nil || usage.Used != 8 {
+		t.Fatalf("a reservation within the grace stopped counting: %+v %v", usage, err)
+	}
+	if err := repo.connection.Model(&FileList{}).Where("file_id = ?", abandoned).Update("upload_expires_at", expired).Error; err != nil {
+		t.Fatal(err)
+	}
+	if usage, err := repo.UploadUsage(t.Context(), user.ID); err != nil || usage.Used != 0 {
+		t.Fatalf("expired reservation still counts: %+v %v", usage, err)
+	}
+	if _, err := reserve(&user.ID, 8, time.Now().UTC().Add(time.Hour)); err != nil {
+		t.Fatalf("expired reservation still blocks the account quota: %v", err)
+	}
+
+	if _, err := reserve(nil, 8, expired); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := reserve(nil, 8, time.Now().UTC().Add(time.Hour)); err != nil {
+		t.Fatalf("expired guest reservation still blocks the guest cap: %v", err)
+	}
+}
