@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -93,6 +94,35 @@ func TestEnvExampleLeavesSettingsEmpty(t *testing.T) {
 	for _, match := range regexp.MustCompile(`(?m)^(OBJECTSHARE_[A-Z0-9_]+)=(.*?)\r?$`).FindAllStringSubmatch(string(example), -1) {
 		if match[2] != "" && !allowed[match[1]] {
 			t.Errorf(".env.example sets %s=%s, which would override config.json", match[1], match[2])
+		}
+	}
+}
+
+// Every parsed variable must be named in the README, either literally or by a
+// documented pattern such as OBJECTSHARE_COS_* or OBJECTSHARE_<PROVIDER>_..., so
+// an operator can find where the option belongs.
+func TestEveryParsedVariableIsInTheREADME(t *testing.T) {
+	readme, err := os.ReadFile("../README.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(readme)
+	var patterns []*regexp.Regexp
+	for _, documented := range regexp.MustCompile(`OBJECTSHARE_[A-Z0-9_]*(?:\*|<PROVIDER>)[A-Z0-9_]*`).FindAllString(text, -1) {
+		if documented == "OBJECTSHARE_*" {
+			continue // the README's general "every OBJECTSHARE_* variable" wording
+		}
+		quoted := regexp.QuoteMeta(documented)
+		quoted = strings.NewReplacer(regexp.QuoteMeta("*"), "[A-Z0-9_]+", regexp.QuoteMeta("<PROVIDER>"), "[A-Z0-9]+", "<PROVIDER>", "[A-Z0-9]+").Replace(quoted)
+		patterns = append(patterns, regexp.MustCompile(`^`+quoted+`$`))
+	}
+	for _, name := range parsedEnvironmentNames(t) {
+		// The email table names variables by the documented OBJECTSHARE_EMAIL_ prefix.
+		if regexp.MustCompile(`\b`+name+`\b`).MatchString(text) || strings.HasPrefix(name, "OBJECTSHARE_EMAIL_") {
+			continue
+		}
+		if !slices.ContainsFunc(patterns, func(pattern *regexp.Regexp) bool { return pattern.MatchString(name) }) {
+			t.Errorf("README.md does not document %s", name)
 		}
 	}
 }
