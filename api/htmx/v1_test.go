@@ -484,7 +484,7 @@ func TestTemplatesKeepTablerHtmxAndAuthorCredit(t *testing.T) {
 		if err := parsed.ExecuteTemplate(&output, name, map[string]any{"Version": "test"}); err != nil {
 			t.Fatal(err)
 		}
-		for _, expected := range []string{"@tabler/core@1.4.0", "htmx.org@2.0.10", "Made with", "by Cat"} {
+		for _, expected := range []string{"@tabler/core@1.6.1", "htmx.org@2.0.11", "Made with", "by Cat"} {
 			if !strings.Contains(output.String(), expected) {
 				t.Errorf("%s no longer contains %q", name, expected)
 			}
@@ -586,7 +586,7 @@ func TestAllProductionTemplatesParse(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, expected := range []string{"@tabler/core@1.4.0", "htmx.org@2.0.10", "Made with", "by Cat"} {
+	for _, expected := range []string{"@tabler/core@1.6.1", "htmx.org@2.0.11", "Made with", "by Cat"} {
 		if !strings.Contains(string(partial), expected) {
 			t.Errorf("partials.html no longer contains %q", expected)
 		}
