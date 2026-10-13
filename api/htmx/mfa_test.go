@@ -118,6 +118,16 @@ func TestMFAPasswordAPILoginRecoveryAndReplay(t *testing.T) {
 	}
 }
 
+// Recovery codes are lowercase hex. A capital letter added by a phone keyboard,
+// or spaces and dashes typed to group the code, must not reject a valid one.
+func TestMFARecoveryCodeAcceptsTypedVariations(t *testing.T) {
+	h, _, user, _ := mfaFixture(t, "totp")
+	user.MFA.Recovery = []string{appauth.MFAHash(h.settingsKey, user.ID+":recovery", "0123456789abcdef0123456789abcdef")}
+	if w := verifyAPI(h, apiChallenge(t, h), " 01234567-89ABCDEF 01234567-89abcdef "); w.Code != http.StatusOK || len(user.MFA.Recovery) != 0 {
+		t.Fatalf("typed recovery code rejected: %d %s", w.Code, w.Body.String())
+	}
+}
+
 // The one-minute start cooldown exists to limit emailed codes. Authenticator
 // users must be able to start another sign-in straight away (for example after
 // abandoning one), while email-code sign-ins keep the cooldown.

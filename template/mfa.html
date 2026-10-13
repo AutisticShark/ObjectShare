@@ -17,7 +17,7 @@
       <form action="/login/mfa" method="post" hx-post="/login/mfa" hx-select=".page" hx-target=".page" hx-swap="outerHTML" hx-disabled-elt="button" autocomplete="off">
         <input type="hidden" name="csrf_token" value="{{.CSRF}}">
         <label for="mfa-code" class="form-label">{{if eq .Method "email"}}Email verification code{{else}}Authenticator code{{end}}{{if or (eq .Action "login") (eq .Action "disable") (eq .Action "recovery")}} or recovery code{{end}}</label>
-        <input class="form-control mb-3" id="mfa-code" name="code" autocomplete="one-time-code" maxlength="64" required autofocus>
+        <input class="form-control mb-3" id="mfa-code" name="code" autocomplete="one-time-code" autocapitalize="none" spellcheck="false" maxlength="64" required autofocus>
         <button class="btn btn-primary w-100" type="submit">Verify</button>
       </form>
       {{if eq .Method "email"}}<form class="mt-3" action="/login/mfa/resend" method="post" hx-post="/login/mfa/resend" hx-select=".page" hx-target=".page" hx-swap="outerHTML" hx-disabled-elt="button"><input type="hidden" name="csrf_token" value="{{.CSRF}}"><button class="btn w-100" type="submit">Resend email code</button></form>{{end}}

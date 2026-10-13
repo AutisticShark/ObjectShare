@@ -244,6 +244,13 @@ func (handler *Handler) readMFA(request *http.Request) (*appauth.Claims, error) 
 	return claims, err
 }
 
+// normalizeRecoveryCode accepts a recovery code as a person may type it back:
+// with a capital letter added by a phone keyboard, or grouped with spaces or
+// dashes. Codes are issued as lowercase hex, so none of that changes a code.
+func normalizeRecoveryCode(code string) string {
+	return strings.ToLower(strings.NewReplacer(" ", "", "-", "").Replace(code))
+}
+
 func validMFAState(user *db.User, claims *appauth.Claims, now time.Time) bool {
 	s := user.MFA.ChallengeSlot(claims.Action)
 	return user.CanAuthenticate() && user.TokenVersion == claims.TokenVersion && s.Challenge == appauth.TokenHash(claims.ID) && s.Action == claims.Action && now.Before(s.Expires) && now.Before(claims.ExpiresAt.Time) && !now.Before(s.LockedUntil) && user.Email == s.Email
@@ -289,6 +296,7 @@ func (handler *Handler) completeMFA(writer http.ResponseWriter, request *http.Re
 		return
 	}
 	code = strings.TrimSpace(code)
+	recoveryCode := normalizeRecoveryCode(code)
 	var success bool
 	var codes []string
 	var method string
@@ -310,7 +318,7 @@ func (handler *Handler) completeMFA(writer http.ResponseWriter, request *http.Re
 		// Recovery codes cannot confirm a new factor.
 		if !setup {
 			for i, saved := range state.Recovery {
-				if handler.recoveryCodeMatches(user.ID, code, saved) {
+				if handler.recoveryCodeMatches(user.ID, recoveryCode, saved) {
 					state.Recovery = append(state.Recovery[:i:i], state.Recovery[i+1:]...)
 					success = true
 					break
