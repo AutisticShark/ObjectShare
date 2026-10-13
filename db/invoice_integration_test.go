@@ -298,6 +298,17 @@ func TestPostgresLegacyRenewalRequiresPaidInvoice(t *testing.T) {
 	if err != nil || ent.Active {
 		t.Fatal("cancellation was not preserved")
 	}
+	// An update created in the same second as the cancellation but delivered
+	// after it must not revive the canceled subscription.
+	update.EventID = "same-second-update"
+	update.Status = "active"
+	if _, err = repo.ApplySubscription(t.Context(), update); err != nil {
+		t.Fatal(err)
+	}
+	ent, err = repo.Entitlements(t.Context(), user.ID, now)
+	if err != nil || ent.Active {
+		t.Fatal("a same-second update revived the canceled subscription")
+	}
 }
 
 // PayPal sends BILLING.SUBSCRIPTION.CANCELLED (or EXPIRED) as soon as the

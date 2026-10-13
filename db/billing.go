@@ -498,6 +498,13 @@ func (repo *GormRepository) ApplySubscription(ctx context.Context, update Subscr
 		if err == nil && update.EventCreated < existing.LastEventCreated {
 			return tx.Create(&BillingEvent{EventID: eventID}).Error
 		}
+		// A canceled or expired provider subscription never becomes active
+		// again, so a lifecycle event created in the same second as the
+		// cancellation but delivered after it must not revive it.
+		if err == nil && existing.Gateway == update.Gateway && existing.GatewaySubscriptionID == update.SubscriptionID &&
+			subscriptionTerminal(existing.Status) && !subscriptionTerminal(update.Status) {
+			return tx.Create(&BillingEvent{EventID: eventID}).Error
+		}
 		if update.UserID == "" && err == nil {
 			update.UserID = existing.UserID
 		}
