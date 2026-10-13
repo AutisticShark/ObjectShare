@@ -93,6 +93,7 @@ func TestEncryptedDownloadErrorIsNotSentAsTheFile(t *testing.T) {
 	fileID := uploadEncrypted(t, repository, storage, 1, []byte("secret payload"))
 	handler := newTestHandlerConfig(t, &config.ServiceConfig{MaxFileSize: 1, StorageService: "filesystem",
 		Encryption: &config.EncryptionConfig{Enabled: true, Method: "aes-256-gcm", Key: testEncryptionKey}}, repository, storage)
+	handler.cipherSlotWait = 0
 	if !handler.acquireCipherSlot() {
 		t.Fatal("cipher slot is already held")
 	}
@@ -104,6 +105,24 @@ func TestEncryptedDownloadErrorIsNotSentAsTheFile(t *testing.T) {
 	response = downloadFile(handler, fileID)
 	if response.Code != http.StatusOK || !strings.HasPrefix(response.Header().Get("Content-Disposition"), "attachment") {
 		t.Fatalf("download status=%d disposition=%q", response.Code, response.Header().Get("Content-Disposition"))
+	}
+}
+
+// Another encrypted transfer holding the cipher slot briefly delays a download
+// instead of failing it.
+func TestEncryptedDownloadWaitsForABusyCipherSlot(t *testing.T) {
+	repository := &memoryRepository{files: make(map[string]*db.FileList)}
+	storage := &memoryStorage{objects: make(map[string][]byte)}
+	fileID := uploadEncrypted(t, repository, storage, 1, []byte("secret payload"))
+	handler := newTestHandlerConfig(t, &config.ServiceConfig{MaxFileSize: 1, StorageService: "filesystem",
+		Encryption: &config.EncryptionConfig{Enabled: true, Method: "aes-256-gcm", Key: testEncryptionKey}}, repository, storage)
+	handler.cipherSlotWait = 5 * time.Second
+	if !handler.acquireCipherSlot() {
+		t.Fatal("cipher slot is already held")
+	}
+	time.AfterFunc(50*time.Millisecond, handler.releaseCipherSlot)
+	if response := downloadFile(handler, fileID); response.Code != http.StatusOK || response.Body.String() != "secret payload" {
+		t.Fatalf("download behind a briefly busy slot: status=%d body=%q", response.Code, response.Body.String())
 	}
 }
 

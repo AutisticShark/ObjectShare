@@ -467,6 +467,7 @@ func TestProxiedBatchReportsBusyEncryptionAsRetryable(t *testing.T) {
 	cfg := &config.ServiceConfig{MaxFileSize: 1, StorageService: "filesystem",
 		Encryption: &config.EncryptionConfig{Enabled: true, Method: "aes-256-gcm", Key: "QkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkI="}}
 	handler := newTestHandlerConfig(t, cfg, repository, &memoryStorage{objects: make(map[string][]byte)})
+	handler.cipherSlotWait = 0 // refuse at once instead of waiting for the held slot
 	held := 0
 	for handler.acquireCipherSlot() {
 		held++

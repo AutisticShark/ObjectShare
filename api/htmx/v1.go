@@ -57,6 +57,7 @@ type Handler struct {
 	cipher             *appcrypto.Cipher // encrypts new uploads; nil while encryption is off
 	readCipher         *appcrypto.Cipher // decrypts stored objects whenever a key is configured
 	cipherSlot         chan struct{}
+	cipherSlotWait     time.Duration
 	logger             *slog.Logger
 	users              db.AuthRepository
 	jwt                *appauth.JWTManager
@@ -190,7 +191,8 @@ func New(cfg *config.ServiceConfig, repository db.Repository, storage service.Ob
 		captcha: newCaptchaVerifier(cfg.Captcha), rateLimits: rateLimits,
 		settings: settings, billing: billing, billingGateways: billingGateways,
 		localRateLimits: newLocalRateLimiter(), trustedProxies: trustedProxies,
-		htmxErrorsJS: htmxErrorsJS,
+		cipherSlotWait: cipherSlotWait,
+		htmxErrorsJS:   htmxErrorsJS,
 	}
 	if cfg.Upload == nil || cfg.Upload.GuestEnabled {
 		if cfg.RateLimit == nil || !cfg.RateLimit.Enabled {
@@ -457,7 +459,7 @@ func (handler *Handler) Download(writer http.ResponseWriter, request *http.Reque
 			handler.internalError(writer, request, "decrypt object", errors.New("encryption key is unavailable"))
 			return
 		}
-		plaintext, err := handler.decryptObject(body, file)
+		plaintext, err := handler.decryptObject(request.Context(), body, file)
 		switch {
 		case errors.Is(err, errCipherBusy):
 			http.Error(writer, "Encryption capacity is busy; retry shortly.", http.StatusServiceUnavailable)
@@ -497,8 +499,8 @@ func (handler *Handler) logStreamError(request *http.Request, fileID, operation 
 //
 // The read is bounded by the size recorded when the file was stored, not by the
 // current max_file_size: lowering that setting must not strand older files.
-func (handler *Handler) decryptObject(body io.Reader, file *db.FileList) ([]byte, error) {
-	if !handler.acquireCipherSlot() {
+func (handler *Handler) decryptObject(ctx context.Context, body io.Reader, file *db.FileList) ([]byte, error) {
+	if !handler.waitForCipherSlot(ctx) {
 		return nil, errCipherBusy
 	}
 	defer handler.releaseCipherSlot()
@@ -840,3 +842,29 @@ func (handler *Handler) acquireCipherSlot() bool {
 }
 
 func (handler *Handler) releaseCipherSlot() { <-handler.cipherSlot }
+
+// cipherSlotWait is how long an encrypted transfer waits for the cipher slot
+// before it is refused as busy, so a short overlap with another encrypted
+// transfer delays it instead of failing it (and rolling back its batch).
+const cipherSlotWait = 15 * time.Second
+
+// waitForCipherSlot takes the cipher slot, waiting up to the handler's
+// cipherSlotWait or until ctx ends.
+func (handler *Handler) waitForCipherSlot(ctx context.Context) bool {
+	if handler.acquireCipherSlot() {
+		return true
+	}
+	if handler.cipherSlotWait <= 0 {
+		return false
+	}
+	timer := time.NewTimer(handler.cipherSlotWait)
+	defer timer.Stop()
+	select {
+	case handler.cipherSlot <- struct{}{}:
+		return true
+	case <-timer.C:
+		return false
+	case <-ctx.Done():
+		return false
+	}
+}

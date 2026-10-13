@@ -171,7 +171,7 @@ func (handler *Handler) Upload(writer http.ResponseWriter, request *http.Request
 	reader := io.TeeReader(fileObject, io.MultiWriter(sha256Hasher, sha3Hasher, counter))
 	storedSize := header.Size
 	if handler.cipher != nil {
-		ciphertext, encryptErr := handler.encryptUpload(reader, fileID, header.Size, maxBytes)
+		ciphertext, encryptErr := handler.encryptUpload(request.Context(), reader, fileID, header.Size, maxBytes)
 		switch {
 		case errors.Is(encryptErr, errCipherBusy):
 			http.Error(writer, "Encryption capacity is busy; retry shortly.", http.StatusServiceUnavailable)
@@ -302,7 +302,7 @@ func (handler *Handler) storeProxiedHeader(request *http.Request, header *multip
 	reader := io.TeeReader(fileObject, io.MultiWriter(sha256Hasher, sha3Hasher, counter))
 	storedSize := header.Size
 	if handler.cipher != nil {
-		ciphertext, encryptErr := handler.encryptUpload(reader, fileID, header.Size, maxBytes)
+		ciphertext, encryptErr := handler.encryptUpload(request.Context(), reader, fileID, header.Size, maxBytes)
 		if encryptErr != nil {
 			return uploadedFileResult{}, "", encryptErr
 		}
@@ -407,8 +407,8 @@ var (
 // cipher slot, and releases the slot before returning. The caller then writes
 // the ciphertext to object storage without blocking other encrypted transfers
 // behind a slow storage or client connection.
-func (handler *Handler) encryptUpload(reader io.Reader, fileID string, size, maxBytes int64) ([]byte, error) {
-	if !handler.acquireCipherSlot() {
+func (handler *Handler) encryptUpload(ctx context.Context, reader io.Reader, fileID string, size, maxBytes int64) ([]byte, error) {
+	if !handler.waitForCipherSlot(ctx) {
 		return nil, errCipherBusy
 	}
 	defer handler.releaseCipherSlot()
