@@ -28,6 +28,13 @@ type smtpTransport struct {
 	rootCAs *x509.CertPool
 }
 
+func heloName(fromAddress string) string {
+	if at := strings.LastIndex(fromAddress, "@"); at >= 0 && at < len(fromAddress)-1 {
+		return strings.ToLower(fromAddress[at+1:])
+	}
+	return "localhost"
+}
+
 func (s *smtpTransport) send(ctx context.Context, message Message) error {
 	settings := s.config.SMTP
 	conn, err := (&net.Dialer{}).DialContext(ctx, "tcp", net.JoinHostPort(settings.Host, strconv.Itoa(settings.Port)))
@@ -54,6 +61,11 @@ func (s *smtpTransport) send(ctx context.Context, message Message) error {
 		return deliveryError("SMTP", "greeting")
 	}
 	defer client.Close()
+	// net/smtp greets with "localhost", which relays that require a fully
+	// qualified HELO name reject. Use the sender's domain, as Message-ID does.
+	if err := client.Hello(heloName(s.config.FromAddress)); err != nil {
+		return deliveryError("SMTP", "greeting")
+	}
 	if settings.TLSMode == "starttls" {
 		if ok, _ := client.Extension("STARTTLS"); !ok {
 			return deliveryError("SMTP", "required STARTTLS")

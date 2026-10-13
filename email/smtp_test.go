@@ -163,6 +163,9 @@ func TestSMTPVerifiedTLSAndMIME(t *testing.T) {
 				t.Fatal(result.err)
 			}
 			commands := strings.Join(result.commands, "\n")
+			if !strings.HasPrefix(commands, "EHLO example.com\n") {
+				t.Fatalf("SMTP greeting did not name the sender's domain: %q", commands)
+			}
 			if !strings.Contains(commands, "MAIL FROM:<sender@example.com>") || !strings.Contains(commands, "RCPT TO:<recipient@example.com>") {
 				t.Fatal("incorrect SMTP envelope")
 			}
