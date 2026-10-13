@@ -642,7 +642,12 @@ func (handler *Handler) renderAccountPageStatus(writer http.ResponseWriter, requ
 		if subscriptionErr == nil {
 			data.BillingAccount, data.PlanName, data.PlanStatus = true, subscription.Plan.Name, subscription.Status
 			data.CreditPlan = subscription.Gateway == db.BillingGatewayCredit
-			if data.CreditPlan && !subscription.CurrentPeriodEnd.After(time.Now().UTC()) {
+			// A gateway subscription stays "active" after its paid period when
+			// the provider sends nothing more (a canceled PayPal subscription,
+			// or a lost Stripe deletion), and "paused because access is
+			// active" would contradict itself.
+			ended := !subscription.CurrentPeriodEnd.After(time.Now().UTC())
+			if ended && (data.CreditPlan || subscription.Status == "active" || subscription.Status == "trialing") {
 				data.PlanStatus = "expired"
 			}
 			data.BillingEnabled = !data.CreditPlan && handler.billingGateways[subscription.Gateway] != nil
