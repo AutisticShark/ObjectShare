@@ -116,6 +116,11 @@ func (client *stripeClient) TopUp(ctx context.Context, input billingTopUpInput) 
 		"client_reference_id": {input.UserID}, "customer_email": {input.Email},
 		"metadata[purpose]": {"credit_topup"}, "metadata[topup_id]": {input.TopUpID},
 		"payment_intent_data[metadata][purpose]": {"credit_topup"}, "payment_intent_data[metadata][topup_id]": {input.TopUpID},
+		// Cards (including Apple Pay and Google Pay) settle at once. Delayed
+		// methods such as ACH or SEPA debit can settle after the checkout
+		// deadline, when the invoice already offers a replacement checkout
+		// and the customer could pay twice.
+		"payment_method_types[0]": {"card"},
 	}
 	// Without expires_at a session stays payable for 24 hours after creation,
 	// even past the invoice's payment window.

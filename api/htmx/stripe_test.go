@@ -129,7 +129,8 @@ func TestStripeClientCreatesServerPricedTopUp(t *testing.T) {
 		if err := request.ParseForm(); err != nil {
 			t.Fatal(err)
 		}
-		if request.FormValue("mode") != "payment" || request.FormValue("line_items[0][price_data][currency]") != "usd" || request.FormValue("line_items[0][price_data][unit_amount]") != "2500" || request.FormValue("metadata[topup_id]") != "33333333-3333-4333-8333-333333333333" {
+		if request.FormValue("mode") != "payment" || request.FormValue("line_items[0][price_data][currency]") != "usd" || request.FormValue("line_items[0][price_data][unit_amount]") != "2500" || request.FormValue("metadata[topup_id]") != "33333333-3333-4333-8333-333333333333" ||
+			len(request.Form["payment_method_types[0]"]) != 1 || request.FormValue("payment_method_types[0]") != "card" {
 			t.Errorf("unexpected top-up form: %v", request.Form)
 		}
 		_, _ = io.WriteString(writer, `{"url":"https://checkout.stripe.com/c/pay/cs_test_1"}`)
