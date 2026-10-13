@@ -80,7 +80,7 @@
                   <div class="datagrid-content text-break">{{if .ChecksumsVerified}}<code>{{.FileSHA3}}</code>{{else}}<span class="text-secondary">Not calculated for direct upload</span>{{end}}</div>
                 </div>
               </div>
-              {{if and .CanManage .CanDirectLink}}<div class="alert alert-success mt-3 mb-0"><strong>Direct link enabled:</strong> share <code class="text-break">{{.DirectURL}}</code>. It remains active only while your plan includes direct links.</div>{{end}}
+              {{if and .CanManage .CanDirectLink}}<div class="alert alert-success mt-3 mb-0"><strong>Direct link enabled:</strong> share <code class="text-break">{{.DirectURL}}</code>.{{if .PlanDirectLinks}} It remains active only while your plan includes direct links.{{end}}</div>{{end}}
             </div>
 
             {{if .CanManage}}

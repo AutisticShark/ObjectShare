@@ -343,7 +343,7 @@ func (handler *Handler) FileView(writer http.ResponseWriter, request *http.Reque
 	canDirectLink := file.ClientEncryption == "" && !handler.captchaEnabled("download") && handler.fileHasDirectLinks(request.Context(), file)
 	handler.render(writer, "file_view.html", struct {
 		Version, FileID, FileName, FileSize, FileSHA256, FileSHA3, CreatedAt, UpdatedAt, DirectURL, ClientEncryption string
-		CanManage, Encrypted, ChecksumsVerified, CanDirectLink                                                       bool
+		CanManage, Encrypted, ChecksumsVerified, CanDirectLink, PlanDirectLinks                                      bool
 		SignupEnabled                                                                                                bool
 		User                                                                                                         *db.User
 		CSRF                                                                                                         string
@@ -358,8 +358,10 @@ func (handler *Handler) FileView(writer http.ResponseWriter, request *http.Reque
 		SignupEnabled:     handler.config.Auth != nil && handler.config.Auth.SignupEnabled,
 		User:              identityUser(request), CSRF: identityCSRF(request), Captcha: handler.captchaWidget("download"),
 		CanDirectLink: canDirectLink,
-		DownloadToken: handler.downloadFormToken(file.FileID, time.Now().UTC().Add(10*time.Minute)),
-		DirectURL:     handler.publicDownloadURL(file.FileID),
+		// Without billing every file has direct links, so no plan governs them.
+		PlanDirectLinks: handler.billing != nil,
+		DownloadToken:   handler.downloadFormToken(file.FileID, time.Now().UTC().Add(10*time.Minute)),
+		DirectURL:       handler.publicDownloadURL(file.FileID),
 	})
 }
 
