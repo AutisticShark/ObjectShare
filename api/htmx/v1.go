@@ -439,14 +439,17 @@ func (handler *Handler) Download(writer http.ResponseWriter, request *http.Reque
 	}
 	defer body.Close()
 	writer = handler.withDownloadProgress(writer)
-	writer.Header().Set("Content-Type", file.ContentType)
-	downloadName := file.FileName
-	if file.ClientEncryption != "" {
-		downloadName += ".objectshare"
-		writer.Header().Set("Content-Type", "application/octet-stream")
-	}
-	writer.Header().Set("Content-Disposition", mime.FormatMediaType("attachment", map[string]string{"filename": downloadName}))
 	writer.Header().Set("Cache-Control", "private, no-store")
+	// The attachment headers are set only once the body is ready, so an
+	// error response is shown to the user instead of saved as the file.
+	setAttachmentHeaders := func() {
+		contentType, downloadName := file.ContentType, file.FileName
+		if file.ClientEncryption != "" {
+			contentType, downloadName = "application/octet-stream", downloadName+".objectshare"
+		}
+		writer.Header().Set("Content-Type", contentType)
+		writer.Header().Set("Content-Disposition", mime.FormatMediaType("attachment", map[string]string{"filename": downloadName}))
+	}
 	if file.IsEncrypted {
 		if handler.readCipher == nil {
 			handler.internalError(writer, request, "decrypt object", errors.New("encryption key is unavailable"))
@@ -461,6 +464,7 @@ func (handler *Handler) Download(writer http.ResponseWriter, request *http.Reque
 			handler.internalError(writer, request, "decrypt object", err)
 			return
 		}
+		setAttachmentHeaders()
 		writer.Header().Set("Content-Length", fmt.Sprint(len(plaintext)))
 		handler.logStreamError(request, fileID, "stream decrypted download", func() error {
 			_, err := io.Copy(writer, bytes.NewReader(plaintext))
@@ -468,6 +472,7 @@ func (handler *Handler) Download(writer http.ResponseWriter, request *http.Reque
 		})
 		return
 	}
+	setAttachmentHeaders()
 	writer.Header().Set("Content-Length", fmt.Sprint(file.FileSize))
 	handler.logStreamError(request, fileID, "stream download", func() error {
 		_, err := io.Copy(writer, body)

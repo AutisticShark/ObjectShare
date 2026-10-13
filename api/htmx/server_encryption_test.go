@@ -85,6 +85,28 @@ func TestLoweringMaxFileSizeKeepsEncryptedFilesDownloadable(t *testing.T) {
 	}
 }
 
+// An encrypted download that fails before any plaintext is ready must answer
+// as an error page, not as an attachment the browser saves under the file name.
+func TestEncryptedDownloadErrorIsNotSentAsTheFile(t *testing.T) {
+	repository := &memoryRepository{files: make(map[string]*db.FileList)}
+	storage := &memoryStorage{objects: make(map[string][]byte)}
+	fileID := uploadEncrypted(t, repository, storage, 1, []byte("secret payload"))
+	handler := newTestHandlerConfig(t, &config.ServiceConfig{MaxFileSize: 1, StorageService: "filesystem",
+		Encryption: &config.EncryptionConfig{Enabled: true, Method: "aes-256-gcm", Key: testEncryptionKey}}, repository, storage)
+	if !handler.acquireCipherSlot() {
+		t.Fatal("cipher slot is already held")
+	}
+	response := downloadFile(handler, fileID)
+	if response.Code != http.StatusServiceUnavailable || response.Header().Get("Content-Disposition") != "" {
+		t.Fatalf("busy download status=%d disposition=%q", response.Code, response.Header().Get("Content-Disposition"))
+	}
+	handler.releaseCipherSlot()
+	response = downloadFile(handler, fileID)
+	if response.Code != http.StatusOK || !strings.HasPrefix(response.Header().Get("Content-Disposition"), "attachment") {
+		t.Fatalf("download status=%d disposition=%q", response.Code, response.Header().Get("Content-Disposition"))
+	}
+}
+
 // Turning encryption off while keeping the key stops encrypting new uploads but
 // keeps every object encrypted earlier downloadable.
 func TestDisablingEncryptionKeepsEncryptedFilesDownloadable(t *testing.T) {
