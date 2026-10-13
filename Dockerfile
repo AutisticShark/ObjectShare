@@ -1,6 +1,6 @@
-# syntax=docker/dockerfile:1.18
-ARG GO_VERSION=1.27.1
-FROM --platform=$BUILDPLATFORM golang:${GO_VERSION}-alpine3.24@sha256:cf6fca6641884b8433441b2b0652976f975e1d0fdd26d177eaaf8596087f3125 AS build
+# syntax=docker/dockerfile:1.28
+ARG GO_VERSION=1.27.2
+FROM --platform=$BUILDPLATFORM golang:${GO_VERSION}-alpine3.24@sha256:f92b6ef800e499660581efdabdf25d9d817a9d124eaf900924f0504e7e27e12d AS build
 
 ARG TARGETOS
 ARG TARGETARCH
