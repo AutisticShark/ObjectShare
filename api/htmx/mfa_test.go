@@ -128,6 +128,17 @@ func TestMFARecoveryCodeAcceptsTypedVariations(t *testing.T) {
 	}
 }
 
+// Recording the sign-in time happens after the MFA code is used up, so failing
+// to record it must not fail the sign-in and waste the code.
+func TestMFASignInSurvivesAFailedSignInTimeRecord(t *testing.T) {
+	h, repo, user, _ := mfaFixture(t, "totp")
+	challenge := apiChallenge(t, h)
+	repo.recordLoginErr = errors.New("last-login write failed")
+	if w := verifyAPI(h, challenge, strings.Repeat("a", 32)); w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "access_token") || len(user.MFA.Recovery) != 0 {
+		t.Fatalf("sign-in after a failed sign-in record: %d %s", w.Code, w.Body.String())
+	}
+}
+
 // A TOTP secret that cannot be opened (for example after a settings-key
 // mistake) is a server fault, not a wrong code, and must be reported as one.
 func TestMFAUnreadableSecretIsAnInternalError(t *testing.T) {

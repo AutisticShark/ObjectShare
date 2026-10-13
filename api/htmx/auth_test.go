@@ -36,6 +36,8 @@ type authMemoryRepository struct {
 	throttles  map[string]int
 	throttleMu sync.Mutex
 	setting    *db.ApplicationSetting
+	// recordLoginErr, when set, makes RecordLogin fail.
+	recordLoginErr error
 }
 
 func (repository *authMemoryRepository) ApplicationSettings(context.Context) (*db.ApplicationSetting, error) {
@@ -377,6 +379,9 @@ func (repository *authMemoryRepository) ListFilesByOwner(_ context.Context, id s
 	return files, nil
 }
 func (repository *authMemoryRepository) RecordLogin(_ context.Context, id string, now time.Time) error {
+	if repository.recordLoginErr != nil {
+		return repository.recordLoginErr
+	}
 	user, ok := repository.users[id]
 	if !ok {
 		return db.ErrNotFound

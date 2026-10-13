@@ -77,9 +77,11 @@ func (handler *Handler) signJWT(request *http.Request, user *db.User, fresh bool
 	if err != nil {
 		return "", nil, err
 	}
+	// The last sign-in time is only shown to administrators. Failing to record
+	// it must not fail the sign-in, which may already have used an MFA code.
 	if recordLogin {
 		if err := handler.users.RecordLogin(request.Context(), user.ID, now); err != nil {
-			return "", nil, err
+			handler.logger.Warn("record sign-in time", "user_id", user.ID, "error", err)
 		}
 	}
 	return token, claims, nil
