@@ -1164,7 +1164,9 @@ See Google's [interoperability documentation](https://cloud.google.com/storage/d
 
 See the [production-readiness acceptance checklist](docs/production-readiness.md)
 for product and deployment release gates, the available local evidence, and
-checks that still require a browser or staging environment.
+checks that still require a browser or staging environment. The
+[October 2026 code audit](docs/code-audit-2026-10.md) records the issues it fixed,
+the maintainer decisions, and the items still open.
 
 - Put the service behind HTTPS and enable secure cookies.
 - Set stable, independent, high-entropy JWT and database-settings keys on every replica; rotate the JWT only when intentionally invalidating all tokens and change the settings key only through the `OBJECTSHARE_SETTINGS_KEY_PREVIOUS` rotation procedure.
