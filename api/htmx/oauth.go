@@ -422,14 +422,11 @@ func (handler *Handler) clearOAuthCookie(writer http.ResponseWriter) {
 }
 
 func (handler *Handler) renderOAuthError(writer http.ResponseWriter, request *http.Request, message string, linking bool) {
-	writer.Header().Set("Cache-Control", "no-store")
-	writer.Header().Set("Content-Type", "text/html; charset=utf-8")
 	back, label := "/login", "Back to login"
 	if linking {
 		back, label = "/account", "Back to My account"
 	}
-	writer.WriteHeader(http.StatusBadRequest)
-	handler.render(writer, "oauth_error.html", oauthErrorData{Version: config.GetVersion(), Error: message, Back: back, BackLabel: label, User: identityUser(request)})
+	handler.renderStatus(writer, http.StatusBadRequest, "oauth_error.html", oauthErrorData{Version: config.GetVersion(), Error: message, Back: back, BackLabel: label, User: identityUser(request)})
 }
 
 func validOAuthSubject(subject string) bool {

@@ -292,6 +292,16 @@ func (handler *Handler) LoginPage(writer http.ResponseWriter, request *http.Requ
 	handler.render(writer, "login.html", authPageData{Version: config.GetVersion(), CSRF: csrf, SignupEnabled: handler.config.Auth.SignupEnabled, Next: next, OAuthProviders: handler.oauthLoginButtons(next), Captcha: handler.captchaWidget("login")})
 }
 
+// tryAgainIn tells a locked-out user how long to wait, in whole minutes
+// rounded up.
+func tryAgainIn(retryAt time.Time) string {
+	minutes := int((time.Until(retryAt) + time.Minute - 1) / time.Minute)
+	if minutes <= 1 {
+		return "Try again in a minute."
+	}
+	return fmt.Sprintf("Try again in %d minutes.", minutes)
+}
+
 func (handler *Handler) Login(writer http.ResponseWriter, request *http.Request) {
 	if !handler.allowRequest(writer, request, "login", handler.rateLimitSettings().LoginLimit) {
 		return
@@ -314,9 +324,7 @@ func (handler *Handler) Login(writer http.ResponseWriter, request *http.Request)
 			return
 		}
 		writer.Header().Set("Retry-After", fmt.Sprint(max(1, int(time.Until(retryAt).Seconds()))))
-		writer.Header().Set("Content-Type", "text/html; charset=utf-8")
-		writer.WriteHeader(http.StatusTooManyRequests)
-		handler.render(writer, "login.html", authPageData{Version: config.GetVersion(), CSRF: csrf, SignupEnabled: handler.config.Auth.SignupEnabled, Error: "Too many login attempts. Try again in 15 minutes.", Email: request.FormValue("email"), Next: next, OAuthProviders: handler.oauthLoginButtons(next), Captcha: handler.captchaWidget("login")})
+		handler.renderStatus(writer, http.StatusTooManyRequests, "login.html", authPageData{Version: config.GetVersion(), CSRF: csrf, SignupEnabled: handler.config.Auth.SignupEnabled, Error: "Too many login attempts. " + tryAgainIn(retryAt), Email: request.FormValue("email"), Next: next, OAuthProviders: handler.oauthLoginButtons(next), Captcha: handler.captchaWidget("login")})
 		return
 	}
 	if user == nil {
