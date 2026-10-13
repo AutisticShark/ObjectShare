@@ -335,7 +335,12 @@ func TestPayPalSignatureVerificationSendsWebhookEventAsJSON(t *testing.T) {
 	if err != nil || !verified {
 		t.Fatalf("verified=%v err=%v", verified, err)
 	}
-	headers.Set("PayPal-Transmission-Time", time.Now().UTC().Add(-6*time.Minute).Format(time.RFC3339))
+	headers.Set("PayPal-Transmission-Time", time.Now().UTC().Add(-25*time.Minute).Format(time.RFC3339))
+	verified, err = client.VerifyWebhook(t.Context(), headers, json.RawMessage(`{"id":"WH-EVENT"}`))
+	if err != nil || !verified {
+		t.Fatalf("delayed transmission verified=%v err=%v", verified, err)
+	}
+	headers.Set("PayPal-Transmission-Time", time.Now().UTC().Add(-31*time.Minute).Format(time.RFC3339))
 	verified, err = client.VerifyWebhook(t.Context(), headers, json.RawMessage(`{"id":"WH-EVENT"}`))
 	if err != nil || verified {
 		t.Fatalf("stale transmission verified=%v err=%v", verified, err)

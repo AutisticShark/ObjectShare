@@ -154,6 +154,12 @@ func (client *paypalClient) TopUp(ctx context.Context, input billingTopUpInput) 
 // webhook applies the payment once PayPal completes it.
 var errPayPalCapturePending = errors.New("PayPal payment is pending")
 
+// paypalWebhookMaxAge bounds how old a webhook's transmission time may be.
+// PayPal does not document whether its retries keep the original time, and
+// its verification API and event deduplication already stop replays, so the
+// window leaves room for prompt retries and short delivery delays.
+const paypalWebhookMaxAge = 30 * time.Minute
+
 func (client *paypalClient) CaptureTopUp(ctx context.Context, orderID string) (paypalCapture, error) {
 	var order struct {
 		ID            string `json:"id"`
@@ -214,7 +220,7 @@ func (client *paypalClient) VerifyWebhook(ctx context.Context, headers http.Head
 		}
 	}
 	transmittedAt, err := time.Parse(time.RFC3339, values["transmission_time"])
-	if err != nil || time.Since(transmittedAt) > 5*time.Minute || time.Until(transmittedAt) > 5*time.Minute {
+	if err != nil || time.Since(transmittedAt) > paypalWebhookMaxAge || time.Until(transmittedAt) > 5*time.Minute {
 		return false, nil
 	}
 	body := struct {
