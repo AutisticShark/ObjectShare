@@ -41,16 +41,12 @@ type BillingRepository interface {
 	UpdatePlan(context.Context, *PaidPlan) error
 	Entitlements(context.Context, string, time.Time) (Entitlements, error)
 	SubscriptionForUser(context.Context, string) (*Subscription, error)
-	ReserveBillingCheckout(context.Context, string, string, time.Time) error
-	ReleaseBillingCheckout(context.Context, string, string) error
 	ApplySubscription(context.Context, SubscriptionUpdate) (bool, error)
 	CreateCreditTopUp(context.Context, *CreditTopUp) error
 	BindCreditTopUp(context.Context, string, string, string) error
-	CancelCreditTopUp(context.Context, string, string) error
 	CreditTopUpByID(context.Context, string) (*CreditTopUp, error)
 	ApplyCreditTopUp(context.Context, CreditPayment, time.Time) (bool, error)
 	CreditTransactions(context.Context, string, int) ([]CreditTransaction, error)
-	PurchasePlanWithCredit(context.Context, string, string, string, time.Time) (*Subscription, error)
 	AdjustCredit(context.Context, string, int64, string, string, string, time.Time) (int64, error)
 }
 
@@ -102,12 +98,6 @@ func (repo *GormRepository) BindCreditTopUp(ctx context.Context, id, gateway, re
 		}
 		return tx.Model(&CreditTopUp{}).Where("id = ?", id).Update("gateway_reference", reference).Error
 	})
-}
-
-func (repo *GormRepository) CancelCreditTopUp(ctx context.Context, id, gateway string) error {
-	return repo.connection.WithContext(ctx).Model(&CreditTopUp{}).
-		Where("id = ? AND gateway = ? AND status = ?", id, gateway, CreditTopUpPending).
-		Update("status", CreditTopUpCanceled).Error
 }
 
 func (repo *GormRepository) CreditTopUpByID(ctx context.Context, id string) (*CreditTopUp, error) {
@@ -227,22 +217,6 @@ func (repo *GormRepository) CreditTransactions(ctx context.Context, userID strin
 	return transactions, err
 }
 
-// PurchasePlanWithCredit settles an invoice previously generated with this
-// account-scoped request key. It never guesses a currency from wallet units.
-func (repo *GormRepository) PurchasePlanWithCredit(ctx context.Context, userID, planID, requestID string, now time.Time) (*Subscription, error) {
-	var invoice Invoice
-	if err := repo.connection.WithContext(ctx).Where("user_id = ? AND request_id = ?", userID, requestID).First(&invoice).Error; err != nil {
-		return nil, invoiceError(err)
-	}
-	if invoice.Kind != "plan" || invoice.PlanID != planID {
-		return nil, ErrConflict
-	}
-	if err := repo.PayInvoiceCredit(ctx, userID, invoice.ID, now); err != nil {
-		return nil, err
-	}
-	return repo.SubscriptionForUser(ctx, userID)
-}
-
 func (repo *GormRepository) AdjustCredit(ctx context.Context, userID string, delta int64, description, administratorID, requestID string, now time.Time) (int64, error) {
 	if _, err := uuid.Parse(requestID); err != nil {
 		return 0, ErrInvalidCredit
@@ -305,31 +279,6 @@ func subscriptionTerminal(status string) bool {
 	default:
 		return false
 	}
-}
-
-func (repo *GormRepository) ReserveBillingCheckout(ctx context.Context, userID, planID string, now time.Time) error {
-	return repo.connection.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		var user User
-		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Select("id").Where("id = ?", userID).First(&user).Error; errors.Is(err, gorm.ErrRecordNotFound) {
-			return ErrNotFound
-		} else if err != nil {
-			return err
-		}
-		var checkout BillingCheckout
-		err := tx.Where("user_id = ?", userID).First(&checkout).Error
-		if err == nil && checkout.ExpiresAt.After(now) {
-			return ErrConflict
-		}
-		if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
-			return err
-		}
-		checkout = BillingCheckout{UserID: userID, PlanID: planID, ExpiresAt: now.Add(30 * time.Minute)}
-		return tx.Save(&checkout).Error
-	})
-}
-
-func (repo *GormRepository) ReleaseBillingCheckout(ctx context.Context, userID, planID string) error {
-	return repo.connection.WithContext(ctx).Where("user_id = ? AND plan_id = ?", userID, planID).Delete(&BillingCheckout{}).Error
 }
 
 func (repo *GormRepository) PlanByGatewayID(ctx context.Context, gateway, planID string) (*PaidPlan, error) {

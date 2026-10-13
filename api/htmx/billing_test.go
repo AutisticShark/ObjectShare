@@ -65,12 +65,6 @@ func (repo *entitlementRepository) Entitlements(context.Context, string, time.Ti
 func (repo *entitlementRepository) SubscriptionForUser(context.Context, string) (*db.Subscription, error) {
 	return nil, db.ErrNotFound
 }
-func (repo *entitlementRepository) ReserveBillingCheckout(context.Context, string, string, time.Time) error {
-	return nil
-}
-func (repo *entitlementRepository) ReleaseBillingCheckout(context.Context, string, string) error {
-	return nil
-}
 func (repo *entitlementRepository) ApplySubscription(_ context.Context, update db.SubscriptionUpdate) (bool, error) {
 	repo.applied = &update
 	return true, nil
@@ -85,9 +79,6 @@ func (repo *entitlementRepository) BindCreditTopUp(_ context.Context, id, gatewa
 		return db.ErrNotFound
 	}
 	repo.topUp.GatewayReference = &reference
-	return nil
-}
-func (repo *entitlementRepository) CancelCreditTopUp(context.Context, string, string) error {
 	return nil
 }
 func (repo *entitlementRepository) CreditTopUpByID(_ context.Context, id string) (*db.CreditTopUp, error) {
@@ -110,9 +101,6 @@ func (repo *entitlementRepository) RecordPaymentReconciliation(_ context.Context
 }
 func (repo *entitlementRepository) CreditTransactions(context.Context, string, int) ([]db.CreditTransaction, error) {
 	return repo.transactions, nil
-}
-func (repo *entitlementRepository) PurchasePlanWithCredit(context.Context, string, string, string, time.Time) (*db.Subscription, error) {
-	return &db.Subscription{}, repo.purchaseErr
 }
 func (repo *entitlementRepository) AdjustCredit(_ context.Context, userID string, delta int64, description, administratorID, _ string, _ time.Time) (int64, error) {
 	repo.adjustment = &creditAdjustment{UserID: userID, Delta: delta, Description: description, AdministratorID: administratorID}

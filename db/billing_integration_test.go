@@ -274,10 +274,18 @@ func TestPostgresLocalPlansKeepOnePriceAndLegacyValues(t *testing.T) {
 	assertCreditState(t, repo, user.ID, 8, 2)
 }
 
-// The compatibility purchase API settles an explicitly created invoice.
+// purchaseTestPlan creates a plan invoice for the request key and pays it with
+// account credit, as the invoice pages do.
 func purchaseTestPlan(repo *GormRepository, ctx context.Context, userID, planID, requestID string, now time.Time) (*Subscription, error) {
-	if _, err := repo.CreatePlanInvoice(ctx, userID, planID, requestID, "USD", now); err != nil {
+	invoice, err := repo.CreatePlanInvoice(ctx, userID, planID, requestID, "USD", now)
+	if err != nil {
 		return nil, err
 	}
-	return repo.PurchasePlanWithCredit(ctx, userID, planID, requestID, now)
+	if invoice.Kind != "plan" || invoice.PlanID != planID {
+		return nil, ErrConflict
+	}
+	if err := repo.PayInvoiceCredit(ctx, userID, invoice.ID, now); err != nil {
+		return nil, err
+	}
+	return repo.SubscriptionForUser(ctx, userID)
 }
