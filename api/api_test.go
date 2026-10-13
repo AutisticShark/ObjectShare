@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"regexp"
+	"slices"
 	"strings"
 	"testing"
 
@@ -41,7 +43,7 @@ func TestBrandingCSPAllowsOnlyConfiguredImageOrigins(t *testing.T) {
 		if !strings.Contains(policy, want+";") {
 			t.Fatalf("image CSP: %s", policy)
 		}
-		for _, expected := range []string{"connect-src 'self' https://storage.example.com https://challenges.cloudflare.com;", "script-src 'self' https://cdn.jsdelivr.net https://challenges.cloudflare.com;", "style-src 'self' https://cdn.jsdelivr.net;", "form-action 'self';"} {
+		for _, expected := range []string{"connect-src 'self' https://storage.example.com https://challenges.cloudflare.com;", "script-src 'self' " + cdnScriptSource + " https://challenges.cloudflare.com;", "style-src 'self' " + cdnStyleSource + ";", "form-action 'self';"} {
 			if !strings.Contains(policy, expected) {
 				t.Fatalf("branding changed other policy: %s", policy)
 			}
@@ -69,9 +71,46 @@ func TestSecurityHeadersAllowTurnstileOnlyWhenConfigured(t *testing.T) {
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/login", nil))
 	policy := response.Header().Get("Content-Security-Policy")
-	if !strings.Contains(policy, "script-src 'self' https://cdn.jsdelivr.net https://challenges.cloudflare.com") ||
+	if !strings.Contains(policy, "script-src 'self' "+cdnScriptSource+" https://challenges.cloudflare.com") ||
 		!strings.Contains(policy, "frame-src https://challenges.cloudflare.com") {
 		t.Fatalf("Turnstile is not allowed by CSP: %s", policy)
+	}
+}
+
+func TestCSPCoversEveryCDNAsset(t *testing.T) {
+	partials, err := os.ReadFile("../template/partials.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := securityHeaders(false, nil)(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) { writer.WriteHeader(http.StatusNoContent) }))
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/", nil))
+	directives := map[string][]string{}
+	for _, directive := range strings.Split(response.Header().Get("Content-Security-Policy"), ";") {
+		if fields := strings.Fields(directive); len(fields) > 0 {
+			directives[fields[0]] = fields[1:]
+		}
+	}
+	allowed := func(directive, asset string) bool {
+		for _, source := range directives[directive] {
+			if strings.HasSuffix(source, "/") && strings.HasPrefix(asset, source) {
+				return true
+			}
+		}
+		return false
+	}
+	assets := regexp.MustCompile(`<(script|link)\b[^>]*?(?:src|href)="(https://cdn\.jsdelivr\.net/[^"]+)"`).FindAllStringSubmatch(string(partials), -1)
+	if len(assets) == 0 {
+		t.Fatal("partials.html loads no CDN assets; update this test")
+	}
+	for _, asset := range assets {
+		directive := map[string]string{"script": "script-src", "link": "style-src"}[asset[1]]
+		if !allowed(directive, asset[2]) {
+			t.Errorf("%s does not allow %s from partials.html: %v", directive, asset[2], directives[directive])
+		}
+	}
+	if slices.Contains(directives["script-src"], "https://cdn.jsdelivr.net") {
+		t.Errorf("script-src trusts all of jsDelivr: %v", directives["script-src"])
 	}
 }
 
