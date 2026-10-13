@@ -149,6 +149,11 @@ func (client *paypalClient) TopUp(ctx context.Context, input billingTopUpInput) 
 	return billingTopUpResult{}, errors.New("PayPal returned no safe approval URL")
 }
 
+// errPayPalCapturePending means PayPal accepted the payment but is still
+// processing it (an eCheck or a payment review). Its PAYMENT.CAPTURE.COMPLETED
+// webhook applies the payment once PayPal completes it.
+var errPayPalCapturePending = errors.New("PayPal payment is pending")
+
 func (client *paypalClient) CaptureTopUp(ctx context.Context, orderID string) (paypalCapture, error) {
 	var order struct {
 		ID            string `json:"id"`
@@ -171,6 +176,9 @@ func (client *paypalClient) CaptureTopUp(ctx context.Context, orderID string) (p
 		return paypalCapture{}, errors.New("PayPal returned an incomplete capture")
 	}
 	capture := order.PurchaseUnits[0].Payments.Captures[0]
+	if capture.ID != "" && capture.Status == "PENDING" {
+		return paypalCapture{}, errPayPalCapturePending
+	}
 	if capture.ID == "" || capture.Status != "COMPLETED" {
 		return paypalCapture{}, errors.New("PayPal payment was not completed")
 	}

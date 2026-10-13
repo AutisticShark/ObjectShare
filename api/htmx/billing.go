@@ -171,6 +171,10 @@ func (handler *Handler) PayPalTopUpReturn(writer http.ResponseWriter, request *h
 		return
 	}
 	capture, err := gateway.CaptureTopUp(request.Context(), orderID)
+	if errors.Is(err, errPayPalCapturePending) {
+		http.Error(writer, "PayPal is still processing this payment. It is applied to your account when PayPal completes it, which can take several days; do not pay again. Check your invoices for its status.", http.StatusAccepted)
+		return
+	}
 	if err != nil {
 		handler.internalError(writer, request, "capture PayPal credit top-up", err)
 		return
