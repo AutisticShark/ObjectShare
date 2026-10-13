@@ -113,6 +113,12 @@ func (handler *Handler) Authenticate(next http.Handler) http.Handler {
 			return
 		}
 		if user.ModerationStatus == db.ModerationBanned {
+			// Clear a browser's cookie so the banned account is signed out:
+			// otherwise every page, including public share links and the
+			// login form, answers 403 until the JWT expires.
+			if transport == transportCookie {
+				handler.clearJWTCookie(writer)
+			}
 			writer.Header().Set("Cache-Control", "private, no-store")
 			http.Error(writer, "This account is banned.", http.StatusForbidden)
 			return

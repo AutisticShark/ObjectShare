@@ -139,6 +139,35 @@ func TestInvalidBearerTokenIsRejectedInsteadOfAnonymous(t *testing.T) {
 	}
 }
 
+// A banned account is told so once, and its browser cookie is cleared so the
+// browser is signed out instead of refused on every page until the JWT expires.
+func TestBannedAccountCookieIsClearedWithTheRefusal(t *testing.T) {
+	repository := newAuthMemoryRepository()
+	user := &db.User{ID: "60c628c1-85cb-4463-b895-a629c31bfa55", Email: "user@example.com", DisplayName: "User", Role: db.RoleUser, Active: true, TokenVersion: 1}
+	repository.users[user.ID] = user
+	handler := newAuthTestHandler(t, repository, false)
+	token, _ := issueTestJWT(t, handler, user)
+	user.ModerationStatus = db.ModerationBanned
+
+	request := httptest.NewRequest(http.MethodGet, "/", nil)
+	request.AddCookie(&http.Cookie{Name: handler.jwtCookieName(), Value: token})
+	response, _, reached := serveAuthenticated(handler, request)
+	cleared := false
+	for _, cookie := range response.Result().Cookies() {
+		cleared = cleared || (cookie.Name == handler.jwtCookieName() && cookie.MaxAge < 0)
+	}
+	if reached || response.Code != http.StatusForbidden || !cleared {
+		t.Fatalf("banned cookie: reached=%v status=%d cleared=%v", reached, response.Code, cleared)
+	}
+
+	request = httptest.NewRequest(http.MethodGet, "/", nil)
+	request.Header.Set("Authorization", "Bearer "+token)
+	response, _, reached = serveAuthenticated(handler, request)
+	if reached || response.Code != http.StatusForbidden || len(response.Result().Cookies()) != 0 {
+		t.Fatalf("banned bearer token: reached=%v status=%d cookies=%v", reached, response.Code, response.Result().Cookies())
+	}
+}
+
 func TestInvalidBearerTokenDoesNotBecomeGuestUpload(t *testing.T) {
 	repository := newAuthMemoryRepository()
 	handler := newAuthTestHandler(t, repository, false)
