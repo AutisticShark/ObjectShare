@@ -167,6 +167,22 @@ type stripeCheckoutSession struct {
 	AmountTotal   int64             `json:"amount_total"`
 	Currency      string            `json:"currency"`
 	Metadata      map[string]string `json:"metadata"`
+	// With Adaptive Pricing on the pinned 2024-06-20 schema, currency and
+	// amount_total are what the customer chose to pay in, and the amount in
+	// the session's own price currency is here instead.
+	CurrencyConversion *struct {
+		SourceCurrency string `json:"source_currency"`
+		AmountTotal    int64  `json:"amount_total"`
+	} `json:"currency_conversion"`
+}
+
+// chargedAmount is the session's total in the currency its prices were
+// created in, which is what the pending top-up records.
+func (session stripeCheckoutSession) chargedAmount() (string, int64) {
+	if conversion := session.CurrencyConversion; conversion != nil && conversion.SourceCurrency != "" {
+		return conversion.SourceCurrency, conversion.AmountTotal
+	}
+	return session.Currency, session.AmountTotal
 }
 
 func (handler *Handler) StripeWebhook(writer http.ResponseWriter, request *http.Request) {
@@ -209,7 +225,8 @@ func (handler *Handler) StripeWebhook(writer http.ResponseWriter, request *http.
 			writer.WriteHeader(http.StatusNoContent)
 			return
 		}
-		if session.Mode != "payment" || session.PaymentStatus != "paid" || session.PaymentIntent == "" || session.AmountTotal <= 0 {
+		currency, amount := session.chargedAmount()
+		if session.Mode != "payment" || session.PaymentStatus != "paid" || session.PaymentIntent == "" || amount <= 0 {
 			http.Error(writer, "Stripe top-up is not paid.", http.StatusUnprocessableEntity)
 			return
 		}
@@ -219,7 +236,7 @@ func (handler *Handler) StripeWebhook(writer http.ResponseWriter, request *http.
 			return
 		}
 		stripePayment := db.CreditPayment{TopUpID: topUpID, Gateway: db.BillingGatewayStripe,
-			GatewayPaymentID: session.PaymentIntent, Currency: session.Currency, AmountMinor: session.AmountTotal}
+			GatewayPaymentID: session.PaymentIntent, Currency: currency, AmountMinor: amount}
 		_, err = handler.billing.ApplyCreditTopUp(request.Context(), stripePayment, time.Now().UTC())
 		if errors.Is(err, db.ErrNotFound) || errors.Is(err, db.ErrInvalidCredit) || errors.Is(err, db.ErrConflict) {
 			handler.recordUnappliedPayment(request, stripePayment, err)

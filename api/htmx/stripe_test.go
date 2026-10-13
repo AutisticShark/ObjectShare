@@ -96,6 +96,31 @@ func TestVerifiedStripeWebhookAppliesOnlyPaidMatchingTopUp(t *testing.T) {
 	}
 }
 
+// With Adaptive Pricing on the pinned 2024-06-20 webhook schema, a session paid
+// in the customer's currency reports that currency at the top level and the
+// amount in the price's own currency under currency_conversion.
+func TestStripeWebhookAppliesAdaptivePricingInThePriceCurrency(t *testing.T) {
+	topUpID := "33333333-3333-4333-8333-333333333333"
+	now := time.Now().UTC().Truncate(time.Second)
+	repository := &entitlementRepository{memoryRepository: &memoryRepository{files: make(map[string]*db.FileList)}}
+	handler := newTestHandler(t, repository, &memoryStorage{objects: make(map[string][]byte)})
+	handler.billingGateways = map[string]billingGateway{db.BillingGatewayStripe: newStripeClient(config.StripeBillingConfig{Enabled: true, WebhookSecret: "whsec_test"})}
+	payload := []byte(fmt.Sprintf(`{"id":"evt_localized","type":"checkout.session.completed","created":%d,"data":{"object":{"id":"cs_1","mode":"payment","payment_status":"paid","payment_intent":"pi_1","amount_total":2329,"currency":"eur","currency_conversion":{"source_currency":"usd","amount_total":2500,"fx_rate":"0.93"},"metadata":{"purpose":"credit_topup","topup_id":"%s"}}}}`, now.Unix(), topUpID))
+	mac := hmac.New(sha256.New, []byte("whsec_test"))
+	_, _ = fmt.Fprintf(mac, "%d.", now.Unix())
+	_, _ = mac.Write(payload)
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/billing/stripe/webhook", bytes.NewReader(payload))
+	request.Header.Set("Stripe-Signature", fmt.Sprintf("t=%d,v1=%s", now.Unix(), hex.EncodeToString(mac.Sum(nil))))
+	response := httptest.NewRecorder()
+	handler.StripeWebhook(response, request)
+	if response.Code != http.StatusNoContent || repository.creditPayment == nil {
+		t.Fatalf("status=%d payment=%#v body=%q", response.Code, repository.creditPayment, response.Body.String())
+	}
+	if repository.creditPayment.AmountMinor != 2500 || repository.creditPayment.Currency != "usd" {
+		t.Fatalf("localized payment was not matched in the price currency: %#v", repository.creditPayment)
+	}
+}
+
 func TestStripeClientCreatesServerPricedTopUp(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		if request.URL.Path != "/checkout/sessions" || request.Header.Get("Authorization") != "Bearer sk_test" || request.Header.Get("Idempotency-Key") != "objectshare-topup-33333333-3333-4333-8333-333333333333" {
