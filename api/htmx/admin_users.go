@@ -166,6 +166,9 @@ func (handler *Handler) AdminResetPassword(writer http.ResponseWriter, request *
 		if err := appauth.ValidatePassword(password); err != nil {
 			return fmt.Errorf("%w: %v", errInvalidAdminForm, err)
 		}
+		if err := handler.confirmAdministrator(request); err != nil {
+			return err
+		}
 		hash, err := appauth.HashPassword(password)
 		if err != nil {
 			return err
@@ -173,6 +176,30 @@ func (handler *Handler) AdminResetPassword(writer http.ResponseWriter, request *
 		_, err = handler.users.UpdatePassword(ctx, id, hash)
 		return err
 	}, "password")
+}
+
+// confirmAdministrator makes the acting administrator prove who they are
+// before setting a password, so a stolen administrator JWT alone cannot take
+// over an account. Attempts share the account-password lockout. An account
+// without a password must have signed in within the last five minutes instead.
+func (handler *Handler) confirmAdministrator(request *http.Request) error {
+	admin := currentIdentity(request)
+	if admin.User.PasswordHash == "" {
+		if recentlyAuthenticated(admin) {
+			return nil
+		}
+		return fmt.Errorf("%w: To reset a password, sign out and sign in again, then reset it within five minutes.", errInvalidAdminForm)
+	}
+	ok, lockedUntil, err := handler.verifyCurrentPassword(request, admin.User, request.FormValue("admin_password"))
+	switch {
+	case err != nil:
+		return err
+	case !lockedUntil.IsZero():
+		return fmt.Errorf("%w: Too many incorrect password attempts. Try again later.", errInvalidAdminForm)
+	case !ok:
+		return fmt.Errorf("%w: Enter your own current password to reset a password.", errInvalidAdminForm)
+	}
+	return nil
 }
 
 func (handler *Handler) AdminDeleteUser(writer http.ResponseWriter, request *http.Request) {

@@ -140,6 +140,10 @@ page after updates or validation errors. Actions affecting your own administrato
 account return through authentication; native forms return to the default user
 directory. Existing account creation, moderation, roles, quota, retention
 exemptions, credit adjustments, password resets, and deletion remain available.
+A password reset asks for the acting administrator's own password, so a stolen
+administrator JWT alone cannot set one; wrong attempts share the account
+password lockout. An administrator without a password must have signed in within
+the last five minutes instead.
 
 **Administration → Invoices** (`/admin/invoices`) provides a read-only, paginated
 monitor. Search by customer email, purchase name, exact invoice ID, or exact

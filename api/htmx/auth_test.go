@@ -791,7 +791,11 @@ func TestAdministratorUserListDisplaysQuotaAccountedStorage(t *testing.T) {
 
 func TestAdministratorPasswordResetValidatesAndInvalidatesJWTs(t *testing.T) {
 	repository := newAuthMemoryRepository()
-	admin := &db.User{ID: "11111111-1111-4111-8111-111111111111", Email: "admin@example.com", DisplayName: "Admin", Role: db.RoleAdmin, Active: true, TokenVersion: 2}
+	adminHash, err := appauth.HashPassword("the administrator's own password")
+	if err != nil {
+		t.Fatal(err)
+	}
+	admin := &db.User{ID: "11111111-1111-4111-8111-111111111111", Email: "admin@example.com", DisplayName: "Admin", PasswordHash: adminHash, Role: db.RoleAdmin, Active: true, TokenVersion: 2}
 	user := &db.User{ID: "22222222-2222-4222-8222-222222222222", Email: "user@example.com", DisplayName: "User", PasswordHash: "old hash", Role: db.RoleUser, Active: true, TokenVersion: 7}
 	for _, candidate := range []*db.User{admin, user} {
 		if err := repository.CreateUser(context.Background(), candidate); err != nil {
@@ -818,7 +822,18 @@ func TestAdministratorPasswordResetValidatesAndInvalidatesJWTs(t *testing.T) {
 		t.Fatalf("mismatched reset status=%d version=%d body=%q", response.Code, repository.users[user.ID].TokenVersion, response.Body.String())
 	}
 
-	request = formRequest("/"+user.ID, url.Values{"csrf_token": {"csrf"}, "password": {"a new sufficiently long password"}, "password_confirm": {"a new sufficiently long password"}})
+	// A stolen administrator JWT alone must not be able to set a password.
+	for _, adminPassword := range []string{"", "a wrong administrator password"} {
+		request = formRequest("/"+user.ID, url.Values{"csrf_token": {"csrf"}, "admin_password": {adminPassword}, "password": {"a new sufficiently long password"}, "password_confirm": {"a new sufficiently long password"}})
+		request = request.WithContext(context.WithValue(request.Context(), identityContextKey{}, &identity{User: admin, Claims: &appauth.Claims{CSRF: "csrf"}, Transport: transportCookie}))
+		response = httptest.NewRecorder()
+		router.ServeHTTP(response, request)
+		if !strings.Contains(response.Body.String(), "Enter your own current password") || repository.users[user.ID].TokenVersion != 7 {
+			t.Fatalf("reset with administrator password %q status=%d version=%d body=%q", adminPassword, response.Code, repository.users[user.ID].TokenVersion, response.Body.String())
+		}
+	}
+
+	request = formRequest("/"+user.ID, url.Values{"csrf_token": {"csrf"}, "admin_password": {"the administrator's own password"}, "password": {"a new sufficiently long password"}, "password_confirm": {"a new sufficiently long password"}})
 	request = request.WithContext(context.WithValue(request.Context(), identityContextKey{}, &identity{User: admin, Claims: &appauth.Claims{CSRF: "csrf"}, Transport: transportCookie}))
 	response = httptest.NewRecorder()
 	router.ServeHTTP(response, request)
