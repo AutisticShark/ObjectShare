@@ -544,6 +544,8 @@ func (handler *Handler) validDownloadFormToken(fileID, token string, now time.Ti
 }
 
 func (handler *Handler) Delete(writer http.ResponseWriter, request *http.Request) {
+	// Limit the body before the CSRF check parses it.
+	request.Body = http.MaxBytesReader(writer, request.Body, 4096)
 	if !handler.verifyAuthenticatedMutationCSRF(writer, request) {
 		return
 	}
@@ -602,6 +604,8 @@ func (handler *Handler) Delete(writer http.ResponseWriter, request *http.Request
 }
 
 func (handler *Handler) Update(writer http.ResponseWriter, request *http.Request) {
+	// Limit the body before the CSRF check parses it.
+	request.Body = http.MaxBytesReader(writer, request.Body, 4096)
 	if !handler.verifyAuthenticatedMutationCSRF(writer, request) {
 		return
 	}
@@ -627,7 +631,6 @@ func (handler *Handler) Update(writer http.ResponseWriter, request *http.Request
 		http.Error(writer, "Forbidden", http.StatusForbidden)
 		return
 	}
-	request.Body = http.MaxBytesReader(writer, request.Body, 4096)
 	if err := request.ParseForm(); err != nil {
 		http.Error(writer, "Invalid form.", http.StatusBadRequest)
 		return
