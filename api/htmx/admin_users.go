@@ -328,5 +328,5 @@ func uploadQuotaFromForm(value string) (int64, error) {
 }
 
 func adminMessage(value string) string {
-	return map[string]string{"setup": "Initial administrator created.", "created": "User created.", "updated": "Access updated; that user's earlier JWTs were invalidated.", "quota": "Upload quota updated.", "paid": "Manual retention exemption updated.", "credit": "Account credit adjusted.", "password": "Password reset; that user's earlier JWTs were invalidated.", "deleted": "User deleted."}[value]
+	return map[string]string{"setup": "Initial administrator created.", "created": "User created.", "updated": "Access saved. A changed role or status invalidates that user's earlier JWTs.", "quota": "Upload quota updated.", "paid": "Manual retention exemption updated.", "credit": "Account credit adjusted.", "password": "Password reset; that user's earlier JWTs were invalidated.", "deleted": "User deleted."}[value]
 }
