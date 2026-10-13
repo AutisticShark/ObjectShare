@@ -88,7 +88,7 @@ func (handler *Handler) invoiceFailure(writer http.ResponseWriter, request *http
 	case errors.Is(err, db.ErrInsufficientCredit):
 		handler.billingProblem(writer, request, http.StatusPaymentRequired, "Your account does not have enough credit to pay this invoice. Add credit from Billing or return to the invoice to choose an available payment gateway.")
 	case errors.Is(err, db.ErrConflict):
-		handler.billingProblem(writer, request, http.StatusConflict, "This invoice cannot be paid with this method. Check its payment status and your current plan. A gateway payment already in progress must finish before another purchase.")
+		handler.billingProblem(writer, request, http.StatusConflict, "This invoice cannot be paid with this method. Check its payment status and your current plan. A gateway payment already in progress must finish, and an existing PayPal or Stripe subscription must be canceled, before another purchase.")
 	case errors.Is(err, db.ErrInvalidCredit):
 		handler.billingProblem(writer, request, http.StatusBadRequest, "Invalid invoice request. Reload the plans page to review the current purchase options.")
 	default:
