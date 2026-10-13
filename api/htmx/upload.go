@@ -220,7 +220,10 @@ func (handler *Handler) uploadMultiple(writer http.ResponseWriter, request *http
 				handler.discardUpload(request, completed.ID, true)
 			}
 			var quotaError *db.UploadQuotaError
-			if errors.As(err, &quotaError) && quotaError.Scope == db.GuestUploadScope {
+			var rejection *uploadRejection
+			if errors.As(err, &rejection) {
+				http.Error(writer, rejection.message, rejection.status)
+			} else if errors.As(err, &quotaError) && quotaError.Scope == db.GuestUploadScope {
 				handler.writeUploadError(writer, request, "store upload batch", err)
 			} else if errors.As(err, &quotaError) {
 				http.Error(writer, "This upload batch would exceed your account storage quota.", http.StatusRequestEntityTooLarge)
@@ -250,21 +253,26 @@ func (handler *Handler) uploadMultiple(writer http.ResponseWriter, request *http
 var errInvalidUpload = errors.New("invalid upload")
 
 func (handler *Handler) storeProxiedHeader(request *http.Request, header *multipart.FileHeader, maxBytes int64) (uploadedFileResult, string, error) {
-	if header.Size <= 0 || header.Size > maxBytes {
-		return uploadedFileResult{}, "", fmt.Errorf("%w: every file must be between 1 byte and %s", errInvalidUpload, humanSize(maxBytes))
+	// Reject a file with the same status and wording as a single upload,
+	// naming the file because a batch holds several.
+	fileName, err := safeFileName(header.Filename)
+	if err != nil {
+		return uploadedFileResult{}, "", &uploadRejection{http.StatusBadRequest, err.Error()}
+	}
+	if header.Size <= 0 {
+		return uploadedFileResult{}, "", &uploadRejection{http.StatusBadRequest, fmt.Sprintf("%s is empty. Choose files that contain data.", fileName)}
+	}
+	if header.Size > maxBytes {
+		return uploadedFileResult{}, "", &uploadRejection{http.StatusRequestEntityTooLarge, fmt.Sprintf("%s is larger than the %s per-file limit.", fileName, humanSize(maxBytes))}
 	}
 	fileObject, err := header.Open()
 	if err != nil {
 		return uploadedFileResult{}, "", fmt.Errorf("open uploaded file: %w", err)
 	}
 	defer fileObject.Close()
-	fileName, err := safeFileName(header.Filename)
-	if err != nil {
-		return uploadedFileResult{}, "", fmt.Errorf("%w: %s", errInvalidUpload, err)
-	}
 	contentType, err := sniffContentType(fileObject)
 	if err != nil {
-		return uploadedFileResult{}, "", fmt.Errorf("%w: unable to read %s", errInvalidUpload, fileName)
+		return uploadedFileResult{}, "", &uploadRejection{http.StatusBadRequest, fmt.Sprintf("Unable to read %s.", fileName)}
 	}
 	fileID := uuid.NewString()
 	token, tokenHash, err := newUploadOwnerToken(request, fileID)

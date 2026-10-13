@@ -20,3 +20,26 @@ func TestEmptyProxiedUploadIsABadRequest(t *testing.T) {
 		t.Fatalf("empty upload: status=%d body=%q records=%d", response.Code, response.Body.String(), len(repository.files))
 	}
 }
+
+// A batch rejects an empty or oversized file with the same status as a single
+// upload and names the file, instead of returning the internal validator text.
+func TestProxiedBatchRejectsFilesLikeSingleUploads(t *testing.T) {
+	for name, test := range map[string]struct {
+		files  []string
+		status int
+		want   string
+	}{
+		"empty":     {[]string{"data", ""}, http.StatusBadRequest, "batch-1.txt is empty. Choose files that contain data."},
+		"oversized": {[]string{"data", strings.Repeat("x", int(mebibyte)+1)}, http.StatusRequestEntityTooLarge, "batch-1.txt is larger than the 1.0 MiB per-file limit."},
+	} {
+		t.Run(name, func(t *testing.T) {
+			repository := &memoryRepository{files: make(map[string]*db.FileList)}
+			handler := newTestHandler(t, repository, &memoryStorage{objects: make(map[string][]byte)})
+			response := httptest.NewRecorder()
+			handler.Upload(response, multipartBatchRequest(t, test.files...))
+			if response.Code != test.status || strings.TrimSpace(response.Body.String()) != test.want {
+				t.Fatalf("status=%d body=%q", response.Code, response.Body.String())
+			}
+		})
+	}
+}
