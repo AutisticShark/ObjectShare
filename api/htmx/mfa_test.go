@@ -128,6 +128,18 @@ func TestMFARecoveryCodeAcceptsTypedVariations(t *testing.T) {
 	}
 }
 
+// A TOTP secret that cannot be opened (for example after a settings-key
+// mistake) is a server fault, not a wrong code, and must be reported as one.
+func TestMFAUnreadableSecretIsAnInternalError(t *testing.T) {
+	h, _, user, secret := mfaFixture(t, "totp")
+	challenge := apiChallenge(t, h)
+	user.MFA.Secret = "not-a-sealed-secret"
+	code, _ := appauth.TOTPCode(secret, time.Now().Unix()/30)
+	if w := verifyAPI(h, challenge, code); w.Code != http.StatusInternalServerError {
+		t.Fatalf("unreadable secret status=%d body=%q", w.Code, w.Body.String())
+	}
+}
+
 // The one-minute start cooldown exists to limit emailed codes. Authenticator
 // users must be able to start another sign-in straight away (for example after
 // abandoning one), while email-code sign-ins keep the cooldown.

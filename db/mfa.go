@@ -59,7 +59,9 @@ type MFARepository interface {
 func (repo *GormRepository) MutateMFA(ctx context.Context, id string, version int, mutate func(*User) error) (*User, error) {
 	var user User
 	err := repo.connection.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ?", id).First(&user).Error; err != nil {
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ?", id).First(&user).Error; errors.Is(err, gorm.ErrRecordNotFound) {
+			return ErrNotFound
+		} else if err != nil {
 			return err
 		}
 		if !user.CanAuthenticate() || user.TokenVersion != version {

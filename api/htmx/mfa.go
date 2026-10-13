@@ -25,6 +25,15 @@ type mfaPageData struct {
 }
 
 var errMFAInvalid = errors.New("invalid or expired MFA challenge")
+var errMFAEmailUnavailable = errors.New("Email MFA needs a verified address and configured email delivery.")
+
+// mfaRefusal reports whether err is an expected refusal of an MFA step, as
+// opposed to a storage or settings-key failure that must be logged.
+func mfaRefusal(err error) bool {
+	return errors.Is(err, errMFAInvalid) || errors.Is(err, errMFACooldown) || errors.Is(err, errMFAEmailUnavailable) ||
+		errors.Is(err, db.ErrConflict) || errors.Is(err, db.ErrNotFound)
+}
+
 var errMFACooldown = errors.New("Wait one minute before starting another verification. After five failed codes, wait 15 minutes.")
 
 func (handler *Handler) mfaRepository() db.MFARepository {
@@ -37,11 +46,13 @@ func (handler *Handler) mfaEmailAvailable() bool {
 }
 
 func (handler *Handler) renderMFA(writer http.ResponseWriter, data mfaPageData) {
-	writer.Header().Set("Cache-Control", "private, no-store")
+	handler.renderMFAStatus(writer, http.StatusOK, data)
+}
+
+func (handler *Handler) renderMFAStatus(writer http.ResponseWriter, status int, data mfaPageData) {
 	writer.Header().Set("Pragma", "no-cache")
-	writer.Header().Set("Content-Type", "text/html; charset=utf-8")
 	data.Version = config.GetVersion()
-	handler.render(writer, "mfa.html", data)
+	handler.renderStatus(writer, status, "mfa.html", data)
 }
 
 func (handler *Handler) MFASettings(writer http.ResponseWriter, request *http.Request) {
@@ -145,7 +156,7 @@ func (handler *Handler) beginMFA(writer http.ResponseWriter, request *http.Reque
 			return errMFAInvalid
 		}
 		if method == "email" && action == "setup-email" && (!handler.mfaEmailAvailable() || current.EmailVerifiedAt == nil) {
-			return errors.New("Email MFA needs a verified address and configured email delivery.")
+			return errMFAEmailUnavailable
 		}
 		// The one-minute cooldown limits how often codes are emailed. An
 		// authenticator challenge sends nothing, so it may restart at once.
@@ -175,6 +186,10 @@ func (handler *Handler) beginMFA(writer http.ResponseWriter, request *http.Reque
 		}
 		return nil
 	})
+	if err != nil && !mfaRefusal(err) {
+		handler.internalError(writer, request, "start MFA challenge", err)
+		return
+	}
 	if err != nil {
 		status := http.StatusBadRequest
 		message := "Could not start verification. Reload account settings or sign in again."
@@ -191,7 +206,7 @@ func (handler *Handler) beginMFA(writer http.ResponseWriter, request *http.Reque
 			if id := currentIdentity(request); action != "login" && id != nil {
 				data.User, data.CSRF, data.EmailAvailable = id.User, id.Claims.CSRF, handler.mfaEmailAvailable()
 			}
-			handler.renderMFA(writer, data)
+			handler.renderMFAStatus(writer, status, data)
 			return
 		}
 		http.Error(writer, message, status)
@@ -264,6 +279,10 @@ func (handler *Handler) MFAChallenge(writer http.ResponseWriter, request *http.R
 		return
 	}
 	user, err := handler.users.UserByID(request.Context(), claims.Subject)
+	if err != nil && !errors.Is(err, db.ErrNotFound) {
+		handler.internalError(writer, request, "load MFA challenge", err)
+		return
+	}
 	if err != nil || !validMFAState(user, claims, time.Now()) {
 		http.Error(writer, "Verification expired. Sign in again.", http.StatusUnauthorized)
 		return
@@ -374,6 +393,10 @@ func (handler *Handler) completeMFA(writer http.ResponseWriter, request *http.Re
 		s.Failures, s.LockedUntil = 0, time.Time{}
 		return nil
 	})
+	if err != nil && !mfaRefusal(err) {
+		handler.internalError(writer, request, "verify MFA code", err)
+		return
+	}
 	if err != nil || !success {
 		if claims.Transport == transportBearer {
 			http.Error(writer, "Invalid, expired, or already used code or challenge.", http.StatusUnauthorized)
