@@ -79,6 +79,24 @@ func TestZeroConfigurationComposeEnvironmentLoads(t *testing.T) {
 	}
 }
 
+// The README quick start copies .env.example to .env, and a non-empty variable
+// overrides config.json at the first import. Only secrets and the Compose
+// topology may have values; every other setting is documented with an empty
+// value so a mounted config.json keeps its own.
+func TestEnvExampleLeavesSettingsEmpty(t *testing.T) {
+	example, err := os.ReadFile("../.env.example")
+	if err != nil {
+		t.Fatal(err)
+	}
+	allowed := map[string]bool{"OBJECTSHARE_HOST_PORT": true, "OBJECTSHARE_JWT_SECRET": true, "OBJECTSHARE_SETTINGS_KEY": true,
+		"OBJECTSHARE_REDIS_URL": true, "OBJECTSHARE_REDIS_PASSWORD": true}
+	for _, match := range regexp.MustCompile(`(?m)^(OBJECTSHARE_[A-Z0-9_]+)=(.*?)\r?$`).FindAllStringSubmatch(string(example), -1) {
+		if match[2] != "" && !allowed[match[1]] {
+			t.Errorf(".env.example sets %s=%s, which would override config.json", match[1], match[2])
+		}
+	}
+}
+
 // parsedEnvironmentNames lists every OBJECTSHARE_* variable the parser reads.
 func parsedEnvironmentNames(t *testing.T) []string {
 	t.Helper()
