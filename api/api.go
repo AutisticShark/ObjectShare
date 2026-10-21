@@ -212,7 +212,7 @@ func accessLog(logger *slog.Logger) func(http.Handler) http.Handler {
 // template/partials.html; TestCSPCoversEveryCDNAsset checks that they are.
 const (
 	cdnScriptSource = "https://cdn.jsdelivr.net/npm/htmx.org@2.0.11/"
-	cdnStyleSource  = "https://cdn.jsdelivr.net/npm/@tabler/core@1.6.1/"
+	cdnStyleSource  = "https://cdn.jsdelivr.net/npm/@tabler/core@1.7.0/"
 )
 
 func securityHeaders(captchaEnabled bool, imageSources []string, connectSources ...string) func(http.Handler) http.Handler {
