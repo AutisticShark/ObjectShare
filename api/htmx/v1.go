@@ -323,7 +323,7 @@ func (handler *Handler) AdminUsersStyles(writer http.ResponseWriter, request *ht
 }
 
 func (handler *Handler) FileView(writer http.ResponseWriter, request *http.Request) {
-	writer.Header().Set("Cache-Control", "private, no-store")
+	writer.Header().Set("Cache-Control", cachePrivateNoStore)
 	fileID, ok := validFileID(request)
 	if !ok {
 		http.NotFound(writer, request)
@@ -375,7 +375,7 @@ func (handler *Handler) publicDownloadURL(fileID string) string {
 }
 
 func (handler *Handler) Download(writer http.ResponseWriter, request *http.Request) {
-	writer.Header().Set("Cache-Control", "private, no-store")
+	writer.Header().Set("Cache-Control", cachePrivateNoStore)
 	if !handler.allowRequest(writer, request, "download", handler.rateLimitSettings().DownloadLimit) {
 		return
 	}
@@ -443,7 +443,7 @@ func (handler *Handler) Download(writer http.ResponseWriter, request *http.Reque
 	}
 	defer body.Close()
 	writer = handler.withDownloadProgress(writer)
-	writer.Header().Set("Cache-Control", "private, no-store")
+	writer.Header().Set("Cache-Control", cachePrivateNoStore)
 	// The attachment headers are set only once the body is ready, so an
 	// error response is shown to the user instead of saved as the file.
 	setAttachmentHeaders := func() {
@@ -673,7 +673,7 @@ func (handler *Handler) render(writer http.ResponseWriter, name string, data any
 // Render before committing headers so a template failure cannot masquerade as
 // a successful, partially rendered page (including pages containing forms).
 func (handler *Handler) renderStatus(writer http.ResponseWriter, status int, name string, data any) {
-	writer.Header().Set("Cache-Control", "private, no-store")
+	writer.Header().Set("Cache-Control", cachePrivateNoStore)
 	var page bytes.Buffer
 	if err := handler.templates.ExecuteTemplate(&page, name, data); err != nil {
 		handler.logger.Error("render template", "template", name, "error", err)

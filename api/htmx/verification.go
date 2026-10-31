@@ -111,7 +111,7 @@ func (handler *Handler) verificationCSRFSecret() []byte {
 
 // GET only renders a confirmation form so mail scanners cannot consume a link.
 func (handler *Handler) VerifyEmailPage(writer http.ResponseWriter, request *http.Request) {
-	writer.Header().Set("Cache-Control", "no-store")
+	writer.Header().Set("Cache-Control", cacheNoStore)
 	csrf := handler.preAuthCSRFWithSecret(writer, request, handler.verificationCSRFSecret())
 	if csrf == "" {
 		return
@@ -137,7 +137,7 @@ func validVerificationInput(id, token string) bool {
 
 func (handler *Handler) VerifyEmail(writer http.ResponseWriter, request *http.Request) {
 	writer.Header().Set("Content-Type", "text/html; charset=utf-8")
-	writer.Header().Set("Cache-Control", "no-store")
+	writer.Header().Set("Cache-Control", cacheNoStore)
 	if !handler.parseAuthForm(writer, request) || !handler.verifyPreAuthCSRFWithSecret(writer, request, handler.verificationCSRFSecret()) {
 		return
 	}

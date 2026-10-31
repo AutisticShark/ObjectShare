@@ -54,7 +54,7 @@ func (handler *Handler) canReadFile(request *http.Request, file *db.FileList) bo
 }
 
 func (handler *Handler) sharingFile(writer http.ResponseWriter, request *http.Request) *db.FileList {
-	writer.Header().Set("Cache-Control", "private, no-store")
+	writer.Header().Set("Cache-Control", cachePrivateNoStore)
 	fileID, ok := validFileID(request)
 	if !ok {
 		http.NotFound(writer, request)

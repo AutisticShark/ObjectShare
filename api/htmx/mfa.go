@@ -106,7 +106,7 @@ func (handler *Handler) BeginMFAChange(writer http.ResponseWriter, request *http
 }
 
 func (handler *Handler) beginMFA(writer http.ResponseWriter, request *http.Request, user *db.User, action, next, transport string) {
-	writer.Header().Set("Cache-Control", "no-store")
+	writer.Header().Set("Cache-Control", cacheNoStore)
 	repo := handler.mfaRepository()
 	if repo == nil {
 		http.Error(writer, "MFA storage is unavailable.", http.StatusServiceUnavailable)
@@ -272,7 +272,7 @@ func validMFAState(user *db.User, claims *appauth.Claims, now time.Time) bool {
 }
 
 func (handler *Handler) MFAChallenge(writer http.ResponseWriter, request *http.Request) {
-	writer.Header().Set("Cache-Control", "private, no-store")
+	writer.Header().Set("Cache-Control", cachePrivateNoStore)
 	claims, err := handler.readMFA(request)
 	if err != nil {
 		http.Error(writer, "Sign in again to start verification.", http.StatusUnauthorized)
@@ -292,7 +292,7 @@ func (handler *Handler) MFAChallenge(writer http.ResponseWriter, request *http.R
 }
 
 func (handler *Handler) VerifyMFA(writer http.ResponseWriter, request *http.Request) {
-	writer.Header().Set("Cache-Control", "private, no-store")
+	writer.Header().Set("Cache-Control", cachePrivateNoStore)
 	if !handler.parseAuthForm(writer, request) {
 		return
 	}
@@ -305,7 +305,7 @@ func (handler *Handler) VerifyMFA(writer http.ResponseWriter, request *http.Requ
 }
 
 func (handler *Handler) completeMFA(writer http.ResponseWriter, request *http.Request, claims *appauth.Claims, code string) {
-	writer.Header().Set("Cache-Control", "no-store")
+	writer.Header().Set("Cache-Control", cacheNoStore)
 	if !handler.allowRequest(writer, request, "mfa-verify", 10) {
 		return
 	}
@@ -452,7 +452,7 @@ func (handler *Handler) completeMFA(writer http.ResponseWriter, request *http.Re
 }
 
 func (handler *Handler) ResendMFA(writer http.ResponseWriter, request *http.Request) {
-	writer.Header().Set("Cache-Control", "private, no-store")
+	writer.Header().Set("Cache-Control", cachePrivateNoStore)
 	if !handler.parseAuthForm(writer, request) {
 		return
 	}
@@ -465,7 +465,7 @@ func (handler *Handler) ResendMFA(writer http.ResponseWriter, request *http.Requ
 }
 
 func (handler *Handler) resendMFA(writer http.ResponseWriter, request *http.Request, claims *appauth.Claims) {
-	writer.Header().Set("Cache-Control", "no-store")
+	writer.Header().Set("Cache-Control", cacheNoStore)
 	if !handler.allowRequest(writer, request, "mfa-send", 5) {
 		return
 	}
@@ -512,7 +512,7 @@ func (handler *Handler) resendMFA(writer http.ResponseWriter, request *http.Requ
 }
 
 func (handler *Handler) apiMFAInput(writer http.ResponseWriter, request *http.Request) (*appauth.Claims, string, bool) {
-	writer.Header().Set("Cache-Control", "no-store")
+	writer.Header().Set("Cache-Control", cacheNoStore)
 	request.Body = http.MaxBytesReader(writer, request.Body, 8192)
 	var input struct {
 		Challenge string `json:"challenge_token"`

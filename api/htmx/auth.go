@@ -32,6 +32,11 @@ const (
 
 	loginDestinationAdminUsers    = "admin-users"
 	loginDestinationAdminSettings = "admin-settings"
+
+	// cacheNoStore keeps tokens and one-time secrets out of every cache;
+	// cachePrivateNoStore marks per-account pages the same way.
+	cacheNoStore        = "no-store"
+	cachePrivateNoStore = "private, no-store"
 )
 
 type authPageData struct {
@@ -81,7 +86,7 @@ func (handler *Handler) Authenticate(next http.Handler) http.Handler {
 		// silently downgraded to a guest (for example a guest upload).
 		reject := func() {
 			if transport == transportBearer {
-				writer.Header().Set("Cache-Control", "private, no-store")
+				writer.Header().Set("Cache-Control", cachePrivateNoStore)
 				writer.Header().Set("WWW-Authenticate", `Bearer error="invalid_token"`)
 				http.Error(writer, "Invalid or expired access token.", http.StatusUnauthorized)
 				return
@@ -119,7 +124,7 @@ func (handler *Handler) Authenticate(next http.Handler) http.Handler {
 			if transport == transportCookie {
 				handler.clearJWTCookie(writer)
 			}
-			writer.Header().Set("Cache-Control", "private, no-store")
+			writer.Header().Set("Cache-Control", cachePrivateNoStore)
 			http.Error(writer, "This account is banned.", http.StatusForbidden)
 			return
 		}
@@ -399,7 +404,7 @@ func (handler *Handler) APILogin(writer http.ResponseWriter, request *http.Reque
 		return
 	}
 	writer.Header().Set("Content-Type", "application/json")
-	writer.Header().Set("Cache-Control", "no-store")
+	writer.Header().Set("Cache-Control", cacheNoStore)
 	writer.Header().Set("Pragma", "no-cache")
 	_ = json.NewEncoder(writer).Encode(map[string]any{
 		"access_token": token, "token_type": "Bearer", "expires_in": int(time.Until(claims.ExpiresAt.Time).Seconds()),
@@ -760,7 +765,7 @@ func (handler *Handler) UpdateTheme(writer http.ResponseWriter, request *http.Re
 		return
 	}
 	if request.Header.Get("HX-Request") == "true" && request.FormValue("theme_toggle") == "true" {
-		writer.Header().Set("Cache-Control", "private, no-store")
+		writer.Header().Set("Cache-Control", cachePrivateNoStore)
 		writer.Header().Set("HX-Trigger", `{"objectshare:theme":{"theme":"`+theme+`"}}`)
 		writer.WriteHeader(http.StatusNoContent)
 		return

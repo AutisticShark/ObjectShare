@@ -331,7 +331,7 @@ func (handler *Handler) storeProxiedHeader(request *http.Request, header *multip
 }
 
 func (handler *Handler) UploadResults(writer http.ResponseWriter, request *http.Request) {
-	writer.Header().Set("Cache-Control", "private, no-store")
+	writer.Header().Set("Cache-Control", cachePrivateNoStore)
 	parts := strings.Split(request.URL.Query().Get("ids"), ",")
 	maxFiles := handler.uploadSettings().MaxFilesPerBatch
 	if len(parts) < 2 || len(parts) > maxFiles {

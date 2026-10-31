@@ -49,7 +49,7 @@ func writeAccessToken(writer http.ResponseWriter, token string, claims *appauth.
 		body[key] = value
 	}
 	writer.Header().Set("Content-Type", "application/json")
-	writer.Header().Set("Cache-Control", "no-store")
+	writer.Header().Set("Cache-Control", cacheNoStore)
 	writer.Header().Set("Pragma", "no-cache")
 	_ = json.NewEncoder(writer).Encode(body)
 }

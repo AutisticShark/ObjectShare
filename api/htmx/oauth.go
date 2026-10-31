@@ -121,7 +121,7 @@ func (handler *Handler) OAuthStart(writer http.ResponseWriter, request *http.Req
 		Secure: handler.config.SecureCookies, SameSite: http.SameSiteLaxMode,
 		Expires: time.Unix(flow.ExpiresAt, 0).UTC(), MaxAge: int(oauthFlowLifetime.Seconds()),
 	})
-	writer.Header().Set("Cache-Control", "no-store")
+	writer.Header().Set("Cache-Control", cacheNoStore)
 	handler.redirect(writer, request, provider.AuthorizationURL(state, verifier))
 }
 

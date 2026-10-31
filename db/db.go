@@ -488,6 +488,10 @@ func effectiveUploadQuota(connection *gorm.DB, userID string, accountQuota int64
 // and claims the upload moments later.
 const liveReservation = "(upload_status <> 'pending' OR upload_expires_at IS NULL OR upload_expires_at >= ?)"
 
+// fileInStatus selects one file by ID while it is in the given upload status,
+// so a state transition changes no row when another one has already happened.
+const fileInStatus = "file_id = ? AND upload_status = ?"
+
 // ReservationCancelGrace is how long after its expiry a pending reservation
 // still holds quota.
 const ReservationCancelGrace = 5 * time.Minute
@@ -547,7 +551,7 @@ func (repo *GormRepository) ClaimUploadPublication(ctx context.Context, fileID s
 // failed copy, so the owner can retry completion and cleanup can expire it.
 func (repo *GormRepository) ReleaseUploadPublication(ctx context.Context, fileID string) error {
 	result := repo.connection.WithContext(ctx).Model(&FileList{}).
-		Where("file_id = ? AND upload_status = ?", fileID, "publishing").
+		Where(fileInStatus, fileID, "publishing").
 		Updates(map[string]any{"upload_status": "pending", "updated_at": time.Now().UTC()})
 	if result.Error != nil {
 		return result.Error
@@ -589,7 +593,7 @@ func (repo *GormRepository) CompleteUpload(ctx context.Context, fileID string) e
 
 func (repo *GormRepository) FinalizeUpload(ctx context.Context, fileID, sha256Sum, sha3Sum string, encrypted bool, encryptionMethod string) error {
 	result := repo.connection.WithContext(ctx).Model(&FileList{}).
-		Where("file_id = ? AND upload_status = ?", fileID, "pending").
+		Where(fileInStatus, fileID, "pending").
 		Updates(map[string]any{
 			"file_sha256": sha256Sum, "file_sha3": sha3Sum, "is_encrypted": encrypted,
 			"encryption_method": encryptionMethod, "upload_status": "complete",
@@ -810,7 +814,7 @@ func retentionEligibilitySQLAt(now time.Time, guestBefore, unpaidBefore *time.Ti
 // once the claim is stale).
 func (repo *GormRepository) ClaimFileDeletion(ctx context.Context, fileID string, now time.Time) error {
 	result := repo.connection.WithContext(ctx).Model(&FileList{}).
-		Where("file_id = ? AND upload_status = ?", fileID, "complete").
+		Where(fileInStatus, fileID, "complete").
 		Updates(map[string]any{"upload_status": "deleting", "retention_claimed_at": now, "updated_at": now})
 	if result.Error != nil {
 		return result.Error
@@ -823,7 +827,7 @@ func (repo *GormRepository) ClaimFileDeletion(ctx context.Context, fileID string
 
 func (repo *GormRepository) ReleaseRetentionClaim(ctx context.Context, fileID string) error {
 	result := repo.connection.WithContext(ctx).Model(&FileList{}).
-		Where("file_id = ? AND upload_status = ?", fileID, "deleting").
+		Where(fileInStatus, fileID, "deleting").
 		Updates(map[string]any{"upload_status": "complete", "retention_claimed_at": nil})
 	if result.Error != nil {
 		return result.Error

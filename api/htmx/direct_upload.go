@@ -190,8 +190,9 @@ func (handler *Handler) authorizeDirectUpload(request *http.Request, input direc
 		record.FileOwner = &identity.User.ID
 		record.IsAnonymousUpload = false
 	}
-	authorization := directUploadAuthorization{FileID: fileID, FileName: fileName, CompleteURL: "/api/v1/uploads/direct/" + fileID + "/complete",
-		AbortURL: "/api/v1/uploads/direct/" + fileID + "/abort", RenewURL: "/api/v1/uploads/direct/" + fileID + "/renew", Token: token, ExpiresAt: expiresAt.Format(time.RFC3339)}
+	base := "/api/v1/uploads/direct/" + fileID
+	authorization := directUploadAuthorization{FileID: fileID, FileName: fileName, CompleteURL: base + "/complete",
+		AbortURL: base + "/abort", RenewURL: base + "/renew", Token: token, ExpiresAt: expiresAt.Format(time.RFC3339)}
 	return authorization, record, nil
 }
 
@@ -588,7 +589,7 @@ func decodeJSON(writer http.ResponseWriter, request *http.Request, target any) e
 
 func writeJSON(writer http.ResponseWriter, status int, value any) {
 	writer.Header().Set("Content-Type", "application/json; charset=utf-8")
-	writer.Header().Set("Cache-Control", "no-store")
+	writer.Header().Set("Cache-Control", cacheNoStore)
 	writer.WriteHeader(status)
 	_ = json.NewEncoder(writer).Encode(value)
 }

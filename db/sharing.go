@@ -43,7 +43,7 @@ func (repo *GormRepository) SetFileSharing(ctx context.Context, fileID, mode str
 		return err
 	}
 	result := repo.connection.WithContext(ctx).Model(&FileList{}).
-		Where("file_id = ? AND upload_status = ?", fileID, "complete").
+		Where(fileInStatus, fileID, "complete").
 		Updates(map[string]any{"share_mode": mode, "share_user_ids": string(encoded)})
 	if result.Error != nil {
 		return result.Error

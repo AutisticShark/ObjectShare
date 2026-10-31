@@ -44,7 +44,7 @@ func (handler *Handler) ClientEncryptionScript(writer http.ResponseWriter, reque
 }
 
 func (handler *Handler) ClientKey(writer http.ResponseWriter, request *http.Request) {
-	writer.Header().Set("Cache-Control", "private, no-store")
+	writer.Header().Set("Cache-Control", cachePrivateNoStore)
 	identity := currentIdentity(request)
 	if identity == nil {
 		http.Error(writer, "Log in to manage your encryption key.", http.StatusUnauthorized)

@@ -44,7 +44,7 @@ type billingProblemPageData struct {
 // Browser form failures retain the HTTP error status and provide a safe way
 // back to billing. Bearer clients and HTMX callers keep the plain-text contract.
 func (handler *Handler) billingProblem(writer http.ResponseWriter, request *http.Request, status int, message string) {
-	writer.Header().Set("Cache-Control", "private, no-store")
+	writer.Header().Set("Cache-Control", cachePrivateNoStore)
 	identity := currentIdentity(request)
 	acceptsHTML := false
 	for _, accept := range strings.Split(request.Header.Get("Accept"), ",") {
@@ -161,7 +161,7 @@ func (handler *Handler) Invoices(writer http.ResponseWriter, request *http.Reque
 		handler.invoiceFailure(writer, request, err)
 		return
 	}
-	writer.Header().Set("Cache-Control", "private, no-store")
+	writer.Header().Set("Cache-Control", cachePrivateNoStore)
 	handler.render(writer, "invoices.html", invoicePageData{Version: config.GetVersion(), User: identityUser(request), CSRF: identityCSRF(request), Invoices: invoices, Page: page, NextPage: page + 1, PreviousPage: page - 1, HasNext: len(invoices) == 25})
 }
 
@@ -180,7 +180,7 @@ func (handler *Handler) ownedInvoice(writer http.ResponseWriter, request *http.R
 		handler.invoiceFailure(writer, request, err)
 		return nil
 	}
-	writer.Header().Set("Cache-Control", "private, no-store")
+	writer.Header().Set("Cache-Control", cachePrivateNoStore)
 	return invoice
 }
 
