@@ -130,3 +130,30 @@ The maintainer decided these items after the first report:
   greeting) were also checked by reverting their fix and confirming they fail.
 - Not run locally: the Docker image build and the Compose smoke test, which CI
   runs.
+
+## SonarCloud review, 2026-10-31
+
+SonarCloud's automatic analysis of `fb01bda` failed the quality gate on one
+low-severity vulnerability and listed 32 code smells. Three commits fix 15
+findings: "chore: name literals that SonarCloud flagged as duplicated", "chore:
+split the functions SonarCloud flagged as too complex" (six production
+functions), and "chore: clear the remaining minor SonarCloud findings". Behavior
+is unchanged.
+
+The other 18 were closed on SonarCloud with these reasons:
+
+- **`http://` in `healthURL` (go:S5332), false positive.** The container health
+  probe calls the process's own listener on a loopback address.
+- **Meta refresh in `oauth_continue.html`, accepted.** It starts the same-site
+  navigation that carries the SameSite=Strict JWT cookie after an OAuth callback
+  (see the OAuth fix above).
+- **`await` in a loop in `upload.js`, accepted.** A batch is sent one file at a
+  time, each with a freshly renewed short-lived URL.
+- **`!important` in `branding.css`, accepted.** It overrides Tabler's
+  `!important` `.ms-auto` utility.
+- **`checkoutWindowGateway` interface name, accepted.** The `-er` form would be
+  less clear.
+- **Repeated `"id = ?"` in `db/invoice.go`, accepted.** It is the idiomatic GORM
+  condition.
+- **Cognitive complexity of 11 test functions, accepted.** They are
+  table-driven scenarios; splitting them would not improve coverage.
