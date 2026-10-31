@@ -326,7 +326,7 @@ func TestBatchFilesAreAuthorizedWhenTheirUploadStartsAndCompleteWithinGrace(t *t
 		handle(response, sharingRequest("POST", second.FileID, string(body), nil))
 		return response
 	}
-	age := func(begun time.Duration, reservedFor time.Duration) {
+	age := func(begun, reservedFor time.Duration) {
 		repository.mu.Lock()
 		defer repository.mu.Unlock()
 		record := repository.files[second.FileID]

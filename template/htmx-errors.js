@@ -21,7 +21,7 @@
       alert = document.createElement("div");
       alert.className = "alert alert-danger";
       alert.setAttribute("role", "alert");
-      alert.setAttribute("data-htmx-error", "");
+      alert.dataset.htmxError = "";
       (form.querySelector(".card-body") || form).prepend(alert);
     }
     alert.textContent = text;

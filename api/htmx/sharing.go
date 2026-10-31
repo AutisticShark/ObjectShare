@@ -107,14 +107,20 @@ func (handler *Handler) SharingPage(writer http.ResponseWriter, request *http.Re
 	if request.URL.Query().Get("saved") == "1" {
 		message = "Sharing permissions saved."
 	}
-	handler.renderSharing(writer, request, file, fileShareMode(file), strings.Join(recipients, "\n"), "", message)
+	handler.renderSharing(writer, request, file, sharingForm{Mode: fileShareMode(file), Recipients: strings.Join(recipients, "\n"), Message: message})
 }
 
-func (handler *Handler) renderSharing(writer http.ResponseWriter, request *http.Request, file *db.FileList, mode, recipients, formError, message string) {
-	handler.renderSharingStatus(writer, request, http.StatusOK, file, mode, recipients, formError, message)
+// sharingForm is what the sharing form shows: the access option and
+// recipients, entered or saved, and the outcome of the last submission.
+type sharingForm struct {
+	Mode, Recipients, Error, Message string
 }
 
-func (handler *Handler) renderSharingStatus(writer http.ResponseWriter, request *http.Request, status int, file *db.FileList, mode, recipients, formError, message string) {
+func (handler *Handler) renderSharing(writer http.ResponseWriter, request *http.Request, file *db.FileList, form sharingForm) {
+	handler.renderSharingStatus(writer, request, http.StatusOK, file, form)
+}
+
+func (handler *Handler) renderSharingStatus(writer http.ResponseWriter, request *http.Request, status int, file *db.FileList, form sharingForm) {
 	csrf := identityCSRF(request)
 	if identityUser(request) == nil {
 		csrf = guestSharingCSRF(file)
@@ -125,7 +131,7 @@ func (handler *Handler) renderSharingStatus(writer http.ResponseWriter, request 
 	}
 	handler.renderStatus(writer, status, "sharing.html", sharingPageData{
 		Version: config.GetVersion(), CSRF: csrf, FileID: file.FileID, FileName: file.FileName,
-		ClientEncrypted: file.ClientEncryption != "", ShareURL: shareURL, Mode: mode, Recipients: recipients, Error: formError, Message: message,
+		ClientEncrypted: file.ClientEncryption != "", ShareURL: shareURL, Mode: form.Mode, Recipients: form.Recipients, Error: form.Error, Message: form.Message,
 		ClientEncryption: file.ClientEncryption, SavedMode: fileShareMode(file),
 		User: identityUser(request), SignupEnabled: handler.config.Auth != nil && handler.config.Auth.SignupEnabled,
 	})
@@ -155,7 +161,7 @@ func (handler *Handler) UpdateSharing(writer http.ResponseWriter, request *http.
 		if request.Header.Get("HX-Request") != "true" {
 			status = http.StatusBadRequest
 		}
-		handler.renderSharingStatus(writer, request, status, file, mode, recipients, message, "")
+		handler.renderSharingStatus(writer, request, status, file, sharingForm{Mode: mode, Recipients: recipients, Error: message})
 	}
 	if !db.ValidShareMode(mode) {
 		fail("Choose a valid access option.")
@@ -179,7 +185,7 @@ func (handler *Handler) UpdateSharing(writer http.ResponseWriter, request *http.
 		// the refusal shows in the page's error alert (htmx-errors.js swaps in
 		// error pages that contain the form's .page target).
 		if !handler.allowRequestOr(writer, request, "sharing-recipients", sharingRecipientLookupLimit, func() {
-			handler.renderSharingStatus(writer, request, http.StatusTooManyRequests, file, mode, recipients, "Too many recipient lookups. Try again later.", "")
+			handler.renderSharingStatus(writer, request, http.StatusTooManyRequests, file, sharingForm{Mode: mode, Recipients: recipients, Error: "Too many recipient lookups. Try again later."})
 		}) {
 			return
 		}

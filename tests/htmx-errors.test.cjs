@@ -25,7 +25,14 @@ function setup() {
     documentElement: {dataset: {}},
     addEventListener(name, listener) { assert.equal(listeners[name], undefined, `duplicate ${name} listener`); listeners[name] = listener; },
     createElement() {
-      return {attributes: {}, setAttribute(name, value) { this.attributes[name] = value; }, remove() { body.children = body.children.filter(child => child !== this); }};
+      const attributes = {};
+      // As in the DOM, dataset.fooBar reads and writes the data-foo-bar attribute.
+      const dataName = key => `data-${String(key).replace(/[A-Z]/g, letter => `-${letter.toLowerCase()}`)}`;
+      const dataset = new Proxy({}, {
+        get: (target, key) => attributes[dataName(key)],
+        set: (target, key, value) => { attributes[dataName(key)] = String(value); return true; },
+      });
+      return {attributes, dataset, setAttribute(name, value) { attributes[name] = String(value); }, remove() { body.children = body.children.filter(child => child !== this); }};
     },
   };
   class DOMParser {

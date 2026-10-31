@@ -220,7 +220,7 @@ func TestClientNetworkBucketsIPv6By64(t *testing.T) {
 	if first != "2001:db8:1:2::/64" || rotated != first {
 		t.Fatalf("addresses in one /64 map to %q and %q", first, rotated)
 	}
-	if other := network("[2001:db8:1:3::1]:1234"); other == first {
+	if network("[2001:db8:1:3::1]:1234") == first {
 		t.Fatal("a different /64 shares the bucket")
 	}
 }
