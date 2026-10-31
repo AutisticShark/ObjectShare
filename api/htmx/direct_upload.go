@@ -308,16 +308,8 @@ func (handler *Handler) CompleteDirectUpload(writer http.ResponseWriter, request
 		writeJSON(writer, http.StatusOK, map[string]string{"location": "/file/" + file.FileID})
 		return
 	}
-	// The presigned URL targets a staging key, so a repeated PUT after this
-	// point can never replace the finished file. Uploads authorised before that
-	// change were presigned for the final key; accept those when nothing is staged.
 	pendingKey := service.PendingUploadKey(file.FileID)
-	staged := true
-	info, err := handler.direct.Stat(request.Context(), pendingKey)
-	if err != nil {
-		staged = false
-		info, err = handler.direct.Stat(request.Context(), file.FileID)
-	}
+	info, staged, err := handler.uploadedObject(request.Context(), file.FileID, pendingKey)
 	if err != nil {
 		handler.logger.Warn("direct upload is not available yet", "file_id", file.FileID, "error", err)
 		http.Error(writer, "The uploaded object is not available yet.", http.StatusConflict)
@@ -330,26 +322,8 @@ func (handler *Handler) CompleteDirectUpload(writer http.ResponseWriter, request
 		http.Error(writer, "The uploaded object does not match the authorized upload.", http.StatusUnprocessableEntity)
 		return
 	}
-	if staged {
-		// Claim the record before the copy creates the final object. Abort and
-		// expiry cleanup refuse a publishing record, so they cannot remove it
-		// mid-copy and leave a final object that no record references or counts.
-		if err := handler.repository.ClaimUploadPublication(request.Context(), file.FileID); err != nil {
-			if errors.Is(err, db.ErrNotFound) {
-				http.Error(writer, "The upload is being finalized or has changed. Retry completion to check its status.", http.StatusConflict)
-				return
-			}
-			handler.internalError(writer, request, "claim direct upload publication", err)
-			return
-		}
-		if err := handler.publishStagedUpload(request.Context(), file, pendingKey); err != nil {
-			handler.logger.Warn("publish staged direct upload", "file_id", file.FileID, "error", err)
-			if err := handler.repository.ReleaseUploadPublication(context.WithoutCancel(request.Context()), file.FileID); err != nil && !errors.Is(err, db.ErrNotFound) {
-				handler.logger.Warn("release direct upload publication", "file_id", file.FileID, "error", err)
-			}
-			http.Error(writer, "The uploaded object could not be finalized yet. Retry completion.", http.StatusConflict)
-			return
-		}
+	if staged && !handler.publishDirectUpload(writer, request, file, pendingKey) {
+		return
 	}
 	if err := handler.repository.CompleteUpload(request.Context(), file.FileID); err != nil {
 		if staged {
@@ -366,6 +340,44 @@ func (handler *Handler) CompleteDirectUpload(writer http.ResponseWriter, request
 		handler.grantGuestOwnership(writer, request, file.FileID, token)
 	}
 	writeJSON(writer, http.StatusOK, map[string]string{"location": "/file/" + file.FileID})
+}
+
+// uploadedObject finds the object a direct upload sent and reports whether it
+// is staged. The presigned URL targets a staging key, so a repeated PUT after
+// completion can never replace the finished file. Uploads authorised before
+// that change were presigned for the final key; accept those when nothing is
+// staged.
+func (handler *Handler) uploadedObject(ctx context.Context, fileID, pendingKey string) (*service.ObjectInfo, bool, error) {
+	if info, err := handler.direct.Stat(ctx, pendingKey); err == nil {
+		return info, true, nil
+	}
+	info, err := handler.direct.Stat(ctx, fileID)
+	return info, false, err
+}
+
+// publishDirectUpload copies a staged upload to its final key and reports
+// whether it may be completed; otherwise it has written the response.
+func (handler *Handler) publishDirectUpload(writer http.ResponseWriter, request *http.Request, file *db.FileList, pendingKey string) bool {
+	// Claim the record before the copy creates the final object. Abort and
+	// expiry cleanup refuse a publishing record, so they cannot remove it
+	// mid-copy and leave a final object that no record references or counts.
+	if err := handler.repository.ClaimUploadPublication(request.Context(), file.FileID); err != nil {
+		if errors.Is(err, db.ErrNotFound) {
+			http.Error(writer, "The upload is being finalized or has changed. Retry completion to check its status.", http.StatusConflict)
+			return false
+		}
+		handler.internalError(writer, request, "claim direct upload publication", err)
+		return false
+	}
+	if err := handler.publishStagedUpload(request.Context(), file, pendingKey); err != nil {
+		handler.logger.Warn("publish staged direct upload", "file_id", file.FileID, "error", err)
+		if err := handler.repository.ReleaseUploadPublication(context.WithoutCancel(request.Context()), file.FileID); err != nil && !errors.Is(err, db.ErrNotFound) {
+			handler.logger.Warn("release direct upload publication", "file_id", file.FileID, "error", err)
+		}
+		http.Error(writer, "The uploaded object could not be finalized yet. Retry completion.", http.StatusConflict)
+		return false
+	}
+	return true
 }
 
 func (handler *Handler) AbortDirectUpload(writer http.ResponseWriter, request *http.Request) {

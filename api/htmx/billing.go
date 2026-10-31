@@ -152,16 +152,7 @@ func (handler *Handler) PayPalTopUpReturn(writer http.ResponseWriter, request *h
 		http.Error(writer, "This top-up can no longer be captured.", http.StatusConflict)
 		return
 	}
-	// Capturing charges the customer, so first make sure the payment can still
-	// be applied: the payment window is open and, for a plan, no other purchase
-	// has made it inapplicable since checkout started.
-	now := time.Now().UTC()
-	var paymentErr error
-	if !topUp.ExpiresAt.IsZero() && !topUp.ExpiresAt.After(now) {
-		paymentErr = db.ErrConflict
-	} else if checker, ok := handler.billing.(db.InvoicePaymentChecker); ok {
-		paymentErr = checker.CheckInvoicePayment(request.Context(), topUp.ID, now)
-	}
+	paymentErr := handler.checkTopUpPayable(request.Context(), topUp, time.Now().UTC())
 	if errors.Is(paymentErr, db.ErrConflict) || errors.Is(paymentErr, db.ErrNotFound) {
 		http.Error(writer, "This invoice can no longer be paid: its payment window has ended or another purchase now prevents it. PayPal has not charged you for this order. Return to your invoices to review it.", http.StatusConflict)
 		return
@@ -193,18 +184,40 @@ func (handler *Handler) PayPalTopUpReturn(writer http.ResponseWriter, request *h
 		http.Error(writer, "PayPal capture does not match this top-up.", http.StatusUnprocessableEntity)
 		return
 	}
-	_, err = handler.billing.ApplyCreditTopUp(request.Context(), payment, time.Now().UTC())
-	if err != nil {
-		if errors.Is(err, db.ErrNotFound) || errors.Is(err, db.ErrInvalidCredit) || errors.Is(err, db.ErrConflict) {
-			handler.recordUnappliedPayment(request, payment, err)
-			handler.paymentReceivedButUnapplied(writer, capture.ID)
-			return
-		}
-		handler.logger.Error("apply captured PayPal top-up failed; the webhook or a retry may still settle it", "payment_id", capture.ID, "top_up_id", topUp.ID, "error", err)
-		handler.internalError(writer, request, "apply PayPal credit top-up", err)
-		return
+	if handler.applyPayPalCapture(writer, request, payment) {
+		http.Redirect(writer, request, "/invoices/"+topUp.ID, http.StatusSeeOther)
 	}
-	http.Redirect(writer, request, "/invoices/"+topUp.ID, http.StatusSeeOther)
+}
+
+// checkTopUpPayable runs before a capture, which charges the customer. It makes
+// sure the payment can still be applied: the payment window is open and, for a
+// plan, no other purchase has made it inapplicable since checkout started.
+func (handler *Handler) checkTopUpPayable(ctx context.Context, topUp *db.CreditTopUp, now time.Time) error {
+	if !topUp.ExpiresAt.IsZero() && !topUp.ExpiresAt.After(now) {
+		return db.ErrConflict
+	}
+	if checker, ok := handler.billing.(db.InvoicePaymentChecker); ok {
+		return checker.CheckInvoicePayment(ctx, topUp.ID, now)
+	}
+	return nil
+}
+
+// applyPayPalCapture credits a captured top-up and reports whether it was
+// applied. The customer has already paid, so a capture that can never apply is
+// recorded for reconciliation instead of being reported as an error.
+func (handler *Handler) applyPayPalCapture(writer http.ResponseWriter, request *http.Request, payment db.CreditPayment) bool {
+	_, err := handler.billing.ApplyCreditTopUp(request.Context(), payment, time.Now().UTC())
+	if err == nil {
+		return true
+	}
+	if errors.Is(err, db.ErrNotFound) || errors.Is(err, db.ErrInvalidCredit) || errors.Is(err, db.ErrConflict) {
+		handler.recordUnappliedPayment(request, payment, err)
+		handler.paymentReceivedButUnapplied(writer, payment.GatewayPaymentID)
+		return false
+	}
+	handler.logger.Error("apply captured PayPal top-up failed; the webhook or a retry may still settle it", "payment_id", payment.GatewayPaymentID, "top_up_id", payment.TopUpID, "error", err)
+	handler.internalError(writer, request, "apply PayPal credit top-up", err)
+	return false
 }
 
 // recordUnappliedPayment is called when a gateway has confirmed a captured

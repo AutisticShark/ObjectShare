@@ -131,25 +131,8 @@ func (repo *GormRepository) InvoicesForUser(ctx context.Context, userID string, 
 
 // checkInvoicePlan runs under the account lock, before taking any payment.
 func checkInvoicePlan(tx *gorm.DB, invoice *Invoice, now time.Time) error {
-	// A gateway checkout only blocks other plan purchases while its payment
-	// window is open. Otherwise an abandoned checkout, or a provider failure
-	// after the gateway was reserved, would pin the account forever because no
-	// job moves stale pending invoices out of that state. The provider checkout
-	// can expire before the invoice (a PayPal order lasts three hours); after
-	// that it can no longer be paid and stops blocking too.
-	var pending []Invoice
-	if err := tx.Where("user_id = ? AND id <> ? AND kind = 'plan' AND status = 'pending' AND gateway <> '' AND expires_at > ?", invoice.UserID, invoice.ID, now).Find(&pending).Error; err != nil {
+	if err := checkPendingPlanCheckouts(tx, invoice, now); err != nil {
 		return err
-	}
-	for _, other := range pending {
-		var payment CreditTopUp
-		err := tx.Where("id = ?", other.ID).First(&payment).Error
-		if errors.Is(err, gorm.ErrRecordNotFound) || (err == nil && payment.CheckoutDeadline().After(now)) {
-			return ErrConflict
-		}
-		if err != nil {
-			return err
-		}
 	}
 	var checkout BillingCheckout
 	if err := tx.Where("user_id = ?", invoice.UserID).First(&checkout).Error; err == nil && checkout.ExpiresAt.After(now) {
@@ -173,6 +156,32 @@ func checkInvoicePlan(tx *gorm.DB, invoice *Invoice, now time.Time) error {
 	ended := sub.CancelAtPeriodEnd && !sub.CurrentPeriodEnd.After(now)
 	if sub.Gateway != BillingGatewayCredit && !subscriptionTerminal(sub.Status) && !ended {
 		return ErrConflict
+	}
+	return nil
+}
+
+// checkPendingPlanCheckouts returns ErrConflict while another plan invoice of
+// the account has a gateway checkout that can still be paid.
+func checkPendingPlanCheckouts(tx *gorm.DB, invoice *Invoice, now time.Time) error {
+	// A gateway checkout only blocks other plan purchases while its payment
+	// window is open. Otherwise an abandoned checkout, or a provider failure
+	// after the gateway was reserved, would pin the account forever because no
+	// job moves stale pending invoices out of that state. The provider checkout
+	// can expire before the invoice (a PayPal order lasts three hours); after
+	// that it can no longer be paid and stops blocking too.
+	var pending []Invoice
+	if err := tx.Where("user_id = ? AND id <> ? AND kind = 'plan' AND status = 'pending' AND gateway <> '' AND expires_at > ?", invoice.UserID, invoice.ID, now).Find(&pending).Error; err != nil {
+		return err
+	}
+	for _, other := range pending {
+		var payment CreditTopUp
+		err := tx.Where("id = ?", other.ID).First(&payment).Error
+		if errors.Is(err, gorm.ErrRecordNotFound) || (err == nil && payment.CheckoutDeadline().After(now)) {
+			return ErrConflict
+		}
+		if err != nil {
+			return err
+		}
 	}
 	return nil
 }

@@ -55,23 +55,7 @@ func (repo *GormRepository) RotateSettingsKey(ctx context.Context, reseal func(s
 		result.Rotated = true
 		var users []User
 		return tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("mfa <> '{}'::jsonb").FindInBatches(&users, 200, func(*gorm.DB, int) error {
-			for index := range users {
-				changed, unreadable, err := resealMFA(&users[index])
-				if err != nil {
-					return err
-				}
-				if unreadable {
-					result.Unreadable++
-				}
-				if !changed {
-					continue
-				}
-				if err := tx.Model(&users[index]).Select("MFA").Updates(&users[index]).Error; err != nil {
-					return err
-				}
-				result.Accounts++
-			}
-			return nil
+			return resealUserMFA(tx, users, resealMFA, &result)
 		}).Error
 	})
 	if err != nil {
@@ -81,4 +65,26 @@ func (repo *GormRepository) RotateSettingsKey(ctx context.Context, reseal func(s
 		Where(`EXISTS (SELECT 1 FROM jsonb_array_elements_text(CASE WHEN jsonb_typeof(mfa->'recovery') = 'array' THEN mfa->'recovery' ELSE '[]'::jsonb END) AS code WHERE starts_with(code, ?))`, PreviousKeyRecoveryPrefix).
 		Count(&result.PreviousKeyRecoveryAccounts).Error
 	return result, err
+}
+
+// resealUserMFA rewrites the MFA state of each user in one batch of a settings
+// key rotation and counts the outcome in result.
+func resealUserMFA(tx *gorm.DB, users []User, resealMFA func(*User) (changed, unreadable bool, err error), result *SettingsKeyRotation) error {
+	for index := range users {
+		changed, unreadable, err := resealMFA(&users[index])
+		if err != nil {
+			return err
+		}
+		if unreadable {
+			result.Unreadable++
+		}
+		if !changed {
+			continue
+		}
+		if err := tx.Model(&users[index]).Select("MFA").Updates(&users[index]).Error; err != nil {
+			return err
+		}
+		result.Accounts++
+	}
+	return nil
 }

@@ -445,19 +445,7 @@ func (handler *Handler) authenticateCredentials(request *http.Request, emailValu
 			return nil, false, time.Time{}, err
 		}
 	}
-	passwordCorrect := false
-	if user != nil {
-		if user.PasswordHash == "" {
-			// OAuth-only accounts have no password. Still burn one verification
-			// so timing matches, but never let it succeed.
-			_ = appauth.VerifyPassword(password, appauth.DummyPasswordHash())
-		} else {
-			passwordCorrect = appauth.VerifyPassword(password, user.PasswordHash)
-		}
-	} else {
-		_ = appauth.VerifyPassword(password, appauth.DummyPasswordHash())
-	}
-	if user == nil || !user.CanAuthenticate() || !passwordCorrect {
+	if !passwordMatches(user, password) || !user.CanAuthenticate() {
 		return nil, false, time.Time{}, nil
 	}
 	for _, key := range []string{throttleKey, accountKey} {
@@ -470,6 +458,17 @@ func (handler *Handler) authenticateCredentials(request *http.Request, emailValu
 	}
 	handler.upgradePasswordHash(request, user, password)
 	return user, false, time.Time{}, nil
+}
+
+// passwordMatches checks password against user's hash. An unknown email or an
+// OAuth-only account, which has no password, still burns one verification so
+// timing matches, but never succeeds.
+func passwordMatches(user *db.User, password string) bool {
+	if user == nil || user.PasswordHash == "" {
+		_ = appauth.VerifyPassword(password, appauth.DummyPasswordHash())
+		return false
+	}
+	return appauth.VerifyPassword(password, user.PasswordHash)
 }
 
 // upgradePasswordHash replaces a hash made with older Argon2id parameters after a
