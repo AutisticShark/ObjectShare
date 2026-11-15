@@ -89,11 +89,6 @@
     document.getElementById("copy-status").textContent = "";
   }
   initialize();
-  document.addEventListener("htmx:afterSwap", initialize);
-  document.addEventListener("htmx:beforeSwap", event => {
-    const encrypted = document.getElementById("encrypted-sharing");
-    if (encrypted && event.detail.target.contains(encrypted)) clearEncryption();
-  });
   window.addEventListener("pagehide", clearEncryption);
   window.addEventListener("pageshow", () => {
     const encrypted = document.getElementById("encrypted-sharing");

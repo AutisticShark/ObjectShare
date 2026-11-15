@@ -19,10 +19,7 @@
 {#if data.CanUpload}
   <form id="upload-form" action="/api/v1/upload" method="post" enctype="multipart/form-data"
     data-max-file-mib={data.MaxFileSize} data-max-files={data.MaxFiles}
-    data-direct-upload={data.DirectUpload ? 'true' : undefined}
-    hx-post={!data.DirectUpload && !data.User ? '/api/v1/upload' : undefined}
-    hx-encoding={!data.DirectUpload && !data.User ? 'multipart/form-data' : undefined}
-    hx-disabled-elt={!data.DirectUpload && !data.User ? '#upload-button' : undefined}>
+    data-direct-upload={data.DirectUpload ? 'true' : undefined}>
     {#if data.User}<input type="hidden" name="csrf_token" value={data.CSRF}>{/if}
     <div class="upload-layout">
       <section class="panel upload-picker" aria-label="Files to upload">

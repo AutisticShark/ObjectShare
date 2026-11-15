@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/AutisticShark/ObjectShare/api/htmx"
+	"github.com/AutisticShark/ObjectShare/api/web"
 	"github.com/AutisticShark/ObjectShare/config"
 	"github.com/AutisticShark/ObjectShare/db"
 	"github.com/AutisticShark/ObjectShare/service"
@@ -44,7 +44,7 @@ func newTestRouter(t *testing.T) (http.Handler, *routerRepository) {
 	cfg := &config.ServiceConfig{MaxFileSize: 1, StorageService: "filesystem", SettingsKey: "test-only-settings-key-with-at-least-32-bytes", Encryption: &config.EncryptionConfig{},
 		Auth: &config.AuthConfig{JWTSecret: "test-only-jwt-secret-with-at-least-32-bytes", TokenLifetime: config.Duration(12 * time.Hour)}}
 	logger := slog.New(slog.DiscardHandler)
-	handler, err := htmx.New(cfg, repository, routerStorage{}, os.DirFS(".."), logger)
+	handler, err := web.New(cfg, repository, routerStorage{}, os.DirFS(".."), logger)
 	if err != nil {
 		t.Fatal(err)
 	}

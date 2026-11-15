@@ -26,8 +26,6 @@ These instructions apply to every change in this repository.
 - Preserve the Tabler-based UI and the footer credit, including the heart icon and
   "Made with ... by Cat", unless the user explicitly requests a visual redesign or
   attribution change.
-- Preserve HTMX. It is part of the planned implementation for login, user
-  management, authentication, and authorization features.
 
 ## Preserve automation behavior
 

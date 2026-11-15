@@ -1,0 +1,847 @@
+package web
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"io"
+	"io/fs"
+	"log/slog"
+	"mime/multipart"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/AutisticShark/ObjectShare/config"
+	"github.com/AutisticShark/ObjectShare/db"
+	"github.com/AutisticShark/ObjectShare/service"
+	"github.com/go-chi/chi/v5"
+)
+
+type memoryRepository struct {
+	mu         sync.Mutex
+	files      map[string]*db.FileList
+	quotaBytes map[string]int64
+}
+
+func (repository *memoryRepository) Create(_ context.Context, file *db.FileList) error {
+	repository.mu.Lock()
+	defer repository.mu.Unlock()
+	copy := *file
+	repository.files[file.FileID] = &copy
+	return nil
+}
+func (repository *memoryRepository) ReserveUpload(_ context.Context, file *db.FileList) error {
+	repository.mu.Lock()
+	defer repository.mu.Unlock()
+	var userID string
+	if file.FileOwner != nil {
+		userID = *file.FileOwner
+	}
+	usage := repository.uploadUsage(userID)
+	if usage.Limit > 0 && (usage.Used >= usage.Limit || file.FileSize > usage.Limit-usage.Used) {
+		return &db.UploadQuotaError{Scope: "user", Used: usage.Used, Limit: usage.Limit, Requested: file.FileSize}
+	}
+	copy := *file
+	repository.files[file.FileID] = &copy
+	return nil
+}
+func (repository *memoryRepository) UploadUsage(_ context.Context, userID string) (db.UploadUsage, error) {
+	repository.mu.Lock()
+	defer repository.mu.Unlock()
+	return repository.uploadUsage(userID), nil
+}
+func (repository *memoryRepository) uploadUsage(userID string) db.UploadUsage {
+	usage := db.UploadUsage{Limit: repository.quotaBytes[userID]}
+	for _, file := range repository.files {
+		if file.UploadStatus != "pending" && file.UploadStatus != "publishing" && file.UploadStatus != "complete" && file.UploadStatus != "deleting" && file.UploadStatus != "aborting" {
+			continue
+		}
+		if file.FileOwner != nil && *file.FileOwner == userID {
+			usage.Used += file.FileSize
+		}
+	}
+	return usage
+}
+func (repository *memoryRepository) Get(_ context.Context, id string) (*db.FileList, error) {
+	repository.mu.Lock()
+	defer repository.mu.Unlock()
+	file, ok := repository.files[id]
+	if !ok {
+		return nil, db.ErrNotFound
+	}
+	copy := *file
+	return &copy, nil
+}
+func (repository *memoryRepository) CompleteUpload(_ context.Context, id string) error {
+	repository.mu.Lock()
+	defer repository.mu.Unlock()
+	file, ok := repository.files[id]
+	if !ok || (file.UploadStatus != "pending" && file.UploadStatus != "publishing") {
+		return db.ErrNotFound
+	}
+	file.UploadStatus = "complete"
+	file.UploadExpiresAt = nil
+	return nil
+}
+func (repository *memoryRepository) FinalizeUpload(_ context.Context, id, sha256Sum, sha3Sum string, encrypted bool, encryptionMethod string) error {
+	repository.mu.Lock()
+	defer repository.mu.Unlock()
+	file, ok := repository.files[id]
+	if !ok || file.UploadStatus != "pending" {
+		return db.ErrNotFound
+	}
+	file.FileSHA256 = sha256Sum
+	file.FileSHA3 = sha3Sum
+	file.IsEncrypted = encrypted
+	file.EncryptionMethod = encryptionMethod
+	file.UploadStatus = "complete"
+	file.ChecksumStatus = "verified"
+	file.UploadExpiresAt = nil
+	return nil
+}
+func (repository *memoryRepository) ClaimPendingUploadDeletion(_ context.Context, id string) error {
+	repository.mu.Lock()
+	defer repository.mu.Unlock()
+	file, ok := repository.files[id]
+	if !ok || (file.UploadStatus != "pending" && file.UploadStatus != "aborting" && !stalePublication(file, time.Now())) {
+		return db.ErrNotFound
+	}
+	file.UploadStatus = "aborting"
+	return nil
+}
+
+func (repository *memoryRepository) ClaimUploadPublication(_ context.Context, id string) error {
+	repository.mu.Lock()
+	defer repository.mu.Unlock()
+	file, ok := repository.files[id]
+	if !ok || (file.UploadStatus != "pending" && !stalePublication(file, time.Now())) {
+		return db.ErrNotFound
+	}
+	file.UploadStatus, file.UpdatedAt = "publishing", time.Now()
+	return nil
+}
+
+func (repository *memoryRepository) ReleaseUploadPublication(_ context.Context, id string) error {
+	repository.mu.Lock()
+	defer repository.mu.Unlock()
+	file, ok := repository.files[id]
+	if !ok || file.UploadStatus != "publishing" {
+		return db.ErrNotFound
+	}
+	file.UploadStatus, file.UpdatedAt = "pending", time.Now()
+	return nil
+}
+
+func (repository *memoryRepository) ExtendUploadReservation(_ context.Context, id string, until time.Time) error {
+	repository.mu.Lock()
+	defer repository.mu.Unlock()
+	file, ok := repository.files[id]
+	if !ok || file.UploadStatus != "pending" || file.UploadExpiresAt == nil || file.UploadExpiresAt.Before(time.Now()) {
+		return db.ErrNotFound
+	}
+	if until.After(*file.UploadExpiresAt) {
+		file.UploadExpiresAt = &until
+	}
+	return nil
+}
+
+// stalePublication reports an abandoned publishing claim, as PostgreSQL does.
+func stalePublication(file *db.FileList, now time.Time) bool {
+	return file.UploadStatus == "publishing" && file.UpdatedAt.Before(now.Add(-db.UploadPublicationLease))
+}
+
+func (repository *memoryRepository) ExpiredUploads(_ context.Context, before time.Time, limit int) ([]db.FileList, error) {
+	repository.mu.Lock()
+	defer repository.mu.Unlock()
+	files := make([]db.FileList, 0, limit)
+	for _, file := range repository.files {
+		if (file.UploadStatus == "pending" && file.UploadExpiresAt != nil && file.UploadExpiresAt.Before(before)) || file.UploadStatus == "aborting" ||
+			(stalePublication(file, before) && file.UploadExpiresAt != nil && file.UploadExpiresAt.Before(before)) {
+			files = append(files, *file)
+			if len(files) == limit {
+				break
+			}
+		}
+	}
+	return files, nil
+}
+func (repository *memoryRepository) Rename(_ context.Context, id, name string) error {
+	repository.mu.Lock()
+	defer repository.mu.Unlock()
+	file, ok := repository.files[id]
+	if !ok {
+		return db.ErrNotFound
+	}
+	file.FileName = name
+	return nil
+}
+func (repository *memoryRepository) Delete(_ context.Context, id string) error {
+	repository.mu.Lock()
+	defer repository.mu.Unlock()
+	if _, ok := repository.files[id]; !ok {
+		return db.ErrNotFound
+	}
+	delete(repository.files, id)
+	return nil
+}
+func (*memoryRepository) Ping(context.Context) error { return nil }
+
+type memoryStorage struct {
+	objects   map[string][]byte
+	presigned []string // keys handed to PresignPut, in order
+}
+
+func (storage *memoryStorage) Put(_ context.Context, key string, reader io.Reader, _ int64, _ string) error {
+	data, err := io.ReadAll(reader)
+	if err == nil {
+		storage.objects[key] = data
+	}
+	return err
+}
+func (storage *memoryStorage) Open(_ context.Context, key string) (io.ReadCloser, error) {
+	data, ok := storage.objects[key]
+	if !ok {
+		return nil, fs.ErrNotExist
+	}
+	return io.NopCloser(bytes.NewReader(data)), nil
+}
+func (storage *memoryStorage) Delete(_ context.Context, key string) error {
+	delete(storage.objects, key)
+	return nil
+}
+func (*memoryStorage) PresignGet(context.Context, string, string) (string, error) {
+	return "", service.ErrPresignUnsupported
+}
+
+type directMemoryStorage struct{ *memoryStorage }
+
+type failingPutStorage struct{ *memoryStorage }
+
+func (*failingPutStorage) Put(context.Context, string, io.Reader, int64, string) error {
+	return io.ErrUnexpectedEOF
+}
+
+func (storage *directMemoryStorage) PresignPut(_ context.Context, key string, _ int64, _ string) (string, error) {
+	storage.presigned = append(storage.presigned, key)
+	return "https://example.r2.cloudflarestorage.com/upload", nil
+}
+func (storage *directMemoryStorage) Copy(_ context.Context, sourceKey, destinationKey string) error {
+	data, ok := storage.objects[sourceKey]
+	if !ok {
+		return fs.ErrNotExist
+	}
+	storage.objects[destinationKey] = append([]byte(nil), data...)
+	return nil
+}
+func (*directMemoryStorage) DirectUploadPolicy() service.DirectUploadPolicy {
+	return service.DirectUploadPolicy{Expires: time.Hour, MaxSize: service.MaxSinglePartUploadSize, ConnectSources: []string{"https://example.r2.cloudflarestorage.com"}}
+}
+func (storage *directMemoryStorage) Stat(_ context.Context, key string) (*service.ObjectInfo, error) {
+	data, ok := storage.objects[key]
+	if !ok {
+		return nil, fs.ErrNotExist
+	}
+	return &service.ObjectInfo{Size: int64(len(data)), ContentType: "text/plain"}, nil
+}
+
+func TestUploadStoresContentHashesAndOwnerCookie(t *testing.T) {
+	repository := &memoryRepository{files: make(map[string]*db.FileList)}
+	storage := &memoryStorage{objects: make(map[string][]byte)}
+	handler := newTestHandler(t, repository, storage)
+	body := new(bytes.Buffer)
+	form := multipart.NewWriter(body)
+	part, err := form.CreateFormFile("file", "hello.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := []byte("hello, production")
+	_, _ = part.Write(content)
+	_ = form.Close()
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/upload", body)
+	request.Header.Set("Content-Type", form.FormDataContentType())
+	response := httptest.NewRecorder()
+
+	handler.Upload(response, request)
+	if response.Code != http.StatusSeeOther {
+		t.Fatalf("status = %d, body = %q", response.Code, response.Body.String())
+	}
+	if len(repository.files) != 1 || len(storage.objects) != 1 {
+		t.Fatalf("file was not persisted: records=%d objects=%d", len(repository.files), len(storage.objects))
+	}
+	for _, file := range repository.files {
+		if file.FileSHA256 != "db187524cf46ab3f8cfb1415826949720f78657ef1157549a6c9238f8d0da556" {
+			t.Fatalf("unexpected SHA-256: %s", file.FileSHA256)
+		}
+		if !bytes.Equal(storage.objects[file.FileID], content) {
+			t.Fatal("stored content differs")
+		}
+	}
+	// A browser's first guest upload receives its owner key and, as a fallback
+	// against another tab replacing that key, the file's own owner cookie.
+	cookies := response.Result().Cookies()
+	if len(cookies) != 2 || cookies[0].Name != guestOwnerKeyCookieName {
+		t.Fatalf("owner cookies = %v", cookies)
+	}
+	for _, cookie := range cookies {
+		if !cookie.HttpOnly || cookie.SameSite != http.SameSiteStrictMode || cookie.Path != "/" {
+			t.Fatal("secure owner cookie was not set")
+		}
+	}
+}
+
+func TestGuestUploadsCanBeDisabledAcrossUploadPaths(t *testing.T) {
+	repository := &memoryRepository{files: make(map[string]*db.FileList)}
+	storage := &memoryStorage{objects: make(map[string][]byte)}
+	cfg := &config.ServiceConfig{MaxFileSize: 1, StorageService: "filesystem", Upload: &config.UploadConfig{GuestEnabled: false}, Encryption: &config.EncryptionConfig{}}
+	handler := newTestHandlerConfig(t, cfg, repository, storage)
+	response := httptest.NewRecorder()
+	handler.Upload(response, multipartUploadRequest(t, []byte("guest")))
+	if response.Code != http.StatusForbidden || len(repository.files) != 0 || len(storage.objects) != 0 {
+		t.Fatalf("disabled proxied guest upload: status=%d records=%d objects=%d", response.Code, len(repository.files), len(storage.objects))
+	}
+
+	directStorage := &directMemoryStorage{&memoryStorage{objects: make(map[string][]byte)}}
+	directHandler := newTestHandlerConfig(t, &config.ServiceConfig{MaxFileSize: 1, StorageService: "r2", Upload: &config.UploadConfig{GuestEnabled: false}, Encryption: &config.EncryptionConfig{}}, repository, directStorage)
+	directResponse := httptest.NewRecorder()
+	directHandler.BeginDirectUpload(directResponse, httptest.NewRequest(http.MethodPost, "/api/v1/uploads/direct", strings.NewReader(`{"file_name":"guest.txt","file_size":5,"content_type":"text/plain"}`)))
+	if directResponse.Code != http.StatusForbidden || len(repository.files) != 0 {
+		t.Fatalf("disabled direct guest upload: status=%d records=%d", directResponse.Code, len(repository.files))
+	}
+}
+
+func TestAccountQuotaRejectsBeforeStoring(t *testing.T) {
+	user := &db.User{ID: "quota-user", UploadQuotaBytes: mebibyte}
+	repository := &memoryRepository{files: map[string]*db.FileList{
+		"existing": {FileID: "existing", FileOwner: &user.ID, FileSize: mebibyte, UploadStatus: "complete"},
+	}, quotaBytes: map[string]int64{user.ID: user.UploadQuotaBytes}}
+	storage := &memoryStorage{objects: make(map[string][]byte)}
+	handler := newTestHandlerConfig(t, &config.ServiceConfig{MaxFileSize: 1, StorageService: "filesystem", Upload: &config.UploadConfig{GuestEnabled: true}, Encryption: &config.EncryptionConfig{}}, repository, storage)
+	request := multipartUploadRequest(t, []byte("x"))
+	request = request.WithContext(context.WithValue(request.Context(), identityContextKey{}, &identity{User: user, Transport: transportBearer}))
+	response := httptest.NewRecorder()
+	handler.Upload(response, request)
+	if response.Code != http.StatusRequestEntityTooLarge || response.Header().Get("X-Upload-Quota-Scope") != "user" {
+		t.Fatalf("status=%d scope=%q body=%q", response.Code, response.Header().Get("X-Upload-Quota-Scope"), response.Body.String())
+	}
+	if len(repository.files) != 1 || len(storage.objects) != 0 {
+		t.Fatalf("rejected upload changed storage: records=%d objects=%d", len(repository.files), len(storage.objects))
+	}
+}
+
+func TestGuestUploadIsNotBlockedByAnotherUsersQuota(t *testing.T) {
+	userID := "full-user"
+	repository := &memoryRepository{files: map[string]*db.FileList{
+		"existing": {FileID: "existing", FileOwner: &userID, FileSize: mebibyte, UploadStatus: "complete"},
+	}, quotaBytes: map[string]int64{userID: mebibyte}}
+	storage := &memoryStorage{objects: make(map[string][]byte)}
+	handler := newTestHandlerConfig(t, &config.ServiceConfig{MaxFileSize: 1, StorageService: "filesystem", Upload: &config.UploadConfig{GuestEnabled: true}, Encryption: &config.EncryptionConfig{}}, repository, storage)
+	response := httptest.NewRecorder()
+	handler.Upload(response, multipartUploadRequest(t, []byte("guest")))
+	if response.Code != http.StatusSeeOther || len(repository.files) != 2 || len(storage.objects) != 1 {
+		t.Fatalf("another user's full quota blocked a guest: status=%d records=%d objects=%d", response.Code, len(repository.files), len(storage.objects))
+	}
+}
+
+func TestFailedProxiedUploadReleasesReservation(t *testing.T) {
+	repository := &memoryRepository{files: make(map[string]*db.FileList)}
+	storage := &failingPutStorage{&memoryStorage{objects: make(map[string][]byte)}}
+	cfg := &config.ServiceConfig{MaxFileSize: 1, StorageService: "filesystem", Upload: &config.UploadConfig{GuestEnabled: true}, Encryption: &config.EncryptionConfig{}}
+	handler := newTestHandlerConfig(t, cfg, repository, storage)
+	response := httptest.NewRecorder()
+	request := multipartUploadRequest(t, []byte("failed"))
+	canceled, cancel := context.WithCancel(request.Context())
+	cancel()
+	handler.Upload(response, request.WithContext(canceled))
+	if response.Code != http.StatusInternalServerError || len(repository.files) != 0 || len(storage.objects) != 0 {
+		t.Fatalf("failed upload retained quota or object: status=%d records=%d objects=%d", response.Code, len(repository.files), len(storage.objects))
+	}
+}
+
+func TestDirectUploadReservationConsumesAndReleasesQuota(t *testing.T) {
+	user := &db.User{ID: "quota-user", Active: true, UploadQuotaBytes: mebibyte}
+	repository := &memoryRepository{files: make(map[string]*db.FileList), quotaBytes: map[string]int64{user.ID: user.UploadQuotaBytes}}
+	storage := &directMemoryStorage{&memoryStorage{objects: make(map[string][]byte)}}
+	cfg := &config.ServiceConfig{MaxFileSize: 1, StorageService: "r2", Upload: &config.UploadConfig{GuestEnabled: true}, Encryption: &config.EncryptionConfig{}}
+	handler := newTestHandlerConfig(t, cfg, repository, storage)
+	handler.users = newAuthMemoryRepository()
+	handler.users.(*authMemoryRepository).users[user.ID] = user
+	begin := func() (*httptest.ResponseRecorder, string, string) {
+		response := httptest.NewRecorder()
+		request := httptest.NewRequest(http.MethodPost, "/api/v1/uploads/direct", strings.NewReader(`{"file_name":"account.txt","file_size":614400,"content_type":"text/plain"}`))
+		request = request.WithContext(context.WithValue(request.Context(), identityContextKey{}, &identity{User: user, Transport: transportBearer}))
+		handler.BeginDirectUpload(response, request)
+		var authorization struct {
+			FileID string `json:"file_id"`
+			Token  string `json:"token"`
+		}
+		if response.Code == http.StatusCreated {
+			if err := json.NewDecoder(response.Body).Decode(&authorization); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return response, authorization.FileID, authorization.Token
+	}
+	first, fileID, token := begin()
+	if first.Code != http.StatusCreated {
+		t.Fatalf("first reservation status=%d body=%q", first.Code, first.Body.String())
+	}
+	second, _, _ := begin()
+	if second.Code != http.StatusRequestEntityTooLarge || second.Header().Get("X-Upload-Quota-Scope") != "user" {
+		t.Fatalf("second reservation status=%d scope=%q", second.Code, second.Header().Get("X-Upload-Quota-Scope"))
+	}
+	router := chi.NewRouter()
+	router.Post("/{id}", handler.AbortDirectUpload)
+	abort := httptest.NewRecorder()
+	abortRequest := httptest.NewRequest(http.MethodPost, "/"+fileID, strings.NewReader(`{"token":"`+token+`"}`))
+	abortRequest = abortRequest.WithContext(context.WithValue(abortRequest.Context(), identityContextKey{}, &identity{User: user, Transport: transportBearer}))
+	router.ServeHTTP(abort, abortRequest)
+	if abort.Code != http.StatusNoContent {
+		t.Fatalf("abort status=%d body=%q", abort.Code, abort.Body.String())
+	}
+	third, _, _ := begin()
+	if third.Code != http.StatusCreated {
+		t.Fatalf("reservation after abort status=%d body=%q", third.Code, third.Body.String())
+	}
+}
+
+func TestConcurrentDirectUploadReservationsDoNotOvercommit(t *testing.T) {
+	user := &db.User{ID: "quota-user", UploadQuotaBytes: mebibyte}
+	repository := &memoryRepository{files: make(map[string]*db.FileList), quotaBytes: map[string]int64{user.ID: user.UploadQuotaBytes}}
+	storage := &directMemoryStorage{&memoryStorage{objects: make(map[string][]byte)}}
+	cfg := &config.ServiceConfig{MaxFileSize: 1, StorageService: "r2", Upload: &config.UploadConfig{GuestEnabled: true}, Encryption: &config.EncryptionConfig{}}
+	handler := newTestHandlerConfig(t, cfg, repository, storage)
+	start := make(chan struct{})
+	statuses := make(chan int, 2)
+	var group sync.WaitGroup
+	for range 2 {
+		group.Add(1)
+		go func() {
+			defer group.Done()
+			<-start
+			response := httptest.NewRecorder()
+			request := httptest.NewRequest(http.MethodPost, "/api/v1/uploads/direct", strings.NewReader(`{"file_name":"account.txt","file_size":716800,"content_type":"text/plain"}`))
+			request = request.WithContext(context.WithValue(request.Context(), identityContextKey{}, &identity{User: user, Transport: transportBearer}))
+			handler.BeginDirectUpload(response, request)
+			statuses <- response.Code
+		}()
+	}
+	close(start)
+	group.Wait()
+	close(statuses)
+	counts := map[int]int{}
+	for status := range statuses {
+		counts[status]++
+	}
+	if counts[http.StatusCreated] != 1 || counts[http.StatusRequestEntityTooLarge] != 1 || len(repository.files) != 1 {
+		t.Fatalf("concurrent reservations were not atomic: statuses=%v records=%d", counts, len(repository.files))
+	}
+}
+
+func multipartUploadRequest(t *testing.T, content []byte) *http.Request {
+	t.Helper()
+	body := new(bytes.Buffer)
+	form := multipart.NewWriter(body)
+	part, err := form.CreateFormFile("file", "quota.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := part.Write(content); err != nil {
+		t.Fatal(err)
+	}
+	if err := form.Close(); err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/upload", body)
+	request.Header.Set("Content-Type", form.FormDataContentType())
+	return request
+}
+
+func TestSafeFileName(t *testing.T) {
+	for _, value := range []string{"", ".", "bad\x00name"} {
+		if _, err := safeFileName(value); err == nil {
+			t.Fatalf("safeFileName(%q) succeeded", value)
+		}
+	}
+	name, err := safeFileName("C:\\fakepath\\report.pdf")
+	if err != nil || !strings.HasSuffix(name, "report.pdf") {
+		t.Fatalf("got %q, %v", name, err)
+	}
+}
+
+func TestIndexReflectsGuestUploadPolicyWithoutGlobalQuota(t *testing.T) {
+	repository := &memoryRepository{files: make(map[string]*db.FileList)}
+	storage := &memoryStorage{objects: make(map[string][]byte)}
+	cfg := &config.ServiceConfig{
+		MaxFileSize: 1, StorageService: "filesystem", Upload: &config.UploadConfig{GuestEnabled: false},
+		Auth: &config.AuthConfig{SignupEnabled: true}, Encryption: &config.EncryptionConfig{},
+	}
+	handler, err := New(cfg, repository, storage, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	disabled := httptest.NewRecorder()
+	handler.Index(disabled, httptest.NewRequest(http.MethodGet, "/", nil))
+	disabledPage, disabledData := pageOf(t, disabled.Body.String())
+	if disabled.Code != http.StatusOK || disabledPage != "index" || disabledData["CanUpload"] != false || disabledData["SignupEnabled"] != true {
+		t.Fatalf("disabled guest page data did not match policy: status=%d %v", disabled.Code, disabledData)
+	}
+
+	cfg.Upload = &config.UploadConfig{GuestEnabled: true}
+	repository.files["guest"] = &db.FileList{FileID: "guest", FileSize: 512 * 1024, UploadStatus: "complete"}
+	enabled := httptest.NewRecorder()
+	handler.Index(enabled, httptest.NewRequest(http.MethodGet, "/", nil))
+	page := enabled.Body.String()
+	enabledPage, enabledData := pageOf(t, page)
+	if enabled.Code != http.StatusOK || enabledPage != "index" || enabledData["CanUpload"] != true || strings.Contains(page, "storage quota") || strings.Contains(page, "Server storage:") {
+		t.Fatalf("enabled guest page data incorrectly showed a storage quota: status=%d %v", enabled.Code, enabledData)
+	}
+}
+
+func TestUploadRetentionNoticeExemptsPaidAccounts(t *testing.T) {
+	repository := &memoryRepository{files: make(map[string]*db.FileList), quotaBytes: make(map[string]int64)}
+	storage := &memoryStorage{objects: make(map[string][]byte)}
+	cfg := &config.ServiceConfig{
+		MaxFileSize: 1, StorageService: "filesystem", Upload: &config.UploadConfig{GuestEnabled: true},
+		Retention: &config.RetentionConfig{GuestDays: 1, UnpaidDays: 30}, Encryption: &config.EncryptionConfig{},
+	}
+	handler := newTestHandlerConfig(t, cfg, repository, storage)
+	request := httptest.NewRequest(http.MethodGet, "/", nil)
+	if notice := handler.uploadQuotaLabel(request, nil); !strings.Contains(notice, "Guest files are automatically deleted 1 day after upload") {
+		t.Fatalf("guest notice = %q", notice)
+	}
+	unpaid := &db.User{ID: "unpaid"}
+	if notice := handler.uploadQuotaLabel(request, unpaid); !strings.Contains(notice, "Files on unpaid accounts are automatically deleted 30 days after upload") {
+		t.Fatalf("unpaid notice = %q", notice)
+	}
+	paid := &db.User{ID: "paid", IsPaid: true}
+	if notice := handler.uploadQuotaLabel(request, paid); strings.Contains(notice, "automatically deleted") {
+		t.Fatalf("paid account received retention notice: %q", notice)
+	}
+}
+
+func TestEveryPageContextProjectsIntoItsPage(t *testing.T) {
+	user := &db.User{ID: "user", Email: "user@example.com", DisplayName: "User", Role: db.RoleAdmin, Active: true}
+	for _, render := range []struct {
+		name string
+		data any
+	}{
+		{"index.html", map[string]any{"Version": "test", "MaxFileSize": int64(1), "User": user, "CSRF": "csrf"}},
+		{"file_view.html", map[string]any{"Version": "test", "FileName": "file.txt", "User": user, "CSRF": "csrf"}},
+		{"setup.html", authPageData{Version: "test", CSRF: "csrf"}},
+		{"login.html", authPageData{Version: "test", CSRF: "csrf", OAuthProviders: []oauthButton{{Key: "discord", Label: "Discord", URL: "/oauth/discord/start"}}}},
+		{"signup.html", authPageData{Version: "test", CSRF: "csrf"}},
+		{"oauth_error.html", oauthErrorData{Version: "test", Error: "OAuth error", Back: "/login", BackLabel: "Back to login"}},
+		{"account.html", accountPageData{Version: "test", CSRF: "csrf", User: user, OAuthProviders: []oauthAccountProvider{{Key: "discord", Label: "Discord", Configured: true, Linked: true}}}},
+		{"admin_users.html", adminPageData{Version: "test", CSRF: "csrf", User: user}},
+	} {
+		page, data := renderPage(t, render.name, render.data)
+		if page != strings.TrimSuffix(render.name, ".html") || data["Version"] != "test" {
+			t.Errorf("%s rendered page %q with data %v", render.name, page, data)
+		}
+	}
+	login := authPageData{Version: "test", CSRF: "csrf", OAuthProviders: []oauthButton{{Key: "discord", Label: "Discord", URL: "/oauth/discord/start"}}}
+	_, data := renderPage(t, "login.html", login)
+	if providers, _ := data["OAuthProviders"].([]any); len(providers) != 1 || providers[0].(map[string]any)["URL"] != "/oauth/discord/start" {
+		t.Errorf("login providers = %v", data["OAuthProviders"])
+	}
+	// The OAuth continue page must move on by itself to the same-site page, and
+	// must never turn a destination into a script URL.
+	for location, want := range map[string]string{
+		"/account?message=oauth-linked": `<meta http-equiv="refresh" content="0;url=/account?message=oauth-linked">`,
+		"javascript:alert(1)":           "",
+	} {
+		output, err := (&Handler{}).frontendPage("oauth_continue.html", struct{ Version, Location string }{"test", location})
+		if err != nil {
+			t.Fatalf("render oauth_continue.html: %v", err)
+		}
+		if want != "" && !strings.Contains(string(output), want) {
+			t.Errorf("oauth_continue.html for %q does not contain %q", location, want)
+		}
+		if want == "" && strings.Contains(string(output), "http-equiv") {
+			t.Errorf("oauth_continue.html for %q redirects automatically", location)
+		}
+	}
+}
+
+func TestAuthenticatedPagesCarryTheSavedThemeAndGuestPagesFollowTheSystem(t *testing.T) {
+	for _, dark := range []bool{true, false} {
+		user := &db.User{ID: "user", Email: "user@example.com", DisplayName: "User", Role: db.RoleAdmin, Active: true, DarkMode: dark}
+		theme := map[bool]string{true: "dark", false: "light"}[dark]
+		for _, render := range []struct {
+			name string
+			data any
+		}{
+			{"index.html", map[string]any{"Version": "test", "MaxFileSize": int64(1), "User": user, "CSRF": "csrf"}},
+			{"file_view.html", map[string]any{"Version": "test", "FileName": "file.txt", "User": user, "CSRF": "csrf"}},
+			{"account.html", accountPageData{Version: "test", CSRF: "csrf", User: user}},
+			{"admin_users.html", adminPageData{Version: "test", CSRF: "csrf", User: user}},
+			{"oauth_error.html", oauthErrorData{Version: "test", Error: "OAuth error", Back: "/account", BackLabel: "Back to My account", User: user}},
+		} {
+			output, err := (&Handler{}).frontendPage(render.name, render.data)
+			if err != nil {
+				t.Fatalf("render %s: %v", render.name, err)
+			}
+			if !strings.Contains(string(output), `<html lang="en" data-bs-theme="`+theme+`">`) {
+				t.Errorf("%s did not apply the account %s theme", render.name, theme)
+			}
+			_, data := pageOf(t, string(output))
+			if saved, _ := data["User"].(map[string]any); saved["DarkMode"] != dark {
+				t.Errorf("%s does not carry the saved theme preference: %v", render.name, data["User"])
+			}
+			// The theme toggle posts this token.
+			if render.name != "oauth_error.html" && data["CSRF"] != "csrf" {
+				t.Errorf("%s carries no CSRF token for the theme toggle", render.name)
+			}
+		}
+	}
+
+	// Guests have no saved preference: the document sets no theme, so the
+	// operating system preference applies.
+	for _, render := range []struct {
+		name string
+		data any
+	}{
+		{"index.html", map[string]any{"Version": "test", "MaxFileSize": int64(1)}},
+		{"login.html", authPageData{Version: "test", CSRF: "csrf"}},
+		{"signup.html", authPageData{Version: "test", CSRF: "csrf"}},
+	} {
+		output, err := (&Handler{}).frontendPage(render.name, render.data)
+		if err != nil {
+			t.Fatalf("render %s: %v", render.name, err)
+		}
+		if strings.Contains(string(output), "data-bs-theme") || !strings.Contains(string(output), `<meta name="color-scheme" content="light dark">`) {
+			t.Errorf("%s does not leave the theme to the system", render.name)
+		}
+	}
+}
+
+func TestAdministratorUserPageCarriesStorageUsageAndErrors(t *testing.T) {
+	user := &db.User{ID: "11111111-1111-4111-8111-111111111111", Email: "admin@example.com", DisplayName: "Admin", Role: db.RoleAdmin, Active: true}
+	row := adminUserRow{ID: "22222222-2222-4222-8222-222222222222", Email: "user@example.com", DisplayName: "User", Role: db.RoleUser, Active: true, CreatedAt: "2026-09-03", LastLogin: "Never", StorageUsed: "1.5 MiB"}
+	page, data := renderPage(t, "admin_users.html", adminPageData{Version: "test", CSRF: "csrf", Error: "Passwords do not match.", TotalStorageUsed: "1.5 MiB", User: user, Users: []adminUserRow{row}})
+	rows, _ := data["Users"].([]any)
+	if page != "admin_users" || data["Error"] != "Passwords do not match." || data["TotalStorageUsed"] != "1.5 MiB" || data["CSRF"] != "csrf" || len(rows) != 1 {
+		t.Fatalf("administrator page data: %s %v", page, data)
+	}
+	shown := rows[0].(map[string]any)
+	if shown["ID"] != row.ID || shown["StorageUsed"] != "1.5 MiB" || shown["Email"] != "user@example.com" || shown["LastLogin"] != "Never" || shown["CreatedAt"] != "2026-09-03" {
+		t.Fatalf("administrator row data: %v", shown)
+	}
+}
+
+func TestEncryptedUploadAndDownload(t *testing.T) {
+	repository := &memoryRepository{files: make(map[string]*db.FileList)}
+	storage := &memoryStorage{objects: make(map[string][]byte)}
+	cfg := &config.ServiceConfig{
+		MaxFileSize: 1, StorageService: "filesystem",
+		Encryption: &config.EncryptionConfig{Enabled: true, Method: "aes-256-gcm", Key: "QkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkI="},
+	}
+	handler := newTestHandlerConfig(t, cfg, repository, storage)
+	content := []byte("encrypted contents")
+	body := new(bytes.Buffer)
+	form := multipart.NewWriter(body)
+	part, _ := form.CreateFormFile("file", "private.txt")
+	_, _ = part.Write(content)
+	_ = form.Close()
+	upload := httptest.NewRequest(http.MethodPost, "/api/v1/upload", body)
+	upload.Header.Set("Content-Type", form.FormDataContentType())
+	uploadResponse := httptest.NewRecorder()
+	handler.Upload(uploadResponse, upload)
+	if uploadResponse.Code != http.StatusSeeOther {
+		t.Fatalf("upload status = %d", uploadResponse.Code)
+	}
+
+	var fileID string
+	for id, file := range repository.files {
+		fileID = id
+		if !file.IsEncrypted {
+			t.Fatal("record is not encrypted")
+		}
+		if bytes.Equal(storage.objects[id], content) {
+			t.Fatal("object was stored as plaintext")
+		}
+	}
+	router := chi.NewRouter()
+	router.Get("/{id}", handler.Download)
+	downloadResponse := httptest.NewRecorder()
+	router.ServeHTTP(downloadResponse, httptest.NewRequest(http.MethodGet, "/"+fileID, nil))
+	if downloadResponse.Code != http.StatusOK {
+		t.Fatalf("download status = %d", downloadResponse.Code)
+	}
+	if !bytes.Equal(downloadResponse.Body.Bytes(), content) {
+		t.Fatalf("download = %q", downloadResponse.Body.Bytes())
+	}
+}
+
+func TestDirectUploadRequiresTokenAndVerifiesObject(t *testing.T) {
+	repository := &memoryRepository{files: make(map[string]*db.FileList)}
+	storage := &directMemoryStorage{&memoryStorage{objects: make(map[string][]byte)}}
+	cfg := &config.ServiceConfig{
+		MaxFileSize: 10, StorageService: "r2", Encryption: &config.EncryptionConfig{},
+	}
+	handler := newTestHandlerConfig(t, cfg, repository, storage)
+	beginRequest := httptest.NewRequest(http.MethodPost, "/api/v1/uploads/direct", strings.NewReader(
+		`{"file_name":"hello.txt","file_size":5,"content_type":"text/plain"}`,
+	))
+	beginResponse := httptest.NewRecorder()
+	handler.BeginDirectUpload(beginResponse, beginRequest)
+	if beginResponse.Code != http.StatusCreated {
+		t.Fatalf("begin status = %d, body = %q", beginResponse.Code, beginResponse.Body.String())
+	}
+	var authorization struct {
+		FileID string `json:"file_id"`
+		Token  string `json:"token"`
+	}
+	if err := json.NewDecoder(beginResponse.Body).Decode(&authorization); err != nil {
+		t.Fatal(err)
+	}
+	storage.objects[authorization.FileID] = []byte("hello")
+
+	router := chi.NewRouter()
+	router.Post("/{id}", handler.CompleteDirectUpload)
+	completeRequest := httptest.NewRequest(http.MethodPost, "/"+authorization.FileID, strings.NewReader(
+		`{"token":"`+authorization.Token+`"}`,
+	))
+	completeResponse := httptest.NewRecorder()
+	router.ServeHTTP(completeResponse, completeRequest)
+	if completeResponse.Code != http.StatusOK {
+		t.Fatalf("complete status = %d, body = %q", completeResponse.Code, completeResponse.Body.String())
+	}
+	if repository.files[authorization.FileID].UploadStatus != "complete" {
+		t.Fatal("upload was not completed")
+	}
+	if len(completeResponse.Result().Cookies()) != 1 {
+		t.Fatal("owner cookie was not set")
+	}
+	// Simulate losing the first response and its Set-Cookie header. The exact
+	// reservation may be confirmed again without uploading or changing the file.
+	retryRequest := httptest.NewRequest(http.MethodPost, "/"+authorization.FileID, strings.NewReader(`{"token":"`+authorization.Token+`"}`))
+	retryResponse := httptest.NewRecorder()
+	router.ServeHTTP(retryResponse, retryRequest)
+	if retryResponse.Code != http.StatusOK || len(retryResponse.Result().Cookies()) != 1 || string(storage.objects[authorization.FileID]) != "hello" {
+		t.Fatalf("completion retry status=%d body=%q", retryResponse.Code, retryResponse.Body.String())
+	}
+}
+
+func newTestHandler(t *testing.T, repository db.Repository, storage service.ObjectStore) *Handler {
+	t.Helper()
+	cfg := &config.ServiceConfig{
+		MaxFileSize: 1, StorageService: "filesystem",
+		Encryption: &config.EncryptionConfig{},
+	}
+	return newTestHandlerConfig(t, cfg, repository, storage)
+}
+
+func newTestHandlerConfig(t *testing.T, cfg *config.ServiceConfig, repository db.Repository, storage service.ObjectStore) *Handler {
+	t.Helper()
+	handler, err := New(cfg, repository, storage, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Tests read the fake repository directly after a request; a background
+	// cleanup goroutine would race those reads. The one test that exercises the
+	// background behaviour turns this off.
+	handler.inlineCleanup = true
+	return handler
+}
+
+// lockedBuffer is a log sink that a background goroutine can write while the
+// test goroutine reads it.
+type lockedBuffer struct {
+	mu   sync.Mutex
+	data bytes.Buffer
+}
+
+func (buffer *lockedBuffer) Write(data []byte) (int, error) {
+	buffer.mu.Lock()
+	defer buffer.mu.Unlock()
+	return buffer.data.Write(data)
+}
+
+func (buffer *lockedBuffer) String() string {
+	buffer.mu.Lock()
+	defer buffer.mu.Unlock()
+	return buffer.data.String()
+}
+
+var _ db.Repository = (*memoryRepository)(nil)
+var _ service.ObjectStore = (*memoryStorage)(nil)
+
+// blockingPutStorage stalls Put until released, like a slow object-storage write.
+type blockingPutStorage struct {
+	*memoryStorage
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (storage *blockingPutStorage) Put(ctx context.Context, key string, reader io.Reader, size int64, contentType string) error {
+	close(storage.entered)
+	<-storage.release
+	return storage.memoryStorage.Put(ctx, key, reader, size, contentType)
+}
+
+func TestCipherSlotIsFreeWhileEncryptedTransfersAreStillWriting(t *testing.T) {
+	repository := &memoryRepository{files: make(map[string]*db.FileList)}
+	storage := &blockingPutStorage{memoryStorage: &memoryStorage{objects: make(map[string][]byte)}, entered: make(chan struct{}), release: make(chan struct{})}
+	cfg := &config.ServiceConfig{MaxFileSize: 1, StorageService: "filesystem",
+		Encryption: &config.EncryptionConfig{Enabled: true, Method: "aes-256-gcm", Key: "QkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkI="}}
+	handler := newTestHandlerConfig(t, cfg, repository, storage)
+
+	done := make(chan int)
+	go func() {
+		response := httptest.NewRecorder()
+		handler.Upload(response, multipartUploadRequest(t, []byte("slow storage write")))
+		done <- response.Code
+	}()
+	<-storage.entered // encryption finished; the object write is now stalled
+	if !handler.acquireCipherSlot() {
+		t.Fatal("the cipher slot stayed held while the encrypted object was being written")
+	}
+	handler.releaseCipherSlot()
+	close(storage.release)
+	if code := <-done; code != http.StatusSeeOther {
+		t.Fatalf("upload status = %d", code)
+	}
+
+	var fileID string
+	for id := range repository.files {
+		fileID = id
+	}
+	writer := &stallingResponseWriter{ResponseRecorder: httptest.NewRecorder(), entered: make(chan struct{}), release: make(chan struct{})}
+	router := chi.NewRouter()
+	router.Get("/{id}", handler.Download)
+	finished := make(chan struct{})
+	go func() {
+		router.ServeHTTP(writer, httptest.NewRequest(http.MethodGet, "/"+fileID, nil))
+		close(finished)
+	}()
+	<-writer.entered // decryption finished; the client write is now stalled
+	if !handler.acquireCipherSlot() {
+		t.Fatal("the cipher slot stayed held while plaintext was streaming to the client")
+	}
+	handler.releaseCipherSlot()
+	close(writer.release)
+	<-finished
+	if !bytes.Equal(writer.Body.Bytes(), []byte("slow storage write")) {
+		t.Fatalf("download = %q", writer.Body.Bytes())
+	}
+}
+
+// stallingResponseWriter blocks the first body write, like a slow client.
+type stallingResponseWriter struct {
+	*httptest.ResponseRecorder
+	entered, release chan struct{}
+	once             sync.Once
+}
+
+func (writer *stallingResponseWriter) Write(data []byte) (int, error) {
+	writer.once.Do(func() {
+		close(writer.entered)
+		<-writer.release
+	})
+	return writer.ResponseRecorder.Write(data)
+}

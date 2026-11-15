@@ -154,7 +154,7 @@ local API. Browser file selection remains unverified because the extension denie
 file access. Recipient browser access after expanding the fixture's permissions
 awaits explicit approval; automated tests still cover server authorization and
 decryption with the generated per-file key.
-The shared theme toggle applies the persisted preference in place with HTMX.
+The shared theme toggle applies the persisted preference in place.
 Local Edge verification confirmed that changing the theme preserves the current
 sharing URL, an unsaved recipient list, and the saved-access warning. Native form
 fallback retains the existing My account redirect. Automated tests cover CSRF,

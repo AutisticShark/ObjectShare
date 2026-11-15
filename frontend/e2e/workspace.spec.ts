@@ -137,7 +137,7 @@ test('upload, search, rename, sharing, and deletion preserve owner permissions',
   await expect(page).not.toHaveURL(fileURL);
 });
 
-test('HTMX validation keeps the Svelte interface and password fields out of page data', async ({ browser, baseURL }) => {
+test('a rejected form keeps the interface and password fields out of page data', async ({ browser, baseURL }) => {
   const context = await browser.newContext();
   const page = await context.newPage();
   await page.goto(baseURL + '/login');
@@ -314,7 +314,8 @@ test('the server sends only the app shell, so nothing appears before the interfa
   await page.goto(baseURL + '/login', { waitUntil: 'commit' });
   await page.locator('#objectshare-page').waitFor({ state: 'attached' });
   expect(await page.locator('body').innerText()).toBe('');
-  expect(await page.evaluate(() => getComputedStyle(document.body).backgroundColor)).toBe('rgb(21, 24, 30)');
+  // Nothing paints before the stylesheet loads; once it has, the page is dark.
+  await expect.poll(() => page.evaluate(() => getComputedStyle(document.body).backgroundColor)).toBe('rgb(21, 24, 30)');
   release();
   await shell(page);
   await expect(page.locator('html')).toHaveAttribute('data-bs-theme', 'dark');

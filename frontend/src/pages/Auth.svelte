@@ -71,7 +71,7 @@
       <div class="d-grid gap-2">
         {#each providers as provider (provider.Key)}
           {#if data.Captcha}
-            <button class="btn" type="submit" formaction={provider.URL} formmethod="post" formnovalidate hx-post={provider.URL}>Continue with {provider.Label}</button>
+            <button class="btn" type="submit" formaction={provider.URL} formmethod="post" formnovalidate>Continue with {provider.Label}</button>
           {:else}
             <a class="btn" href={provider.URL}>Continue with {provider.Label}</a>
           {/if}

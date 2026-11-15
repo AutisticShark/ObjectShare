@@ -77,18 +77,17 @@
       if (selection) selection.value = theme;
     };
     const failed = (event: Event) => {
-      const detail = (event as CustomEvent<{ elt?: Element }>).detail;
-      if (detail?.elt?.closest('[data-theme-toggle]')) themeError = 'Theme could not be saved. Try again.';
+      if (!(event.target instanceof Element) || !event.target.closest('[data-theme-toggle]')) return;
+      event.preventDefault();
+      themeError = 'Theme could not be saved. Try again.';
     };
     preference.addEventListener('change', systemTheme);
     document.addEventListener('objectshare:theme', accountTheme);
-    document.addEventListener('htmx:responseError', failed);
-    document.addEventListener('htmx:sendError', failed);
+    document.addEventListener('objectshare:submit-failed', failed);
     return () => {
       preference.removeEventListener('change', systemTheme);
       document.removeEventListener('objectshare:theme', accountTheme);
-      document.removeEventListener('htmx:responseError', failed);
-      document.removeEventListener('htmx:sendError', failed);
+      document.removeEventListener('objectshare:submit-failed', failed);
     };
   });
 </script>
@@ -133,7 +132,7 @@
         <a class="sidebar-account" href="/account"><span class="account-avatar">{user.DisplayName.slice(0, 1).toLocaleUpperCase()}</span><span class="account-name" title={user.DisplayName}>{user.DisplayName}</span></a>
         <div class="sidebar-utilities">
           <Form action="/logout" csrf={data.CSRF}><button class="logout-button" type="submit"><Icon name="logout" size={16} />Log out</button></Form>
-          <form action="/account/theme" method="post" data-theme-toggle hx-post="/account/theme" hx-swap="none" hx-disabled-elt="button">
+          <form action="/account/theme" method="post" data-theme-toggle data-enhance>
             <input type="hidden" name="csrf_token" value={data.CSRF}>
             <input type="hidden" name="theme_toggle" value="true">
             <input type="hidden" name="theme" value={dark ? 'light' : 'dark'}>

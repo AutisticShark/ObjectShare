@@ -233,9 +233,9 @@
         body.delete("file");
         files.forEach((file, index) => { body.append("file", file, file.name); body.append("client_encryption", metadata[index] || ""); });
         proxiedRequestStarted = true;
-        const response = await fetch(form.action, {method: "POST", headers: {...csrfHeaders, "HX-Request": "true"}, body});
+        const response = await fetch(form.action, {method: "POST", headers: {...csrfHeaders, "X-ObjectShare-Fetch": "true"}, body});
         if (!response.ok) throw await responseError(response);
-        const location = response.headers.get("HX-Redirect");
+        const location = response.headers.get("X-ObjectShare-Redirect");
         if (!location || !location.startsWith("/") || location.startsWith("//")) throw new Error("Upload finished but its result page is unavailable. Check My files before retrying.");
         window.location.assign(location); return;
       }

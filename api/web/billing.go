@@ -1,0 +1,392 @@
+package web
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"math"
+	"net/http"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/AutisticShark/ObjectShare/config"
+	"github.com/AutisticShark/ObjectShare/db"
+	"github.com/go-chi/chi/v5"
+	"github.com/google/uuid"
+)
+
+type planCard struct {
+	CurrencyPrice                                              string
+	ID, Name, Description, Price, Storage, Retention, Duration string
+	DirectLinks                                                bool
+	// RequestID is unique per card: an invoice request ID is bound to one
+	// plan, so reusing it for another plan from the same page is refused.
+	RequestID string
+}
+type plansPageData struct {
+	VerificationRequired                bool
+	Version, CSRF, Error, CreditBalance string
+	User                                *db.User
+	Plans                               []planCard
+	BillingEnabled                      bool
+}
+
+func (handler *Handler) Plans(writer http.ResponseWriter, request *http.Request) {
+	var plans []db.PaidPlan
+	var err error
+	if handler.billing != nil {
+		plans, err = handler.billing.PublicPlans(request.Context())
+	}
+	if err != nil {
+		handler.internalError(writer, request, "list paid plans", err)
+		return
+	}
+	cards := make([]planCard, 0, len(plans))
+	currency := "USD"
+	if handler.config.Billing != nil {
+		currency = handler.config.Billing.CreditCurrency
+	}
+	creditPurchases := false
+	for _, plan := range plans {
+		retention := "No automatic expiry"
+		if plan.RetentionDays > 0 {
+			retention = fmt.Sprintf("%d days", plan.RetentionDays)
+		}
+		if plan.Price <= 0 || plan.DurationDays <= 0 {
+			continue
+		}
+		cards = append(cards, planCard{ID: plan.ID, Name: plan.Name, Description: plan.Description,
+			CurrencyPrice: fmt.Sprintf("%s %d.00", currency, plan.Price),
+			Price:         fmt.Sprintf("%d credits", plan.Price), Duration: fmt.Sprintf("%d days", plan.DurationDays),
+			Storage: humanSize(plan.StorageQuotaBytes), Retention: retention, DirectLinks: plan.DirectLinks, RequestID: uuid.NewString()})
+		creditPurchases = true
+	}
+	user := identityUser(request)
+	creditBalance := ""
+	if user != nil {
+		creditBalance = fmt.Sprintf("%d credits", user.CreditBalance)
+	}
+	handler.render(writer, "plans.html", plansPageData{VerificationRequired: user != nil && user.EmailVerifiedAt == nil && handler.verificationSettings().RequireForPurchases, Version: config.GetVersion(), CSRF: identityCSRF(request), User: user, Plans: cards, BillingEnabled: creditPurchases, CreditBalance: creditBalance})
+}
+
+func (handler *Handler) BillingTopUp(writer http.ResponseWriter, request *http.Request) {
+	identity := currentIdentity(request)
+	if handler.billing == nil || handler.config.Billing == nil {
+		http.Error(writer, "Billing is unavailable.", http.StatusServiceUnavailable)
+		return
+	}
+	if !handler.allowRequest(writer, request, "billing-topup", 10) {
+		return
+	}
+	if !handler.parseAuthForm(writer, request) || !handler.verifyAuthenticatedMutationCSRF(writer, request) {
+		return
+	}
+	gatewayKey := chi.URLParam(request, "gateway")
+	gateway := handler.billingGateways[gatewayKey]
+	if gateway == nil {
+		http.Error(writer, "This billing gateway is unavailable.", http.StatusServiceUnavailable)
+		return
+	}
+	credits, err := strconv.ParseInt(strings.TrimSpace(request.FormValue("credits")), 10, 64)
+	settings := handler.config.Billing
+	if err != nil || credits < settings.MinTopUpCredits || credits > settings.MaxTopUpCredits || credits > (1<<63-1)/100 {
+		http.Error(writer, fmt.Sprintf("Top-up must be a whole number from %d to %d credits.", settings.MinTopUpCredits, settings.MaxTopUpCredits), http.StatusBadRequest)
+		return
+	}
+	now := time.Now().UTC()
+	topUp := &db.CreditTopUp{ID: uuid.NewString(), UserID: identity.User.ID, Gateway: gatewayKey, Credits: credits,
+		AmountMinor: credits * 100, Currency: settings.CreditCurrency, ExpiresAt: now.Add(24 * time.Hour)}
+	if err := handler.billing.CreateCreditTopUp(request.Context(), topUp); err != nil {
+		handler.internalError(writer, request, "reserve credit top-up", err)
+		return
+	}
+	// Keep the reservation on ambiguous gateway failures: a payment may have
+	// succeeded remotely and its verified receipt must still be settleable.
+	result, err := gateway.TopUp(request.Context(), handler.invoiceCheckoutInput(&db.Invoice{ID: topUp.ID, UserID: identity.User.ID, Email: identity.User.Email, Kind: "topup",
+		Currency: topUp.Currency, Credits: topUp.Credits, AmountMinor: topUp.AmountMinor}, gatewayKey, topUp))
+	if err != nil {
+		handler.internalError(writer, request, "create "+billingGatewayLabel(gatewayKey)+" credit top-up", err)
+		return
+	}
+	if result.GatewayReference != "" {
+		if err := handler.billing.BindCreditTopUp(request.Context(), topUp.ID, gatewayKey, result.GatewayReference); err != nil {
+			handler.internalError(writer, request, "bind credit top-up", err)
+			return
+		}
+	}
+	if invoices, ok := handler.billing.(db.InvoiceRepository); ok {
+		if err = invoices.BindInvoiceCheckout(request.Context(), identity.User.ID, topUp.ID, gatewayKey, result.GatewayReference, result.Location); err != nil {
+			handler.internalError(writer, request, "save invoice checkout", err)
+			return
+		}
+	}
+	http.Redirect(writer, request, result.Location, http.StatusSeeOther)
+}
+
+func (handler *Handler) PayPalTopUpReturn(writer http.ResponseWriter, request *http.Request) {
+	if handler.billing == nil {
+		http.NotFound(writer, request)
+		return
+	}
+	gateway, ok := handler.billingGateways[db.BillingGatewayPayPal].(paypalBillingGateway)
+	if !ok {
+		http.NotFound(writer, request)
+		return
+	}
+	topUpID, orderID := request.URL.Query().Get("topup"), request.URL.Query().Get("token")
+	if _, err := uuid.Parse(topUpID); err != nil || orderID == "" {
+		http.Error(writer, "Invalid PayPal return.", http.StatusBadRequest)
+		return
+	}
+	topUp, err := handler.billing.CreditTopUpByID(request.Context(), topUpID)
+	if err != nil || topUp.Gateway != db.BillingGatewayPayPal || topUp.GatewayReference == nil || *topUp.GatewayReference != orderID {
+		http.Error(writer, "PayPal order does not match this top-up.", http.StatusUnprocessableEntity)
+		return
+	}
+	if topUp.Status == db.CreditTopUpCompleted {
+		http.Redirect(writer, request, "/invoices/"+topUp.ID, http.StatusSeeOther)
+		return
+	}
+	if topUp.Status != db.CreditTopUpPending {
+		http.Error(writer, "This top-up can no longer be captured.", http.StatusConflict)
+		return
+	}
+	paymentErr := handler.checkTopUpPayable(request.Context(), topUp, time.Now().UTC())
+	if errors.Is(paymentErr, db.ErrConflict) || errors.Is(paymentErr, db.ErrNotFound) {
+		http.Error(writer, "This invoice can no longer be paid: its payment window has ended or another purchase now prevents it. PayPal has not charged you for this order. Return to your invoices to review it.", http.StatusConflict)
+		return
+	}
+	if paymentErr != nil {
+		handler.internalError(writer, request, "check PayPal invoice before capture", paymentErr)
+		return
+	}
+	capture, err := gateway.CaptureTopUp(request.Context(), orderID)
+	if errors.Is(err, errPayPalCapturePending) {
+		http.Error(writer, "PayPal is still processing this payment. It is applied to your account when PayPal completes it, which can take several days; do not pay again. Check your invoices for its status.", http.StatusAccepted)
+		return
+	}
+	if err != nil {
+		handler.internalError(writer, request, "capture PayPal credit top-up", err)
+		return
+	}
+	amountMinor, amountErr := parseMinorAmount(capture.Amount.Value)
+	captured := capture.Status == "COMPLETED" && capture.ID != ""
+	payment := db.CreditPayment{TopUpID: topUp.ID, Gateway: db.BillingGatewayPayPal,
+		GatewayPaymentID: capture.ID, Currency: capture.Amount.Currency, AmountMinor: amountMinor}
+	if amountErr != nil || capture.CustomID != topUp.ID || !captured {
+		if captured {
+			// The customer was charged; never tell them the capture is invalid.
+			handler.recordUnappliedPayment(request, payment, errors.New("PayPal capture does not match the top-up"))
+			handler.paymentReceivedButUnapplied(writer, capture.ID)
+			return
+		}
+		http.Error(writer, "PayPal capture does not match this top-up.", http.StatusUnprocessableEntity)
+		return
+	}
+	if handler.applyPayPalCapture(writer, request, payment) {
+		http.Redirect(writer, request, "/invoices/"+topUp.ID, http.StatusSeeOther)
+	}
+}
+
+// checkTopUpPayable runs before a capture, which charges the customer. It makes
+// sure the payment can still be applied: the payment window is open and, for a
+// plan, no other purchase has made it inapplicable since checkout started.
+func (handler *Handler) checkTopUpPayable(ctx context.Context, topUp *db.CreditTopUp, now time.Time) error {
+	if !topUp.ExpiresAt.IsZero() && !topUp.ExpiresAt.After(now) {
+		return db.ErrConflict
+	}
+	if checker, ok := handler.billing.(db.InvoicePaymentChecker); ok {
+		return checker.CheckInvoicePayment(ctx, topUp.ID, now)
+	}
+	return nil
+}
+
+// applyPayPalCapture credits a captured top-up and reports whether it was
+// applied. The customer has already paid, so a capture that can never apply is
+// recorded for reconciliation instead of being reported as an error.
+func (handler *Handler) applyPayPalCapture(writer http.ResponseWriter, request *http.Request, payment db.CreditPayment) bool {
+	_, err := handler.billing.ApplyCreditTopUp(request.Context(), payment, time.Now().UTC())
+	if err == nil {
+		return true
+	}
+	if errors.Is(err, db.ErrNotFound) || errors.Is(err, db.ErrInvalidCredit) || errors.Is(err, db.ErrConflict) {
+		handler.recordUnappliedPayment(request, payment, err)
+		handler.paymentReceivedButUnapplied(writer, payment.GatewayPaymentID)
+		return false
+	}
+	handler.logger.Error("apply captured PayPal top-up failed; the webhook or a retry may still settle it", "payment_id", payment.GatewayPaymentID, "top_up_id", payment.TopUpID, "error", err)
+	handler.internalError(writer, request, "apply PayPal credit top-up", err)
+	return false
+}
+
+// recordUnappliedPayment is called when a gateway has confirmed a captured
+// payment that could not be applied to an account. It logs at error level with
+// the payment identifiers and stores a reconciliation record, so the money is
+// never silently lost behind a bare HTTP error.
+func (handler *Handler) recordUnappliedPayment(request *http.Request, payment db.CreditPayment, cause error) {
+	handler.logger.Error("captured payment could not be applied; manual reconciliation required",
+		"gateway", payment.Gateway, "payment_id", payment.GatewayPaymentID, "top_up_id", payment.TopUpID,
+		"amount_minor", payment.AmountMinor, "currency", payment.Currency, "error", cause)
+	reconciler, ok := handler.billing.(db.PaymentReconciler)
+	if !ok {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(request.Context()), 5*time.Second)
+	defer cancel()
+	if err := reconciler.RecordPaymentReconciliation(ctx, db.PaymentReconciliation{
+		Gateway: payment.Gateway, GatewayPaymentID: payment.GatewayPaymentID, TopUpID: payment.TopUpID,
+		AmountMinor: payment.AmountMinor, Currency: payment.Currency, Reason: cause.Error(),
+	}); err != nil {
+		handler.logger.Error("store payment reconciliation record", "gateway", payment.Gateway, "payment_id", payment.GatewayPaymentID, "error", err)
+	}
+}
+
+// paymentReceivedButUnapplied tells a customer whose payment was captured that
+// it has been recorded, instead of claiming the payment is invalid.
+func (handler *Handler) paymentReceivedButUnapplied(writer http.ResponseWriter, paymentID string) {
+	http.Error(writer, "Your payment was received but could not be applied to your account automatically. It has been recorded for review (reference "+paymentID+"). Contact the site administrator with this reference; do not pay again.", http.StatusUnprocessableEntity)
+}
+
+// Legacy forms now generate an invoice without taking payment.
+func (handler *Handler) BillingPurchaseWithCredit(writer http.ResponseWriter, request *http.Request) {
+	handler.CreateInvoice(writer, request)
+}
+
+// BillingCheckout retires previously rendered external-subscription forms.
+func (handler *Handler) BillingCheckout(writer http.ResponseWriter, request *http.Request) {
+	http.Error(writer, "External plan checkout is no longer available. Choose a plan at /plans to generate and pay an invoice.", http.StatusGone)
+}
+
+func (handler *Handler) BillingPortal(writer http.ResponseWriter, request *http.Request) {
+	identity := currentIdentity(request)
+	if handler.billing == nil {
+		http.Error(writer, "Billing is unavailable.", http.StatusServiceUnavailable)
+		return
+	}
+	if !handler.verifyAuthenticatedMutationCSRF(writer, request) {
+		return
+	}
+	subscription, err := handler.billing.SubscriptionForUser(request.Context(), identity.User.ID)
+	if errors.Is(err, db.ErrNotFound) {
+		http.Error(writer, "No billing account is available yet.", http.StatusNotFound)
+		return
+	}
+	if err != nil {
+		handler.internalError(writer, request, "get billing customer", err)
+		return
+	}
+	gateway := handler.billingGateways[subscription.Gateway]
+	if gateway == nil {
+		http.Error(writer, billingGatewayLabel(subscription.Gateway)+" billing is unavailable.", http.StatusServiceUnavailable)
+		return
+	}
+	location, err := gateway.Portal(request.Context(), subscription, handler.config.Billing.PublicURL+"/account")
+	if err != nil {
+		handler.internalError(writer, request, "open "+billingGatewayLabel(subscription.Gateway)+" billing management", err)
+		return
+	}
+	http.Redirect(writer, request, location, http.StatusSeeOther)
+}
+
+type adminPlanRow struct {
+	db.PaidPlan
+	StorageQuotaGiB string
+}
+type adminPlansPageData struct {
+	Version, CSRF, Error, Message string
+	User                          *db.User
+	Plans                         []adminPlanRow
+}
+
+func (handler *Handler) AdminPlans(writer http.ResponseWriter, request *http.Request) {
+	handler.renderAdminPlans(writer, request, "")
+}
+
+func (handler *Handler) renderAdminPlans(writer http.ResponseWriter, request *http.Request, formError string) {
+	if handler.billing == nil {
+		http.Error(writer, "Plan storage is unavailable.", http.StatusServiceUnavailable)
+		return
+	}
+	plans, err := handler.billing.AllPlans(request.Context())
+	if err != nil {
+		handler.internalError(writer, request, "list administrator plans", err)
+		return
+	}
+	rows := make([]adminPlanRow, 0, len(plans))
+	for _, plan := range plans {
+		rows = append(rows, adminPlanRow{PaidPlan: plan, StorageQuotaGiB: planQuotaGiB(plan.StorageQuotaBytes)})
+	}
+	identity := currentIdentity(request)
+	handler.render(writer, "admin_plans.html", adminPlansPageData{Version: config.GetVersion(), CSRF: identity.Claims.CSRF, User: identity.User, Plans: rows, Error: formError})
+}
+
+// planQuotaGiB renders a stored quota for the edit form, whose input accepts
+// steps of 0.01 GiB. Quotas entered there round-trip exactly; full precision
+// (0.29999999981…) would make the browser refuse to submit the form.
+func planQuotaGiB(bytes int64) string {
+	return strconv.FormatFloat(math.Round(float64(bytes)/(1024*1024*1024)*100)/100, 'f', -1, 64)
+}
+
+func (handler *Handler) AdminSavePlan(writer http.ResponseWriter, request *http.Request) {
+	identity := currentIdentity(request)
+	request.Body = http.MaxBytesReader(writer, request.Body, 32*1024)
+	if err := request.ParseForm(); err != nil || !handler.verifyJWTCSRF(writer, request, identity) {
+		if err != nil {
+			http.Error(writer, "Invalid plan form.", http.StatusBadRequest)
+		}
+		return
+	}
+	plan, err := paidPlanFromForm(request)
+	if err != nil {
+		handler.renderAdminPlans(writer, request, err.Error())
+		return
+	}
+	plan.ID = chi.URLParam(request, "id")
+	if plan.ID == "" {
+		err = handler.billing.CreatePlan(request.Context(), plan)
+	} else if _, parseErr := uuid.Parse(plan.ID); parseErr != nil {
+		http.NotFound(writer, request)
+		return
+	} else {
+		err = handler.billing.UpdatePlan(request.Context(), plan)
+	}
+	if err != nil {
+		handler.logger.Error("save plan", "plan_id", plan.ID, "error", err)
+		message := "Could not save the plan. Check its price and access duration and try again."
+		handler.renderAdminPlans(writer, request, message)
+		return
+	}
+	handler.redirect(writer, request, "/admin/plans")
+}
+
+func paidPlanFromForm(request *http.Request) (*db.PaidPlan, error) {
+	name, description := strings.TrimSpace(request.FormValue("name")), strings.TrimSpace(request.FormValue("description"))
+	if name == "" || len(name) > 80 || len(description) > 500 {
+		return nil, errors.New("Enter a valid name and description.")
+	}
+	quotaGiB, err := strconv.ParseFloat(request.FormValue("storage_quota_gib"), 64)
+	if err != nil || math.IsNaN(quotaGiB) || quotaGiB < 0.01 || quotaGiB > 10240 {
+		return nil, errors.New("Storage must be between 0.01 and 10240 GiB.")
+	}
+	retention, err := strconv.Atoi(request.FormValue("retention_days"))
+	if err != nil || retention < 0 || retention > 36500 {
+		return nil, errors.New("Retention must be between 0 and 36500 days.")
+	}
+	price, err := strconv.ParseInt(request.FormValue("price"), 10, 64)
+	if err != nil || price <= 0 || price > 1_000_000_000 {
+		return nil, errors.New("Price must be a whole number from 1 to 1000000000 credits.")
+	}
+	duration, err := strconv.Atoi(request.FormValue("duration_days"))
+	if err != nil || duration <= 0 || duration > 36500 {
+		return nil, errors.New("Access duration must be between 1 and 36500 days.")
+	}
+	sortOrder, err := strconv.Atoi(request.FormValue("sort_order"))
+	if err != nil || sortOrder < -10000 || sortOrder > 10000 {
+		return nil, errors.New("Sort order must be between -10000 and 10000.")
+	}
+	return &db.PaidPlan{Name: name, Description: description,
+		StorageQuotaBytes: int64(math.Round(quotaGiB * 1024 * 1024 * 1024)), RetentionDays: retention,
+		DirectLinks: checked(request, "direct_links"), Price: price, DurationDays: duration,
+		Active: checked(request, "active"), SortOrder: sortOrder}, nil
+}

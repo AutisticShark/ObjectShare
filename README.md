@@ -9,7 +9,7 @@ ObjectShare is a small self-hosted file sharing service written in Go. Files use
 ## Features
 
 - Single-file and multiple-file, size-limited uploads with SHA-256 and SHA3-256 checksums
-- Svelte 5 frontend built with Vite 8 and TypeScript 7, with locally served Tabler and HTMX assets
+- Svelte 5 frontend built with Vite 8 and TypeScript 7, with locally served Tabler assets
 - Administrator-managed site name, logo, header banner, favicon, tagline, and footer
 - Filesystem, Cloudflare R2, AWS S3, Backblaze B2, Alibaba Cloud OSS, Tencent Cloud COS, Oracle Cloud Object Storage, or Google Cloud Storage object storage
 - Direct-to-object-storage uploads that avoid reverse-proxy request-body limits
@@ -76,9 +76,9 @@ File links are unlisted by default; owners can restrict details and downloads to
 - [x] User ban & shadowban
 - [x] User management
 
-Svelte renders the workspace, account, billing, and administration interfaces. The Go server keeps authorization and validation authoritative and supplies explicitly projected page data; database credentials, password hashes, JWTs, and stored MFA secrets never enter that payload. Tabler and HTMX are bundled locally rather than loaded from a CDN. Cloudflare Turnstile, when enabled, still loads its required provider script.
+Svelte renders the workspace, account, billing, and administration interfaces. The Go server keeps authorization and validation authoritative and supplies explicitly projected page data; database credentials, password hashes, JWTs, and stored MFA secrets never enter that payload. Tabler is bundled locally rather than loaded from a CDN. Cloudflare Turnstile, when enabled, still loads its required provider script.
 
-HTMX remains part of the frontend architecture: login, account, user-management, and sharing forms submit through HTMX, with validation responses rendered back into Svelte. The server sends each page as a minimal shell with its data, so the web interface requires JavaScript; the JSON and bearer-token APIs do not. Browser encryption and direct-upload recovery reuse the existing tested controllers and wire formats.
+Login, account, user-management, and sharing forms submit with `fetch` and render the returned page in place, so a validation error keeps open dialogs and entered values; payment, download, and plan forms post natively. Links are ordinary page loads that switch through a short view transition. The server sends each page as a minimal shell with its data, so the web interface requires JavaScript; the JSON and bearer-token APIs do not. Browser encryption and direct-upload recovery reuse the existing tested controllers and wire formats.
 
 ### Supported Object Storage Services
 
@@ -484,7 +484,7 @@ Generate an object-encryption key separately with `openssl rand -base64 32` and 
 
 ### User and administrator management
 
-Normal users find uploads at `/files`, plan and payment controls at `/billing`, and profile, password, appearance, and encryption settings at `/account`. Existing account-page controls remain available. The light/dark theme choice is stored with the account, so it follows the user across browsers and is applied to every authenticated page. With HTMX available, the navigation theme toggle saves and applies that choice without navigating or replacing the page, preserving selected uploads and unsaved forms. If saving fails, the current theme stays in place and the toggle shows a retry message. The native form fallback still saves the preference and returns to My account. Administrators have a `/admin` overview, a read-only `/admin/invoices` monitor, and dedicated `/admin/settings`, `/admin/plans`, and `/admin/users` interfaces for configuration, the purchasable plan catalog, and account management. These routes enforce the administrator role server-side and cookie-authenticated changes require the signed JWT CSRF value. The final active administrator cannot be disabled, demoted, or deleted. Disabling an account, changing its role, or resetting its password increments the account token version so every earlier JWT is rejected. Manual retention-exemption and quota changes do not invalidate JWTs because request authorization reloads current account entitlements from PostgreSQL. Deleting an account keeps its existing shared files available and converts them to anonymous uploads without an owner credential; those files then follow the guest retention policy if it is enabled.
+Normal users find uploads at `/files`, plan and payment controls at `/billing`, and profile, password, appearance, and encryption settings at `/account`. Existing account-page controls remain available. The light/dark theme choice is stored with the account, so it follows the user across browsers and is applied to every authenticated page. The navigation theme toggle saves and applies that choice without navigating or replacing the page, preserving selected uploads and unsaved forms. If saving fails, the current theme stays in place and the toggle shows a retry message. Administrators have a `/admin` overview, a read-only `/admin/invoices` monitor, and dedicated `/admin/settings`, `/admin/plans`, and `/admin/users` interfaces for configuration, the purchasable plan catalog, and account management. These routes enforce the administrator role server-side and cookie-authenticated changes require the signed JWT CSRF value. The final active administrator cannot be disabled, demoted, or deleted. Disabling an account, changing its role, or resetting its password increments the account token version so every earlier JWT is rejected. Manual retention-exemption and quota changes do not invalidate JWTs because request authorization reloads current account entitlements from PostgreSQL. Deleting an account keeps its existing shared files available and converts them to anonymous uploads without an owner credential; those files then follow the guest retention policy if it is enabled.
 
 #### Signup email verification
 
@@ -659,8 +659,8 @@ Existing accounts migrate to No ban automatically; no configuration changes are 
   by a full ban remain invalid; the user must sign in again.
 
 The admin form uses `POST /admin/users/{id}/moderation` with `moderation_status`
-(`banned`, `shadowbanned`, or an empty string). It supports HTMX and native form
-submission, requires administrator authorization, and enforces browser CSRF checks;
+(`banned`, `shadowbanned`, or an empty string). It supports the web interface's in-place
+submission and native form posts, requires administrator authorization, and enforces browser CSRF checks;
 JWT bearer clients use the same endpoint. Administrators cannot moderate themselves
 or remove the final available administrator. Shadowbanned administrators cannot use
 administration routes. Access changes, moderation, and deletion serialize their
@@ -1049,7 +1049,7 @@ The CLI bootstrap is intentionally one-time and refuses to create an administrat
 
 ### File sharing and permissions
 
-Open **Sharing & permissions** from a file's details page, or **Share** beside an upload in **My files** or **My account**. The dedicated owner page is `GET /file/{id}/sharing`; recipients use the existing `/file/{id}` link. The page includes a copy-link button and a native form enhanced with HTMX. A saved-access summary states who can currently download. Unsaved permission edits disable link creation and copying until saved; selected-account fields appear when that access option is chosen.
+Open **Sharing & permissions** from a file's details page, or **Share** beside an upload in **My files** or **My account**. The dedicated owner page is `GET /file/{id}/sharing`; recipients use the existing `/file/{id}` link. The page includes a copy-link button and a permissions form that saves in place. A saved-access summary states who can currently download. Unsaved permission edits disable link creation and copying until saved; selected-account fields appear when that access option is chosen.
 
 For a client-encrypted file, enter your separate encryption passphrase on the sharing page and select **Create sharing link**, then **Copy link**. You can also unlock with your encrypted key backup. The browser derives only this file's key and places it in the URL fragment; the account key and passphrase are never sent to recipients or the server. A plain file-page address remains available but cannot decrypt the file by itself. Wrong passphrases do not produce a link, and leaving the page clears the generated link. Recipients still need the saved access permissions; private files remain private even when someone has the key.
 

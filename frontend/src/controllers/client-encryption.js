@@ -102,8 +102,7 @@
   globalThis.ObjectShareCrypto = {createVault, unlockVault, encryptFile, decryptFile, fileKey, b64, unb64, accountKey};
   if (typeof document === "undefined") return; // Allows the same Web Crypto implementation to be tested in Node.
 
-  // My account replaces its .page after an HTMX form error, which brings a new
-  // setup form; initialize each setup form once, including replacements.
+  // Each render of My account runs the controllers again; set the form up once.
   const initSetup = () => {
     const setup = document.querySelector("#encryption-setup");
     if (!setup || setup.dataset.ready === "true") return;
@@ -139,7 +138,6 @@
     });
   };
   initSetup();
-  document.addEventListener("htmx:afterSwap", initSetup);
 
   const download = document.querySelector("#encrypted-download");
   if (!download) return;

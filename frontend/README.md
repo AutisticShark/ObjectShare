@@ -46,17 +46,17 @@ Svelte compiler warnings fail the check as well.
   Administrator configuration is redacted before serialization. MFA enrollment
   keys and newly issued recovery codes appear only on their authorized, uncached
   result page.
-- Forms submit through HTMX. The entry point renders returned page data into
-  Svelte; redirects still perform a normal navigation, and plain-text errors
-  appear in the submitting form.
+- Forms marked `data-enhance` submit with `fetch` (`src/lib/submit.ts`). A
+  returned page renders in place, a redirect becomes a normal navigation, and a
+  plain-text error appears in the submitting form. Other forms post natively.
+- Links are ordinary page loads. The bundle is render-blocking, so the empty
+  shell never paints, and a cross-document view transition fades between pages.
 - The encryption, sharing, upload-recovery, CAPTCHA, and dialog controllers live
   in `src/controllers/` and are bundled at build time. They are not evaluated as
   strings at runtime. Document/window listeners are scoped to each mounted page
   and removed when that page is replaced.
-- HTMX evaluation, response-script execution, and injected indicator styles are
-  disabled. The Content Security Policy allows scripts, styles, and fonts only
-  from the site itself and never needs `unsafe-inline` or `unsafe-eval`. Build
-  tools may still report HTMX's unused evaluation code.
+- The Content Security Policy allows scripts, styles, and fonts only from the
+  site itself and never needs `unsafe-inline` or `unsafe-eval`.
 - No third-party CDN or web font is loaded. Configured branding images, direct
   object-storage transfers, and an enabled Turnstile widget retain their
   existing explicitly allowed external origins.

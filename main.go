@@ -17,7 +17,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/AutisticShark/ObjectShare/api/htmx"
+	"github.com/AutisticShark/ObjectShare/api/web"
 	appauth "github.com/AutisticShark/ObjectShare/auth"
 	"github.com/AutisticShark/ObjectShare/config"
 	"github.com/AutisticShark/ObjectShare/db"
@@ -92,7 +92,7 @@ func run() error {
 	if *createAdmin {
 		return createInitialAdmin(startupContext, repository, *adminEmail, *adminName, *adminPasswordFile, *adminPasswordStdin)
 	}
-	if _, err := fs.Stat(frontendFiles, htmx.FrontendManifest); err != nil {
+	if _, err := fs.Stat(frontendFiles, web.FrontendManifest); err != nil {
 		return errors.New("the web interface is not built into this binary; run `npm --prefix frontend ci && npm --prefix frontend run build`, then rebuild")
 	}
 	if err := repository.EnableRedis(startupContext, cfg.Redis); err != nil {

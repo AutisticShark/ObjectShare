@@ -81,7 +81,7 @@ test('uploader honors optional encryption through proxied/direct single/batch fl
       requests.push(url);
       if (url === '/api/v1/upload') {
         transfers.push(...options.body.getAll('file')); metadata.push(...options.body.getAll('client_encryption'));
-        return new Response(null,{status:204,headers:{'HX-Redirect':'/file/result'}});
+        return new Response(null,{status:204,headers:{'X-ObjectShare-Redirect':'/file/result'}});
       }
       if (url.endsWith('/batch')) {
         const payload=JSON.parse(options.body); metadata.push(...payload.files.map(file=>file.client_encryption));
@@ -117,8 +117,7 @@ test('uploader honors optional encryption through proxied/direct single/batch fl
   }
 });
 
-test('account key setup works again after HTMX replaces the account page', async () => {
-  const listeners = {};
+test('account key setup works again after the account page renders again', async () => {
   const setupForm = () => {
     const button = {disabled: true}, status = {textContent: ''};
     const events = {};
@@ -132,19 +131,20 @@ test('account key setup works again after HTMX replaces the account page', async
   const first = current;
   const document = {
     querySelector: selector => selector === '#encryption-setup' ? current : null,
-    addEventListener: (name, listener) => { listeners[name] = listener; },
+    addEventListener: () => {},
   };
   const fetch = async () => ({ok: true, json: async () => ({user_id: 'alice', vault: null})});
   const source = fs.readFileSync(path.join(__dirname, '../frontend/src/controllers/client-encryption.js'), 'utf8');
-  vm.runInNewContext(source, {document, fetch, TextEncoder, crypto: globalThis.crypto, btoa, atob, Blob, URL, setTimeout});
+  // Every render runs the controllers again.
+  const run = () => vm.runInNewContext(source, {document, fetch, TextEncoder, crypto: globalThis.crypto, btoa, atob, Blob, URL, setTimeout});
+  run();
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(typeof first.events.submit, 'function');
   assert.equal(first.button.disabled, false);
 
-  listeners['htmx:afterSwap']();
-  listeners['htmx:afterSwap'](); // the same form is set up only once
+  run(); // the same form is set up only once
   current = setupForm();
-  listeners['htmx:afterSwap']();
+  run();
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(typeof current.events.submit, 'function', 'the replacement setup form has no submit handler');
   assert.equal(typeof current.events['backup-click'], 'function', 'the replacement backup button has no handler');

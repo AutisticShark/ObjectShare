@@ -15,7 +15,7 @@ import (
 	"time"
 
 	"github.com/AutisticShark/ObjectShare/api"
-	"github.com/AutisticShark/ObjectShare/api/htmx"
+	"github.com/AutisticShark/ObjectShare/api/web"
 	"github.com/AutisticShark/ObjectShare/config"
 	"github.com/AutisticShark/ObjectShare/db"
 	"github.com/AutisticShark/ObjectShare/retention"
@@ -41,7 +41,7 @@ type applicationRepository interface {
 // mutating a shared configuration while requests are running.
 type configSnapshot struct {
 	sealed  string
-	handler *htmx.Handler
+	handler *web.Handler
 	router  http.Handler
 	cancel  context.CancelFunc
 }
@@ -130,7 +130,7 @@ func (reloader *configReloader) activate(setting *db.ApplicationSetting, previou
 	if err != nil {
 		return fmt.Errorf("initialize object storage: %w", err)
 	}
-	handler, err := htmx.New(cfg, reloader.repository, objectStore, reloader.frontend, reloader.logger)
+	handler, err := web.New(cfg, reloader.repository, objectStore, reloader.frontend, reloader.logger)
 	if err != nil {
 		return fmt.Errorf("initialize HTTP handlers: %w", err)
 	}

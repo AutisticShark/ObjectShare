@@ -14,14 +14,8 @@
   };
 
   window.objectShareTurnstileReady = () => renderWidgets();
-  document.addEventListener("htmx:configRequest", (event) => {
-    const element = event.detail.elt;
-    const form = element && element.closest ? element.closest("form") : null;
-    const response = form ? form.querySelector("input[name='cf-turnstile-response']") : null;
-    if (response && response.value) event.detail.headers["X-Captcha-Token"] = response.value;
-  });
-  document.addEventListener("htmx:afterSwap", (event) => renderWidgets(event.detail.elt || document));
-  document.addEventListener("htmx:responseError", () => {
+  // The widget's token travels in its form; a rejected submission spends it.
+  document.addEventListener("objectshare:submit-failed", () => {
     if (window.turnstile) window.turnstile.reset();
   });
 })();

@@ -47,7 +47,6 @@ test('copy uses an absolute link, respects unsaved permissions, and offers clipb
     await n['copy-share-link'].fire('click'); assert.equal(copied.length, 0);
     n['share-mode'].value = 'private'; await n['sharing-permissions'].fire('change');
     assert.equal(n['unsaved-sharing'].hidden, true);
-    documentEvents['htmx:afterSwap'](); // Reinitialization must not bind twice.
     await n['copy-share-link'].fire('click');
     if (clipboardFails) {
       assert.equal(n['share-url'].selected, true);
@@ -109,7 +108,7 @@ test('failed unlock, changed permissions, and navigation never publish a stale f
       n['share-mode'].value = 'link'; await n['sharing-permissions'].fire('change');
     } else if (action === 'back') {
       windowEvents.pagehide(); windowEvents.pageshow();
-    } else documentEvents['htmx:beforeSwap']({detail: {target: {contains: () => true}}});
+    } else windowEvents.pagehide(); // A re-render disposes the controllers, which runs their pagehide cleanup.
     unlock(raw); await pending;
     assert.equal(n['share-url'].value, ''); assert.equal(n['encrypted-link-result'].hidden, true);
     assert.ok(raw.every(byte => byte === 0)); assert.ok(key.every(byte => byte === 0));

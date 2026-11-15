@@ -9,12 +9,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/AutisticShark/ObjectShare/api/htmx"
+	"github.com/AutisticShark/ObjectShare/api/web"
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 )
 
-func Router(handler *htmx.Handler, logger *slog.Logger) http.Handler {
+func Router(handler *web.Handler, logger *slog.Logger) http.Handler {
 	requireSameOrigin := sameOrigin(handler.RequestScheme, logger)
 	router := chi.NewRouter()
 	router.Use(requestID)

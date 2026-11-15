@@ -9,13 +9,8 @@ function existingControllers(): Plugin {
   const virtualID = 'virtual:objectshare-controllers';
   return {
     name: 'objectshare-controllers',
-    resolveId(id) { if (id === virtualID || id === 'virtual:objectshare-errors') return '\0' + id; },
+    resolveId(id) { if (id === virtualID) return '\0' + id; },
     async load(id) {
-      if (id === '\0virtual:objectshare-errors') {
-        const file = fileURLToPath(new URL('./src/controllers/htmx-errors.js', import.meta.url));
-        this.addWatchFile(file);
-        return readFile(file, 'utf8');
-      }
       if (id !== '\0' + virtualID) return;
       const sources = await Promise.all(controllers.map(async name => {
         const file = fileURLToPath(new URL(`./src/controllers/${name}.js`, import.meta.url));
