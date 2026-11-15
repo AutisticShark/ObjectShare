@@ -1,6 +1,14 @@
 # syntax=docker/dockerfile:1.28
-ARG GO_VERSION=1.27.3
-FROM --platform=$BUILDPLATFORM golang:${GO_VERSION}-alpine3.24@sha256:fa3d596898d9f126af7c01d14ee7597bab3f39cccf392ef36b69fe77cd681f18 AS build
+FROM --platform=$BUILDPLATFORM node:26.13.1-alpine3.24@sha256:6bd9ab43c0ec0190ca7b2d193906cb8b7edf6e7f4afa43ddeccd6452710bffb5 AS frontend
+WORKDIR /src/frontend
+COPY frontend/package.json frontend/package-lock.json ./
+COPY frontend/tools/svelte-types/package.json ./tools/svelte-types/package.json
+RUN --mount=type=cache,target=/root/.npm npm ci --ignore-scripts
+COPY frontend/ ./
+COPY template/ /src/template/
+RUN npm run check && npm run build
+
+FROM --platform=$BUILDPLATFORM golang:1.27.4-alpine3.24@sha256:0a5f7fe796599ff487605987432e7619ae45beeb2fba4c2ce0b907879932aebf AS build
 
 ARG TARGETOS
 ARG TARGETARCH
@@ -10,6 +18,7 @@ RUN apk add --no-cache ca-certificates tzdata && mkdir -p /out/data/objects /out
 COPY go.mod go.sum ./
 RUN --mount=type=cache,target=/go/pkg/mod go mod download
 COPY . .
+COPY --from=frontend /src/template/frontend ./template/frontend
 RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
     CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build \

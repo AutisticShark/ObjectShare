@@ -25,6 +25,7 @@ func Router(handler *htmx.Handler, logger *slog.Logger) http.Handler {
 	router.Use(securityHeaders(handler.CaptchaCSPEnabled(), handler.BrandingImageSources(), handler.DirectUploadConnectSources()...))
 	router.Use(handler.Authenticate)
 
+	router.Get("/assets/frontend/*", handler.FrontendAsset)
 	router.Get("/assets/branding.css", handler.BrandingStyles)
 	router.Get("/assets/theme.js", handler.ThemeScript)
 	router.Get("/assets/upload.js", handler.UploadScript)
@@ -235,7 +236,7 @@ func securityHeaders(captchaEnabled bool, imageSources []string, connectSources 
 			}
 			writer.Header().Set("Content-Security-Policy", "default-src 'none'; script-src "+scriptSource+"; connect-src "+connectSource+"; frame-src "+frameSource+"; style-src 'self' "+cdnStyleSource+"; font-src "+cdnStyleSource+"; img-src "+imageSource+"; form-action 'self'; base-uri 'none'; frame-ancestors 'none'")
 			writer.Header().Set("Permissions-Policy", "camera=(), geolocation=(), microphone=()")
-			writer.Header().Set("Referrer-Policy", "no-referrer")
+			writer.Header().Set("Referrer-Policy", "same-origin")
 			writer.Header().Set("X-Content-Type-Options", "nosniff")
 			writer.Header().Set("X-Frame-Options", "DENY")
 			next.ServeHTTP(writer, request)

@@ -25,5 +25,12 @@ data/
 build/
 .cache/
 
+# Frontend dependencies and generated assets
+node_modules/
+frontend/.check/
+frontend/playwright-report/
+frontend/test-results/
+template/frontend/
+
 # Personal Codex memory (stored globally, outside the repository)
 /MEMORY.md

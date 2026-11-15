@@ -6,6 +6,11 @@
 build
 data
 vendor
+**/node_modules
+frontend/.check
+frontend/test-results
+frontend/playwright-report
+template/frontend
 config.json
 # Compose and local environment secrets must never enter a build context.
 **/.env

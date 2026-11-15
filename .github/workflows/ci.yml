@@ -16,10 +16,10 @@ concurrency:
 jobs:
   go:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 25
     services:
       postgres:
-        image: postgres:18.6-alpine3.24@sha256:123b17998ccaf47e53b502e8c6a1e79afd8f579c6f3eec83c563da026f957395
+        image: postgres:18.6-alpine3.24@sha256:9ba53c7d41ea093baf5c1ba635ba5434c4f979880527d49bb7d9237d3193085b
         env:
           POSTGRES_USER: objectshare
           POSTGRES_PASSWORD: objectshare-ci-only
@@ -41,6 +41,19 @@ jobs:
         with:
           go-version: "1.27"
           cache: true
+      - name: Set up Node
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "26"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Build and test frontend
+        working-directory: frontend
+        run: |
+          npm ci --ignore-scripts
+          npm run check
+          npm test
+          npm run build
       - name: Verify modules
         run: |
           go mod download
@@ -54,6 +67,27 @@ jobs:
           go test -race -coverprofile=coverage.out ./...
       - name: Vet
         run: go vet ./...
+      - name: Install browser for frontend tests
+        working-directory: frontend
+        run: npx --no-install playwright install --with-deps chromium
+      - name: Exercise frontend against disposable application
+        env:
+          OBJECTSHARE_E2E_ALLOW_SETUP: "1"
+          OBJECTSHARE_DB_HOST: 127.0.0.1
+          OBJECTSHARE_DB_PORT: "5432"
+          OBJECTSHARE_DB_USER: objectshare
+          OBJECTSHARE_DB_PASSWORD: objectshare-ci-only
+          OBJECTSHARE_DB_DATABASE: objectshare_test
+          OBJECTSHARE_DB_SSLMODE: disable
+        run: bash frontend/scripts/test-e2e.sh
+      - name: Upload browser diagnostics on failure
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: frontend-browser-diagnostics
+          path: frontend/test-results/
+          if-no-files-found: ignore
+          retention-days: 7
       - name: Scan Go dependencies and call graph
         uses: golang/govulncheck-action@032d45514ae346b1db93c04b0c90b841c370344f # v1.1.0
         with:

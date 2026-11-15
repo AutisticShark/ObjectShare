@@ -9,7 +9,7 @@ ObjectShare is a small self-hosted file sharing service written in Go. Files use
 ## Features
 
 - Single-file and multiple-file, size-limited uploads with SHA-256 and SHA3-256 checksums
-- Tabler UI with HTMX progressive enhancement and native-form fallbacks
+- Svelte 5 frontend built with Vite 8 and TypeScript 7, locally served Tabler and HTMX assets, and native-form fallbacks
 - Administrator-managed site name, logo, header banner, favicon, tagline, and footer
 - Filesystem, Cloudflare R2, AWS S3, Backblaze B2, Alibaba Cloud OSS, Tencent Cloud COS, Oracle Cloud Object Storage, or Google Cloud Storage object storage
 - Direct-to-object-storage uploads that avoid reverse-proxy request-body limits
@@ -65,16 +65,20 @@ File links are unlisted by default; owners can restrict details and downloads to
 - [x] Paid storage, retention, and direct-link plans
 - [x] Redis caching and shared request rate limits
 - [x] Searchable, paginated account file workspace
+- [x] Self-hosted frontend assets without third-party CDNs or web fonts
 - [x] Server-side encryption & decryption
 - [x] Settings key rotation that re-seals stored configuration and MFA secrets
 - [x] Single-file and multiple-file upload modes
+- [x] Svelte 5 frontend with TypeScript 7 and Vite 8
 - [x] Third-party OAuth login support
 - [x] Unified workspace and administrator navigation
 - [x] Upload quota
 - [x] User ban & shadowban
 - [x] User management
 
-HTMX is intentionally part of the frontend architecture. The native forms are accessibility and no-JavaScript fallbacks; login, account, and user-management interactions use HTMX progressive enhancement, and file-sharing permissions follow the same pattern.
+Svelte renders the workspace, account, billing, and administration interfaces. The Go server keeps authorization and validation authoritative and supplies explicitly projected page data; database credentials, password hashes, JWTs, and stored MFA secrets never enter that payload. Tabler and HTMX are bundled locally rather than loaded from a CDN. Cloudflare Turnstile, when enabled, still loads its required provider script.
+
+HTMX remains part of the frontend architecture: login, account, user-management, and sharing forms retain progressive enhancement, with validation responses rendered back into Svelte. The server-rendered native forms remain accessibility and no-JavaScript fallbacks. Browser encryption and direct-upload recovery reuse the existing tested controllers and wire formats.
 
 ### Supported Object Storage Services
 
@@ -421,7 +425,7 @@ outer scheme rather than its own `$scheme`. When the scheme cannot be determined
 
 ## Run from source
 
-Requirements: Go 1.27 and PostgreSQL 18 (PostgreSQL 17 is also supported).
+Requirements: Go 1.27, Node.js 26 LTS with npm for frontend builds, and PostgreSQL 18 (PostgreSQL 17 is also supported). Node.js is not needed to run the built binary. The Docker build compiles and embeds the frontend automatically.
 
 Startup schema migrations run in a transaction under a PostgreSQL advisory lock.
 Statement caching is disabled during migration and enabled for application queries
@@ -433,8 +437,13 @@ against the existing database; no manual table or data deletion is needed.
 ```sh
 cp config.json.example config.json
 # Edit the bootstrap database and secret settings.
+npm --prefix frontend ci --ignore-scripts
+npm --prefix frontend run check
+npm --prefix frontend run build
 go run . -config config.json
 ```
+
+Frontend source and development/test commands are documented in [frontend/README.md](frontend/README.md). Generated assets are embedded into the Go binary; rebuild the frontend and restart/rebuild Go after frontend changes. A source checkout without a frontend build continues to serve the native forms.
 
 ObjectShare now keeps operational configuration in PostgreSQL. On the first start after this upgrade, it imports the existing JSON/environment values into one encrypted `application_settings` revision. Later starts load that database revision, so changing a legacy operational environment variable does not overwrite an administrator's dashboard changes. This one-time import preserves existing deployments; after it succeeds, manage application policy, OAuth, CAPTCHA, rate limits, storage providers, and object encryption at `/admin/settings`.
 

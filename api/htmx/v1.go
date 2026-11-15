@@ -38,6 +38,7 @@ import (
 const mebibyte = int64(1024 * 1024)
 
 type Handler struct {
+	frontend           *frontendAssets
 	clientEncryptionJS []byte
 	emailSender        email.Sender
 	config             *config.ServiceConfig
@@ -124,6 +125,10 @@ func preAuthCSRFSecret(cfg *config.ServiceConfig) ([]byte, error) {
 }
 
 func New(cfg *config.ServiceConfig, repository db.Repository, storage service.ObjectStore, templates fs.FS, logger *slog.Logger) (*Handler, error) {
+	frontend, err := loadFrontend(templates)
+	if err != nil {
+		return nil, fmt.Errorf("load frontend: %w", err)
+	}
 	parsed, err := parseTemplates(templates, cfg.Branding)
 	if err != nil {
 		return nil, fmt.Errorf("parse templates: %w", err)
@@ -185,7 +190,8 @@ func New(cfg *config.ServiceConfig, repository db.Repository, storage service.Ob
 		return nil, errors.New("enabled rate limiting requires a shared rate-limit repository")
 	}
 	handler := &Handler{
-		config: cfg, repository: repository, users: userRepository, storage: storage,
+		frontend: frontend,
+		config:   cfg, repository: repository, users: userRepository, storage: storage,
 		clientEncryptionJS: clientEncryptionJS, templates: parsed, sharingJS: sharingJS, brandingCSS: brandingCSS, themeJS: themeJS, uploadJS: uploadJS, captchaJS: captchaJS,
 		adminUsersJS: adminUsersJS, adminUsersCSS: adminUsersCSS, logger: logger, csrfSecret: csrfSecret,
 		captcha: newCaptchaVerifier(cfg.Captcha), rateLimits: rateLimits,
@@ -680,9 +686,15 @@ func (handler *Handler) renderStatus(writer http.ResponseWriter, status int, nam
 		http.Error(writer, "This page could not be displayed. Please try again.", http.StatusInternalServerError)
 		return
 	}
+	output, err := handler.frontendPage(page.Bytes(), name, data)
+	if err != nil {
+		handler.logger.Error("prepare frontend page", "template", name, "error", err)
+		http.Error(writer, "This page could not be displayed. Please try again.", http.StatusInternalServerError)
+		return
+	}
 	writer.Header().Set("Content-Type", "text/html; charset=utf-8")
 	writer.WriteHeader(status)
-	_, _ = writer.Write(page.Bytes())
+	_, _ = writer.Write(output)
 }
 
 func (handler *Handler) internalError(writer http.ResponseWriter, request *http.Request, operation string, err error) {

@@ -20,6 +20,9 @@ func TestSecurityHeaders(t *testing.T) {
 	handler := securityHeaders(false, nil)(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) { writer.WriteHeader(http.StatusNoContent) }))
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/", nil))
+	if response.Header().Get("Referrer-Policy") != "same-origin" {
+		t.Fatal("native POSTs need their same-origin Origin without leaking share paths to external sites")
+	}
 	for _, name := range []string{"Content-Security-Policy", "Permissions-Policy", "Referrer-Policy", "X-Content-Type-Options", "X-Frame-Options"} {
 		if response.Header().Get(name) == "" {
 			t.Errorf("%s is missing", name)

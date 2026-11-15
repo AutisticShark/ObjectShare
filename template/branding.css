@@ -1,3 +1,7 @@
+#upload-progress { width: 0; }
+.htmx-indicator { opacity: 0; }
+.htmx-request .htmx-indicator, .htmx-request.htmx-indicator { opacity: 1; }
+
 .alert {
   /* These banners contain prose. Tabler's flex layout separates inline links,
      emphasis, and text nodes into columns instead of wrapping one sentence. */

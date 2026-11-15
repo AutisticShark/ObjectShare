@@ -20,8 +20,8 @@
     } else {
       dialog.setAttribute("open", "");
     }
-    const firstPassword = dialog.querySelector('input[name="password"]');
-    if (firstPassword) firstPassword.focus();
+    const firstField = dialog.querySelector('input:not([type="hidden"]), select, textarea');
+    if (firstField) firstField.focus();
   };
 
   document.addEventListener("click", (event) => {
