@@ -160,7 +160,10 @@ func (handler *Handler) frontendPage(name string, data any) ([]byte, error) {
 		for _, css := range handler.frontend.entry.CSS {
 			fmt.Fprintf(&out, `<link rel="stylesheet" href="/assets/frontend/%s">`, html.EscapeString(css))
 		}
-		fmt.Fprintf(&out, `<script type="module" src="/assets/frontend/%s"></script>`, html.EscapeString(handler.frontend.entry.File))
+		// blocking="render" keeps the empty shell from ever painting: the first
+		// frame is the mounted app, so a page change (and its view transition)
+		// goes straight from the old page to the new one.
+		fmt.Fprintf(&out, `<script type="module" blocking="render" src="/assets/frontend/%s"></script>`, html.EscapeString(handler.frontend.entry.File))
 	}
 	fmt.Fprintf(&out, `</head><body><div id="objectshare-app"></div><noscript><p class="noscript">%s requires JavaScript.</p></noscript>`, html.EscapeString(branding.SiteName))
 	out.WriteString(`<script id="objectshare-page" type="application/json">`)

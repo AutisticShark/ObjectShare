@@ -38,6 +38,14 @@
 @media (prefers-color-scheme: dark) {
   html:not([data-bs-theme]), html:not([data-bs-theme]) body { background: #15181e; color: #e0e4ec; }
 }
+/* Every link is a full page load. A cross-document view transition keeps the
+   old page on screen until the new one has rendered, then fades between them;
+   the unchanged sidebar shows no motion. Frequent, so short. */
+@view-transition { navigation: auto; }
+::view-transition-old(root), ::view-transition-new(root) { animation-duration: 120ms; animation-timing-function: cubic-bezier(.23, 1, .32, 1); }
+@media (prefers-reduced-motion: reduce) {
+  ::view-transition-old(root), ::view-transition-new(root) { animation: none; }
+}
 .noscript { max-width: 32rem; margin: 20vh auto; padding: 0 16px; text-align: center; }
 * { box-sizing: border-box; }
 body { margin: 0; font-size: 14px; line-height: 1.5; -webkit-font-smoothing: antialiased; }

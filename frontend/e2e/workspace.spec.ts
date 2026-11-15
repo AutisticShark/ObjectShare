@@ -308,8 +308,9 @@ test('the server sends only the app shell, so nothing appears before the interfa
   let release!: () => void;
   const held = new Promise<void>(resolve => { release = resolve; });
   await page.route('**/assets/frontend/assets/*.js', async route => { await held; await route.continue(); });
-  // Module scripts are deferred, so DOMContentLoaded waits for the held bundle;
-  // the document can already paint, which is the moment under test.
+  // Module scripts are deferred, so DOMContentLoaded waits for the held bundle.
+  // Browsers that honour blocking="render" paint nothing yet; the others may
+  // paint the shell, which must then be blank in the visitor's theme.
   await page.goto(baseURL + '/login', { waitUntil: 'commit' });
   await page.locator('#objectshare-page').waitFor({ state: 'attached' });
   expect(await page.locator('body').innerText()).toBe('');
@@ -318,6 +319,28 @@ test('the server sends only the app shell, so nothing appears before the interfa
   await shell(page);
   await expect(page.locator('html')).toHaveAttribute('data-bs-theme', 'dark');
   await context.close();
+});
+
+test('switching tabs goes straight from one page to the next through a view transition', async ({ page }) => {
+  await page.addInitScript(() => {
+    const record = window as unknown as { mountedAt?: number; transition?: boolean };
+    addEventListener('pagereveal', event => { record.transition = Boolean((event as Event & { viewTransition?: unknown }).viewTransition); });
+    new MutationObserver((_, observer) => {
+      if (document.querySelector('#objectshare-app > *')) { record.mountedAt = performance.now(); observer.disconnect(); }
+    }).observe(document, { childList: true, subtree: true });
+  });
+  await page.goto('/admin');
+  await shell(page);
+  await page.getByRole('navigation', { name: 'Administration' }).getByRole('link', { name: 'Users' }).click();
+  await expect(page).toHaveURL(/\/admin\/users$/);
+  await shell(page);
+  const timing = await page.evaluate(() => {
+    const record = window as unknown as { mountedAt?: number; transition?: boolean };
+    return { mountedAt: record.mountedAt, transition: record.transition, firstPaint: performance.getEntriesByName('first-paint')[0]?.startTime };
+  });
+  expect(timing.transition, JSON.stringify(timing)).toBe(true);
+  // The first frame of the new page already holds the interface: no blank shell in between.
+  expect(timing.firstPaint, JSON.stringify(timing)).toBeGreaterThanOrEqual(timing.mountedAt!);
 });
 
 test('browsers without JavaScript are told it is required', async ({ browser, baseURL }) => {
