@@ -1,19 +1,17 @@
 package htmx
 
 import (
-	"bytes"
-	"os"
-	"regexp"
 	"testing"
 
 	"github.com/AutisticShark/ObjectShare/config"
 	"github.com/AutisticShark/ObjectShare/db"
 )
 
-// A deployment seeded with OBJECTSHARE_STORAGE_SERVICE=R2 must render with R2
-// selected; otherwise the browser submits the first option (filesystem) on the
-// next unrelated save and silently switches the storage backend.
-func TestMixedCaseStorageServiceStaysSelectedInTheDashboard(t *testing.T) {
+// A deployment seeded with OBJECTSHARE_STORAGE_SERVICE=R2 must hand the page the
+// canonical "r2"; otherwise the frontend cannot select the matching option and
+// the browser submits the first one (filesystem) on the next unrelated save,
+// silently switching the storage backend.
+func TestMixedCaseStorageServiceIsCanonicalInTheDashboardData(t *testing.T) {
 	t.Setenv("OBJECTSHARE_JWT_SECRET", "settings-test-jwt-secret-with-at-least-32-bytes")
 	t.Setenv("OBJECTSHARE_SETTINGS_KEY", "settings-test-settings-key-with-at-least-32-bytes")
 	t.Setenv("OBJECTSHARE_STORAGE_SERVICE", " R2 ")
@@ -36,17 +34,10 @@ func TestMixedCaseStorageServiceStaysSelectedInTheDashboard(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	parsed, err := parseTemplates(os.DirFS("../.."), config.BrandingConfig{})
-	if err != nil {
-		t.Fatal(err)
-	}
 	user := &db.User{ID: "11111111-1111-4111-8111-111111111111", Email: "admin@example.com", DisplayName: "Admin", Role: db.RoleAdmin, Active: true}
-	var page bytes.Buffer
-	if err := parsed.ExecuteTemplate(&page, "admin_settings.html", adminSettingsPageData{Version: "t", CSRF: "c", User: user, Config: runtime}); err != nil {
-		t.Fatal(err)
-	}
-	selectBlock := regexp.MustCompile(`(?s)<select class="form-select" name="storage_service">.*?</select>`).Find(page.Bytes())
-	if !regexp.MustCompile(`value="r2"\s+selected`).Match(selectBlock) {
-		t.Fatalf("storage select has no selected option for stored %q:\n%s", runtime.StorageService, selectBlock)
+	page, data := renderPage(t, "admin_settings.html", adminSettingsPageData{Version: "t", CSRF: "c", User: user, Config: runtime})
+	shown, _ := data["Config"].(map[string]any)
+	if page != "admin_settings" || shown["StorageService"] != "r2" {
+		t.Fatalf("settings page carries storage service %v for stored %q, want the canonical r2", shown["StorageService"], runtime.StorageService)
 	}
 }

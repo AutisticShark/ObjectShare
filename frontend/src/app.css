@@ -33,6 +33,12 @@
   --workspace-dash: #4a5260;
   color-scheme: dark;
 }
+/* Before the app starts, guests have no saved theme: follow the system so a
+   dark-mode visitor never sees a white page first. */
+@media (prefers-color-scheme: dark) {
+  html:not([data-bs-theme]), html:not([data-bs-theme]) body { background: #15181e; color: #e0e4ec; }
+}
+.noscript { max-width: 32rem; margin: 20vh auto; padding: 0 16px; text-align: center; }
 * { box-sizing: border-box; }
 body { margin: 0; font-size: 14px; line-height: 1.5; -webkit-font-smoothing: antialiased; }
 button, input, select, textarea { font: inherit; }

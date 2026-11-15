@@ -256,7 +256,7 @@ func TestSignupRateLimitIgnoresPresentedJWT(t *testing.T) {
 	handler.config.RateLimit = &config.RateLimitConfig{Enabled: true, Window: config.Duration(time.Hour), SignupLimit: 1, LoginLimit: 1, APILimit: 1000}
 	page := httptest.NewRecorder()
 	handler.SignupPage(page, httptest.NewRequest(http.MethodGet, "/signup", nil))
-	csrf, preAuthCookie := strings.TrimSpace(page.Body.String()), page.Result().Cookies()[0]
+	csrf, preAuthCookie := csrfOf(t, page.Body.String()), page.Result().Cookies()[0]
 	signup := func(n int, jwt *http.Cookie) *httptest.ResponseRecorder {
 		request := formRequest("/signup", url.Values{"csrf_token": {csrf}, "email": {fmt.Sprintf("bot%d@example.com", n)}, "display_name": {"Bot"},
 			"password": {"a sufficiently long password"}, "password_confirm": {"a sufficiently long password"}})
@@ -306,7 +306,7 @@ func TestLoginLockoutCoversWholeIPv6Slash64(t *testing.T) {
 	handler := loginTestHandler(t)
 	page := httptest.NewRecorder()
 	handler.LoginPage(page, httptest.NewRequest(http.MethodGet, "/login", nil))
-	csrf, preAuthCookie := strings.TrimSpace(page.Body.String()), page.Result().Cookies()[0]
+	csrf, preAuthCookie := csrfOf(t, page.Body.String()), page.Result().Cookies()[0]
 	login := func(remote, password string) *httptest.ResponseRecorder {
 		request := formRequest("/login", url.Values{"csrf_token": {csrf}, "email": {"victim@example.com"}, "password": {password}})
 		request.AddCookie(preAuthCookie)

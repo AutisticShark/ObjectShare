@@ -1,6 +1,6 @@
 const {test} = require('node:test');
 const assert = require('node:assert/strict');
-require('../template/client-encryption.js');
+require('../frontend/src/controllers/client-encryption.js');
 const c = globalThis.ObjectShareCrypto;
 const passphrase = 'a separate long test passphrase';
 const vm = require('node:vm');
@@ -95,7 +95,7 @@ test('uploader honors optional encryption through proxied/direct single/batch fl
       encryptFile:async(...args)=>{if(mode==='crypto-failure')throw new Error('encryption failed');return c.encryptFile(...args);}
     },XMLHttpRequest:XHR,FormData:TestFormData,fetch:fetchMock,window:{location:{assign:url=>{destination=url;}}}};
     if (mode==='plain-no-crypto') { sandbox.crypto = undefined; sandbox.ObjectShareCrypto = undefined; }
-    vm.runInNewContext(fs.readFileSync(path.join(__dirname,'../template/upload.js'),'utf8'),sandbox);
+    vm.runInNewContext(fs.readFileSync(path.join(__dirname,'../frontend/src/controllers/upload.js'),'utf8'),sandbox);
     assert.equal(button.disabled,false);
     await submit({preventDefault(){}});
     if (fail) {
@@ -135,7 +135,7 @@ test('account key setup works again after HTMX replaces the account page', async
     addEventListener: (name, listener) => { listeners[name] = listener; },
   };
   const fetch = async () => ({ok: true, json: async () => ({user_id: 'alice', vault: null})});
-  const source = fs.readFileSync(path.join(__dirname, '../template/client-encryption.js'), 'utf8');
+  const source = fs.readFileSync(path.join(__dirname, '../frontend/src/controllers/client-encryption.js'), 'utf8');
   vm.runInNewContext(source, {document, fetch, TextEncoder, crypto: globalThis.crypto, btoa, atob, Blob, URL, setTimeout});
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(typeof first.events.submit, 'function');

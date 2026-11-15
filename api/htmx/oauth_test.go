@@ -54,7 +54,7 @@ func TestOAuthLoginCreatesJWTAccountWithoutPersistingProviderToken(t *testing.T)
 	response := httptest.NewRecorder()
 	handler.OAuthCallback(response, callback)
 	// The callback continues through a same-site page, not a redirect: see continueAfterOAuth.
-	if response.Code != http.StatusOK || response.Body.String() != "continue=/admin/users" || len(repository.users) != 1 || len(repository.identities) != 1 {
+	if response.Code != http.StatusOK || continueLocation(response.Body.String()) != "/admin/users" || len(repository.users) != 1 || len(repository.identities) != 1 {
 		t.Fatalf("OAuth callback status=%d location=%q users=%d identities=%d body=%q", response.Code, response.Header().Get("Location"), len(repository.users), len(repository.identities), response.Body.String())
 	}
 	user, err := repository.UserByEmail(context.Background(), "user@example.com")
@@ -77,7 +77,7 @@ func TestOAuthLoginCreatesJWTAccountWithoutPersistingProviderToken(t *testing.T)
 	forgedCallback.AddCookie(forgedFlowCookie)
 	forgedResponse := httptest.NewRecorder()
 	handler.OAuthCallback(forgedResponse, forgedCallback)
-	if forgedResponse.Code != http.StatusOK || forgedResponse.Body.String() != "continue=/account" {
+	if forgedResponse.Code != http.StatusOK || continueLocation(forgedResponse.Body.String()) != "/account" {
 		t.Fatalf("forged OAuth destination status=%d body=%q", forgedResponse.Code, forgedResponse.Body.String())
 	}
 }
@@ -104,7 +104,7 @@ func TestOAuthRejectsStateTamperingAndAutomaticEmailLinking(t *testing.T) {
 	tamperedFlow.AddCookie(&tamperedCookie)
 	tamperedFlowResponse := httptest.NewRecorder()
 	handler.OAuthCallback(tamperedFlowResponse, tamperedFlow)
-	if len(repository.identities) != 0 || !strings.Contains(tamperedFlowResponse.Body.String(), "invalid or expired") {
+	if len(repository.identities) != 0 || !strings.Contains(pageText(tamperedFlowResponse.Body.String()), "invalid or expired") {
 		t.Fatalf("tampered flow cookie identities=%d body=%q", len(repository.identities), tamperedFlowResponse.Body.String())
 	}
 
@@ -113,7 +113,7 @@ func TestOAuthRejectsStateTamperingAndAutomaticEmailLinking(t *testing.T) {
 	tampered.AddCookie(cookie)
 	tamperedResponse := httptest.NewRecorder()
 	handler.OAuthCallback(tamperedResponse, tampered)
-	if len(repository.identities) != 0 || !strings.Contains(tamperedResponse.Body.String(), "invalid or expired") {
+	if len(repository.identities) != 0 || !strings.Contains(pageText(tamperedResponse.Body.String()), "invalid or expired") {
 		t.Fatalf("tampered state identities=%d body=%q", len(repository.identities), tamperedResponse.Body.String())
 	}
 
@@ -122,7 +122,7 @@ func TestOAuthRejectsStateTamperingAndAutomaticEmailLinking(t *testing.T) {
 	callback.AddCookie(cookie)
 	response := httptest.NewRecorder()
 	handler.OAuthCallback(response, callback)
-	if len(repository.users) != 1 || len(repository.identities) != 0 || !strings.Contains(response.Body.String(), "already uses this email") {
+	if len(repository.users) != 1 || len(repository.identities) != 0 || !strings.Contains(pageText(response.Body.String()), "already uses this email") {
 		t.Fatalf("email collision users=%d identities=%d body=%q", len(repository.users), len(repository.identities), response.Body.String())
 	}
 }
@@ -137,7 +137,7 @@ func TestOAuthRejectsUnverifiedProviderEmail(t *testing.T) {
 	callback.AddCookie(cookie)
 	response := httptest.NewRecorder()
 	handler.OAuthCallback(response, callback)
-	if len(repository.users) != 0 || len(repository.identities) != 0 || !strings.Contains(response.Body.String(), "verified email address") {
+	if len(repository.users) != 0 || len(repository.identities) != 0 || !strings.Contains(pageText(response.Body.String()), "verified email address") {
 		t.Fatalf("unverified email users=%d identities=%d body=%q", len(repository.users), len(repository.identities), response.Body.String())
 	}
 }
@@ -159,7 +159,7 @@ func TestOAuthLinkIsBoundToLiveJWTAndFinalLoginMethodIsPreserved(t *testing.T) {
 	callback.AddCookie(cookie)
 	response := httptest.NewRecorder()
 	handler.OAuthCallback(response, callback)
-	if len(repository.identities) != 0 || !strings.Contains(response.Body.String(), "login ended") {
+	if len(repository.identities) != 0 || !strings.Contains(pageText(response.Body.String()), "login ended") {
 		t.Fatalf("revoked linking flow identities=%d body=%q", len(repository.identities), response.Body.String())
 	}
 
@@ -169,7 +169,7 @@ func TestOAuthLinkIsBoundToLiveJWTAndFinalLoginMethodIsPreserved(t *testing.T) {
 	callback.AddCookie(cookie)
 	response = httptest.NewRecorder()
 	handler.OAuthCallback(response, callback)
-	if response.Code != http.StatusOK || response.Body.String() != "continue=/account?message=oauth-linked" || len(repository.identities) != 1 {
+	if response.Code != http.StatusOK || continueLocation(response.Body.String()) != "/account?message=oauth-linked" || len(repository.identities) != 1 {
 		t.Fatalf("linked callback status=%d identities=%d body=%q", response.Code, len(repository.identities), response.Body.String())
 	}
 
@@ -193,7 +193,7 @@ func TestOAuthSignupDisabledStillAllowsLinkedIdentity(t *testing.T) {
 	callback.AddCookie(cookie)
 	response := httptest.NewRecorder()
 	handler.OAuthCallback(response, callback)
-	if response.Code != http.StatusOK || response.Body.String() != "continue=/account" {
+	if response.Code != http.StatusOK || continueLocation(response.Body.String()) != "/account" {
 		t.Fatalf("linked OAuth login with signup disabled status=%d body=%q", response.Code, response.Body.String())
 	}
 }
@@ -293,7 +293,7 @@ func TestSettingAFirstPasswordRequiresARecentSignIn(t *testing.T) {
 		t.Fatal(err)
 	}
 	response := setPassword(stale, staleClaims.CSRF)
-	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "sign in again") || responseJWT(response) != "" || user.PasswordHash != "" || user.TokenVersion != 1 {
+	if response.Code != http.StatusOK || !strings.Contains(pageText(response.Body.String()), "sign in again") || responseJWT(response) != "" || user.PasswordHash != "" || user.TokenVersion != 1 {
 		t.Fatalf("a stale session set the first password: status=%d jwt=%v body=%q", response.Code, responseJWT(response) != "", response.Body.String())
 	}
 	if unlink(stale, staleClaims.CSRF); len(repository.identities) != 1 {
@@ -426,7 +426,7 @@ func TestPasswordReverificationIsThrottledPerAccount(t *testing.T) {
 		return response
 	}
 	for attempt := 1; attempt <= 5; attempt++ {
-		if response := change("a wrong password"); response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "Current password is incorrect.") {
+		if response := change("a wrong password"); response.Code != http.StatusOK || !strings.Contains(pageText(response.Body.String()), "Current password is incorrect.") {
 			t.Fatalf("guess %d: status=%d body=%q", attempt, response.Code, response.Body.String())
 		}
 	}
@@ -470,7 +470,7 @@ func TestOAuthLinkChangesRequireAFreshSignIn(t *testing.T) {
 	request = request.WithContext(context.WithValue(request.Context(), identityContextKey{}, stale))
 	response := httptest.NewRecorder()
 	handler.OAuthUnlink(response, request)
-	if len(repository.identities) != 1 || !strings.Contains(response.Body.String(), "sign in again") {
+	if len(repository.identities) != 1 || !strings.Contains(pageText(response.Body.String()), "sign in again") {
 		t.Fatalf("a stale session unlinked a provider: identities=%d body=%q", len(repository.identities), response.Body.String())
 	}
 
@@ -484,7 +484,7 @@ func TestOAuthLinkChangesRequireAFreshSignIn(t *testing.T) {
 			t.Fatal("a stale session was given an OAuth link flow cookie")
 		}
 	}
-	if !strings.Contains(start.Body.String(), "sign in again") {
+	if !strings.Contains(pageText(start.Body.String()), "sign in again") {
 		t.Fatalf("a stale session started a provider link: status=%d body=%q", start.Code, start.Body.String())
 	}
 }
@@ -505,7 +505,7 @@ func TestVerifiedOAuthEmailReclaimsAnUnverifiedSquattedAccount(t *testing.T) {
 	callback.AddCookie(cookie)
 	response := httptest.NewRecorder()
 	handler.OAuthCallback(response, callback)
-	if response.Code != http.StatusOK || response.Body.String() != "continue=/account" {
+	if response.Code != http.StatusOK || continueLocation(response.Body.String()) != "/account" {
 		t.Fatalf("verified owner was not signed in: status=%d location=%q body=%q", response.Code, response.Header().Get("Location"), response.Body.String())
 	}
 	claimed := repository.users[squatted.ID]
@@ -581,7 +581,7 @@ func TestEmailChangeRequiresReauthenticationAndNeverMakesAnAccountClaimable(t *t
 
 	for _, password := range []string{"", "a wrong password"} {
 		response := updateProfile(url.Values{"email": {"attacker@evil.test"}, "display_name": {"Owner"}, "current_password": {password}})
-		if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "current password") || owner.Email != "owner@example.com" || owner.EmailVerifiedAt == nil {
+		if response.Code != http.StatusOK || !strings.Contains(pageText(response.Body.String()), "current password") || owner.Email != "owner@example.com" || owner.EmailVerifiedAt == nil {
 			t.Fatalf("email changed without the current password %q: status=%d email=%q body=%q", password, response.Code, owner.Email, response.Body.String())
 		}
 	}
@@ -620,7 +620,7 @@ func TestPasswordlessEmailChangeRequiresARecentSignIn(t *testing.T) {
 		handler.Authenticate(handler.RequireUser(http.HandlerFunc(handler.UpdateProfile))).ServeHTTP(response, request)
 		return response
 	}
-	if response := change(time.Now().UTC().Add(-time.Hour), "attacker@evil.test"); response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "sign in again") || user.Email != "owner@example.com" {
+	if response := change(time.Now().UTC().Add(-time.Hour), "attacker@evil.test"); response.Code != http.StatusOK || !strings.Contains(pageText(response.Body.String()), "sign in again") || user.Email != "owner@example.com" {
 		t.Fatalf("a stale passwordless session changed the email: status=%d body=%q", response.Code, response.Body.String())
 	}
 	if response := change(time.Now().UTC(), "new@example.com"); response.Code != http.StatusSeeOther || user.Email != "new@example.com" {

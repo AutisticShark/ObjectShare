@@ -1,9 +1,10 @@
 # Frontend
 
-ObjectShare uses Svelte 5, Vite 8, and TypeScript 7. Tabler supplies the underlying
-UI styles; the workspace layout and components live in `src/`. Assets are bundled
-locally, embedded in the Go executable, and served under `/assets/frontend/`.
-There is no Node.js service in production.
+ObjectShare's web interface is a Svelte 5 application built with Vite 8 and
+type-checked with TypeScript 7. Tabler supplies the underlying UI styles; the
+workspace layout and components live in `src/`. The build output in `dist/` is
+embedded in the Go executable and served under `/assets/frontend/`. There is no
+Node.js service in production, and the interface requires JavaScript.
 
 ## Build and check
 
@@ -17,10 +18,11 @@ npm --prefix frontend run build
 go run . -config config.json
 ```
 
-`dev` runs Vite's build watcher. Restart/rebuild Go after a frontend rebuild so the
-executable embeds the new assets. Generated files in `template/frontend/` are not
-committed. Docker and binary-release workflows build them before compiling Go.
-An unbuilt source checkout continues to serve the server-rendered native forms.
+`dev` runs Vite's build watcher. Rebuild Go after a frontend rebuild so the
+executable embeds the new assets. Generated files in `dist/` are not committed
+(only `dist/.gitkeep`, which the Go embed needs). Docker and binary-release
+workflows build them before compiling Go. A binary built without them refuses to
+start the server and prints the build command.
 
 The type checker runs **TypeScript 7.0.2** over both `.ts` files and the generated
 TypeScript representation of every Svelte component. Svelte's current
@@ -32,26 +34,31 @@ Svelte compiler warnings fail the check as well.
 
 ## Server boundary
 
-- Go handlers retain the existing routes, authorization, JWT authentication,
-  CSRF checks, form validation, payment processing, and native-form fallbacks.
-- Each HTML response contains inert, HTML-escaped JSON page data. Database models
-  have explicit public projections: password hashes, JWTs, owner tokens, stored
-  MFA secrets, and verification hashes must never be serialized. Administrator
-  configuration is redacted before serialization. MFA enrollment keys and newly
-  issued recovery codes appear only on their authorized, uncached result page.
-- Svelte owns page markup and layout. HTMX submits enhanced forms; the entry point
-  renders returned page data into Svelte rather than swapping the fallback HTML.
-  Redirects still perform a normal navigation. Plain-text form errors remain
-  visible in the submitting form.
-- Existing encryption, sharing, upload-recovery, CAPTCHA, and dialog controllers
-  are bundled directly from `template/` at build time. They are not copied or
-  evaluated as strings at runtime. Document/window listeners are scoped to each
-  mounted page and removed when that page is replaced.
+- Go handlers own every route, authorization check, JWT authentication, CSRF
+  check, form validation, and payment step.
+- Each HTML response is a minimal shell: document metadata, the bundle, an empty
+  `#objectshare-app` mount point, a `<noscript>` notice, and the page data as
+  inert, HTML-escaped JSON. Nothing else is rendered on the server, so no
+  server markup can appear before the interface starts. Signed-in pages carry the
+  saved theme on `<html>`; guests follow the system theme through CSS.
+- Database models have explicit public projections: password hashes, JWTs, owner
+  tokens, stored MFA secrets, and verification hashes must never be serialized.
+  Administrator configuration is redacted before serialization. MFA enrollment
+  keys and newly issued recovery codes appear only on their authorized, uncached
+  result page.
+- Forms submit through HTMX. The entry point renders returned page data into
+  Svelte; redirects still perform a normal navigation, and plain-text errors
+  appear in the submitting form.
+- The encryption, sharing, upload-recovery, CAPTCHA, and dialog controllers live
+  in `src/controllers/` and are bundled at build time. They are not evaluated as
+  strings at runtime. Document/window listeners are scoped to each mounted page
+  and removed when that page is replaced.
 - HTMX evaluation, response-script execution, and injected indicator styles are
-  disabled. The Content Security Policy does not require `unsafe-inline` or
-  `unsafe-eval`. Build tools may still report HTMX's unused evaluation code.
-- Tabler and HTMX need no third-party CDN or web font. Configured branding images,
-  direct object-storage transfers, and an enabled Turnstile widget retain their
+  disabled. The Content Security Policy allows scripts, styles, and fonts only
+  from the site itself and never needs `unsafe-inline` or `unsafe-eval`. Build
+  tools may still report HTMX's unused evaluation code.
+- No third-party CDN or web font is loaded. Configured branding images, direct
+  object-storage transfers, and an enabled Turnstile widget retain their
   existing explicitly allowed external origins.
 
 When adding a page, add its Svelte view and TypeScript contract, route it in
@@ -76,13 +83,14 @@ npm --prefix frontend run test:e2e
 ```
 
 `OBJECTSHARE_BROWSER_CHANNEL=msedge` selects an installed Microsoft Edge. Otherwise
-Playwright uses its Chromium build. CI provisions a disposable application and
-runs the same suite. Browser traces and screenshots remain in ignored
-`frontend/test-results/`.
+Playwright uses its Chromium build. CI provisions a disposable application with
+`scripts/test-e2e.sh` and runs the same suite. Browser traces and screenshots
+remain in ignored `frontend/test-results/`.
 
-Coverage includes desktop/narrow layouts, light/dark themes, keyboard navigation,
-no-JavaScript forms, form validation, account management, settings activation,
-credit invoices/PDFs, owner-only file operations, browser encryption, and
-key-fragment decryption in a separate browser context. Emulated narrow viewports
-are not a substitute for checking touch behavior, safe areas, and the software
-keyboard on a physical phone.
+Coverage includes desktop/narrow layouts, light/dark themes, the first paint while
+the bundle is still loading, keyboard navigation, the no-JavaScript notice, form
+validation, account management, MFA, settings activation, credit invoices/PDFs,
+owner-only file operations, browser encryption, and key-fragment decryption in a
+separate browser context. Emulated narrow viewports are not a substitute for
+checking touch behavior, safe areas, and the software keyboard on a physical
+phone.

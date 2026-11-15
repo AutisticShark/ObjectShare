@@ -1,5 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
 import { readBootstrap } from '../src/lib/bootstrap.ts';
 import { bytes, date, amount } from '../src/lib/format.ts';
 
@@ -28,4 +29,11 @@ test('displayed timestamps are UTC, independent of the browser time zone', () =>
   assert.match(value, / UTC$/);
   assert.equal(date(null), '—');
   assert.equal(date('Already formatted'), 'Already formatted');
+});
+
+test('the footer keeps the version and the "Made with heart by Cat" credit', async () => {
+  const app = await readFile(new URL('../src/App.svelte', import.meta.url), 'utf8');
+  const footer = app.slice(app.indexOf('<footer'), app.indexOf('</footer>'));
+  assert.match(footer, /ObjectShare \{data\.Version\}/);
+  assert.match(footer, /Made with <span role="img" aria-label="love"><Icon name="heart"[^>]*\/><\/span> by Cat/);
 });

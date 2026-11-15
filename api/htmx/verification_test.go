@@ -6,7 +6,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
-	"os"
 	"regexp"
 	"strings"
 	"testing"
@@ -54,7 +53,7 @@ func TestSignupVerificationDeliveryConfirmationAndReplay(t *testing.T) {
 			h.emailSender = sender
 			page := httptest.NewRecorder()
 			h.SignupPage(page, httptest.NewRequest("GET", "/signup", nil))
-			request := formRequest("/signup", url.Values{"csrf_token": {page.Body.String()}, "email": {"verify@example.com"}, "display_name": {"Verify User"}, "password": {"a sufficiently long password"}, "password_confirm": {"a sufficiently long password"}})
+			request := formRequest("/signup", url.Values{"csrf_token": {csrfOf(t, page.Body.String())}, "email": {"verify@example.com"}, "display_name": {"Verify User"}, "password": {"a sufficiently long password"}, "password_confirm": {"a sufficiently long password"}})
 			request.Host = "attacker.example"
 			request.AddCookie(page.Result().Cookies()[0])
 			response := httptest.NewRecorder()
@@ -86,26 +85,22 @@ func TestSignupVerificationDeliveryConfirmationAndReplay(t *testing.T) {
 			if err := h.sendVerification(t.Context(), user); !errors.Is(err, errVerificationCooldown) || len(sender.messages) != 1 {
 				t.Fatal("immediate retry sent another email", err)
 			}
-			h.templates, err = parseTemplates(os.DirFS("../.."), config.BrandingConfig{})
-			if err != nil {
-				t.Fatal(err)
-			}
 			page = httptest.NewRecorder()
 			h.VerifyEmailPage(page, httptest.NewRequest("GET", link, nil))
 			if user.EmailVerifiedAt != nil || !strings.Contains(page.Header().Get("Cache-Control"), "no-store") {
 				t.Fatal("GET consumed or cached verification")
 			}
-			csrf := regexp.MustCompile(`name="csrf_token" value="([^"]+)"`).FindStringSubmatch(page.Body.String())
-			if len(csrf) != 2 {
-				t.Fatal("verification form missing CSRF")
+			pageName, formData := pageOf(t, page.Body.String())
+			csrf, _ := formData["CSRF"].(string)
+			if pageName != "verify_email" || csrf == "" || formData["UserID"] != user.ID || formData["Token"] != token {
+				t.Fatalf("verification page is missing its CSRF token or link data: %s %v", pageName, formData)
 			}
 			// Complete on a separately initialized replica sharing the JWT key.
 			other := newAuthTestHandler(t, repo, false)
-			other.templates = h.templates
 			for _, validCSRF := range []bool{false, true, true} {
 				values := url.Values{"user": {user.ID}, "token": {token}}
 				if validCSRF {
-					values.Set("csrf_token", csrf[1])
+					values.Set("csrf_token", csrf)
 				}
 				post := formRequest("/verify-email", values)
 				post.AddCookie(page.Result().Cookies()[0])
@@ -120,6 +115,9 @@ func TestSignupVerificationDeliveryConfirmationAndReplay(t *testing.T) {
 				}
 				if result.Code != want {
 					t.Fatalf("confirmation status=%d want=%d body=%s", result.Code, want, result.Body.String())
+				}
+				if want != 403 && result.Header().Get("Content-Type") != "text/html; charset=utf-8" {
+					t.Fatalf("verification result is not served as a page: %q", result.Header().Get("Content-Type"))
 				}
 				if len(result.Result().Cookies()) != 0 {
 					t.Fatal("verification issued authentication cookie")

@@ -39,10 +39,8 @@
     if (!selector) return;
     const html = (xhr.getResponseHeader("Content-Type") || "").toLowerCase().startsWith("text/html");
     const body = String(detail.serverResponse ?? "");
-    if (html && new DOMParser().parseFromString(body, "text/html").querySelector(selector)) {
-      detail.shouldSwap = true;
-      return;
-    }
+    // A page response carries its data for the frontend, which renders it.
+    if (html && new DOMParser().parseFromString(body, "text/html").querySelector("#objectshare-page")) return;
     const message = html ? "" : body.trim().slice(0, 300);
     showMessage(element, message || `The request failed (HTTP ${xhr.status}). Try again.`);
   });

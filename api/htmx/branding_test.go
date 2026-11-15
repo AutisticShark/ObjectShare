@@ -2,9 +2,9 @@ package htmx
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"strings"
 	"testing"
 
@@ -12,7 +12,7 @@ import (
 	"github.com/AutisticShark/ObjectShare/db"
 )
 
-func TestBrandingRendersAcrossFullPagesAndEscapesText(t *testing.T) {
+func TestBrandingReachesEveryPageAndIsEscaped(t *testing.T) {
 	branding := config.BrandingConfig{SiteName: `Cat <script>alert(1)</script>`, Tagline: `Share "safely" <img src=x onerror=alert(1)>`,
 		LogoURL: "https://cdn.example.com/logo.png", HeaderImageURL: "https://cdn.example.com/banner.png",
 		FaviconURL: "https://cdn.example.com/icon.png", FooterMessage: "Welcome\n<script>alert(2)</script>",
@@ -20,10 +20,7 @@ func TestBrandingRendersAcrossFullPagesAndEscapesText(t *testing.T) {
 	if err := branding.Validate(); err != nil {
 		t.Fatal(err)
 	}
-	parsed, err := parseTemplates(os.DirFS("../.."), branding)
-	if err != nil {
-		t.Fatal(err)
-	}
+	handler := &Handler{config: &config.ServiceConfig{Branding: branding}}
 	user := &db.User{ID: "admin", Role: db.RoleAdmin, DisplayName: "Cat"}
 	for _, dark := range []bool{false, true} {
 		user.DarkMode = dark
@@ -45,15 +42,16 @@ func TestBrandingRendersAcrossFullPagesAndEscapesText(t *testing.T) {
 			{"admin_dashboard.html", overviewPageData{User: user}},
 			{"admin_invoices.html", workspacePageData{User: user, Page: 1}},
 			{"upload_results.html", map[string]any{"User": user, "Files": []any{}}},
+			// Guest pages use the same branding without requiring an account.
+			{"index.html", map[string]any{}}, {"file_view.html", map[string]any{}}, {"plans.html", map[string]any{}},
 		} {
-			var output strings.Builder
-			if err := parsed.ExecuteTemplate(&output, test.name, test.data); err != nil {
+			output, err := handler.frontendPage(test.name, test.data)
+			if err != nil {
 				t.Fatalf("%s: %v", test.name, err)
 			}
-			page := output.String()
-			for _, want := range []string{"Cat &lt;script&gt;alert(1)&lt;/script&gt;", `rel="icon" href="https://cdn.example.com/icon.png"`,
-				`src="https://cdn.example.com/logo.png"`, `href="/assets/branding.css?v=`, "Welcome\n&lt;script&gt;alert(2)&lt;/script&gt;",
-				`href="https://example.com/privacy"`, "&lt;b&gt;Privacy&lt;/b&gt;", "Made with", "by Cat", `aria-label="love"`,
+			page := string(output)
+			for _, want := range []string{"<title>Cat &lt;script&gt;alert(1)&lt;/script&gt;</title>", `<link rel="icon" href="https://cdn.example.com/icon.png">`,
+				`<meta name="description" content="Share &#34;safely&#34; &lt;img src=x onerror=alert(1)&gt;">`,
 			} {
 				if !strings.Contains(page, want) {
 					t.Errorf("%s missing %q", test.name, want)
@@ -64,21 +62,32 @@ func TestBrandingRendersAcrossFullPagesAndEscapesText(t *testing.T) {
 					t.Errorf("%s unsafe rendering: %q", test.name, bad)
 				}
 			}
-			if test.name == "index.html" && !strings.Contains(page, `src="https://cdn.example.com/banner.png"`) {
-				t.Fatal("banner missing")
+			shown := bootBranding(t, page)
+			for key, want := range map[string]string{"SiteName": branding.SiteName, "Tagline": branding.Tagline, "LogoURL": branding.LogoURL,
+				"HeaderImageURL": branding.HeaderImageURL, "FaviconURL": branding.FaviconURL, "FooterMessage": branding.FooterMessage,
+				"FooterLinkText": branding.FooterLinkText, "FooterLinkURL": branding.FooterLinkURL} {
+				if shown[key] != want {
+					t.Errorf("%s: branding %s = %q, want %q", test.name, key, shown[key], want)
+				}
 			}
 		}
 	}
-	// Guest pages use the same branding without requiring an account.
-	for _, name := range []string{"index.html", "file_view.html", "plans.html"} {
-		var output strings.Builder
-		if err := parsed.ExecuteTemplate(&output, name, map[string]any{}); err != nil {
-			t.Fatal(err)
-		}
-		if !strings.Contains(output.String(), branding.LogoURL) {
-			t.Errorf("guest %s missing logo", name)
-		}
+}
+
+// bootBranding decodes the branding a rendered page hands to the frontend.
+func bootBranding(t *testing.T, body string) map[string]any {
+	t.Helper()
+	const open = `<script id="objectshare-page" type="application/json">`
+	start := strings.Index(body, open)
+	end := strings.LastIndex(body, "</script>")
+	if start < 0 || end < start {
+		t.Fatalf("response carries no page data: %.300s", body)
 	}
+	var boot struct{ Branding map[string]any }
+	if err := json.Unmarshal([]byte(body[start+len(open):end]), &boot); err != nil {
+		t.Fatalf("decode page data: %v", err)
+	}
+	return boot.Branding
 }
 
 func TestBrandingAdminRejectsInvalidSaveAndAllowsClearing(t *testing.T) {
@@ -92,10 +101,6 @@ func TestBrandingAdminRejectsInvalidSaveAndAllowsClearing(t *testing.T) {
 	}
 	cfg.Branding = config.BrandingConfig{SiteName: "Configured site", LogoURL: "/branding/logo.png", FooterMessage: "Hello"}
 	handler.config, handler.settings, handler.settingsKey = cfg, repository, cfg.SettingsKey
-	handler.templates, err = parseTemplates(os.DirFS("../.."), cfg.Branding)
-	if err != nil {
-		t.Fatal(err)
-	}
 	runtime := config.RuntimeFromService(cfg)
 	sealed, err := config.SealRuntime(runtime, cfg.SettingsKey)
 	if err != nil {

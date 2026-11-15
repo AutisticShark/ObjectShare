@@ -2,7 +2,7 @@ const {test} = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const vm = require('node:vm');
-const source = fs.readFileSync(require('node:path').join(__dirname, '../template/htmx-errors.js'), 'utf8');
+const source = fs.readFileSync(require('node:path').join(__dirname, '../frontend/src/controllers/htmx-errors.js'), 'utf8');
 
 function setup() {
   const listeners = {};
@@ -36,7 +36,7 @@ function setup() {
     },
   };
   class DOMParser {
-    parseFromString(html) { return {querySelector: selector => selector === '.page' && html.includes('class="page') ? {} : null}; }
+    parseFromString(html) { return {querySelector: selector => selector === '#objectshare-page' && html.includes('id="objectshare-page"') ? {} : null}; }
   }
   const context = {document, DOMParser};
   vm.runInNewContext(source, context);
@@ -50,12 +50,11 @@ function setup() {
   return {listeners, body, element, swap};
 }
 
-test('an error page that contains the page target is swapped in', () => {
+test('an error page carrying page data is left for the frontend to render', () => {
   const {body, element, swap} = setup();
-  const detail = swap(element('.page'), 403, 'text/html; charset=utf-8', '<div class="page page-center">The setup token is incorrect.</div>');
-  assert.equal(detail.shouldSwap, true);
+  const detail = swap(element('.page'), 403, 'text/html; charset=utf-8', '<div id="objectshare-app"></div><script id="objectshare-page" type="application/json">{}</script>');
   assert.equal(detail.isError, true, 'responseError listeners must still run');
-  assert.equal(body.children.length, 0);
+  assert.equal(body.children.length, 0, 'no generic failure message over a rendered error page');
 });
 
 test('a plain-text rejection is shown inside the form instead of being dropped', () => {
@@ -73,7 +72,7 @@ test('a plain-text rejection is shown inside the form instead of being dropped',
   assert.equal(body.children.length, 0, 'a new submission clears the previous error');
 });
 
-test('an HTML response without the page target is not swapped over the page', () => {
+test('an HTML response without page data is not swapped over the page', () => {
   const {body, element, swap} = setup();
   const detail = swap(element('.page'), 502, 'text/html', '<html><body>Bad gateway</body></html>');
   assert.equal(detail.shouldSwap, false);

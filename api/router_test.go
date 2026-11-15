@@ -55,7 +55,7 @@ func TestHeadIsServedForGetRoutes(t *testing.T) {
 	router, _ := newTestRouter(t)
 	server := httptest.NewServer(router)
 	defer server.Close()
-	for _, path := range []string{"/health/live", "/health/ready", "/assets/theme.js", "/assets/branding.css", "/login"} {
+	for _, path := range []string{"/health/live", "/health/ready", "/login"} {
 		get, err := http.Get(server.URL + path)
 		if err != nil {
 			t.Fatal(err)

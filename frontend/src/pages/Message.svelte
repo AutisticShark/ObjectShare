@@ -20,10 +20,6 @@
   const siteName = $derived(data.Branding?.SiteName || 'ObjectShare');
 </script>
 
-<svelte:head>
-  {#if page === 'oauth_continue'}<meta http-equiv="refresh" content={`0;url=${oauthContinue.Location}`}>{/if}
-</svelte:head>
-
 {#if page === 'verify_email'}
   <section class="panel auth-panel">
     {#if verify.Success}

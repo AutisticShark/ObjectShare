@@ -10,7 +10,7 @@ vendor
 frontend/.check
 frontend/test-results
 frontend/playwright-report
-template/frontend
+frontend/dist
 config.json
 # Compose and local environment secrets must never enter a build context.
 **/.env

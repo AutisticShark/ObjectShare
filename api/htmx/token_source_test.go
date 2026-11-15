@@ -20,7 +20,7 @@ func TestSetupAndPreAuthCSRFTokensAreNotReadFromTheQueryString(t *testing.T) {
 	handler.config.Auth.SetupToken = "a-sufficiently-long-setup-token"
 	page := httptest.NewRecorder()
 	handler.SetupPage(page, httptest.NewRequest(http.MethodGet, "/setup", nil))
-	csrf, cookie := strings.TrimSpace(page.Body.String()), page.Result().Cookies()[0]
+	csrf, cookie := csrfOf(t, page.Body.String()), page.Result().Cookies()[0]
 	registration := url.Values{"display_name": {"Admin"}, "email": {"admin@example.com"}, "password": {"a sufficiently long password"}, "password_confirm": {"a sufficiently long password"}}
 	submit := func(query, body url.Values) *httptest.ResponseRecorder {
 		values := url.Values{}

@@ -121,7 +121,7 @@ func TestConfigurationReloadActivatesRevisionsWithoutRestart(t *testing.T) {
 	runtime := config.RuntimeFromService(base)
 	repository.store(t, base, runtime)
 
-	reloader := newConfigReloader(t.Context(), base, repository, templateFiles, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	reloader := newConfigReloader(t.Context(), base, repository, frontendFiles, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	defer reloader.Stop()
 	if err := reloader.Reload(t.Context()); err != nil {
 		t.Fatal(err)
@@ -190,7 +190,7 @@ func TestConfigurationWatchActivatesRevisionsSavedByAnotherReplica(t *testing.T)
 
 	watchContext, stopWatch := context.WithCancel(t.Context())
 	defer stopWatch()
-	reloader := newConfigReloader(t.Context(), base, repository, templateFiles, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	reloader := newConfigReloader(t.Context(), base, repository, frontendFiles, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	defer reloader.Stop()
 	if err := reloader.Reload(t.Context()); err != nil {
 		t.Fatal(err)
@@ -232,7 +232,7 @@ func TestStopAndReloadCannotRaceOnTheWorkerGroup(t *testing.T) {
 	repository := &memoryApplicationRepository{}
 	runtime := config.RuntimeFromService(base)
 	repository.store(t, base, runtime)
-	reloader := newConfigReloader(t.Context(), base, repository, templateFiles, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	reloader := newConfigReloader(t.Context(), base, repository, frontendFiles, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	if err := reloader.Reload(t.Context()); err != nil {
 		t.Fatal(err)
 	}
@@ -304,7 +304,7 @@ func TestWatchLogsEachDistinctActivationFailureOnce(t *testing.T) {
 	runtime := config.RuntimeFromService(base)
 	repository.store(t, base, runtime)
 	logs := &syncBuffer{}
-	reloader := newConfigReloader(t.Context(), base, repository, templateFiles, slog.New(slog.NewTextHandler(logs, nil)))
+	reloader := newConfigReloader(t.Context(), base, repository, frontendFiles, slog.New(slog.NewTextHandler(logs, nil)))
 	defer reloader.Stop()
 	if err := reloader.Reload(t.Context()); err != nil {
 		t.Fatal(err)

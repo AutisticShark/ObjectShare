@@ -134,7 +134,7 @@ func TestCaptchaRejectsLoginAndSignupBeforeAccountWork(t *testing.T) {
 	} {
 		pageResponse := httptest.NewRecorder()
 		test.page(pageResponse, httptest.NewRequest(http.MethodGet, test.path, nil))
-		test.values.Set("csrf_token", strings.TrimSpace(pageResponse.Body.String()))
+		test.values.Set("csrf_token", csrfOf(t, pageResponse.Body.String()))
 		request := formRequest(test.path, test.values)
 		request.AddCookie(pageResponse.Result().Cookies()[0])
 		response := httptest.NewRecorder()

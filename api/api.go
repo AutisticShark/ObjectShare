@@ -26,15 +26,6 @@ func Router(handler *htmx.Handler, logger *slog.Logger) http.Handler {
 	router.Use(handler.Authenticate)
 
 	router.Get("/assets/frontend/*", handler.FrontendAsset)
-	router.Get("/assets/branding.css", handler.BrandingStyles)
-	router.Get("/assets/theme.js", handler.ThemeScript)
-	router.Get("/assets/upload.js", handler.UploadScript)
-	router.Get("/assets/client-encryption.js", handler.ClientEncryptionScript)
-	router.Get("/assets/sharing.js", handler.SharingScript)
-	router.Get("/assets/captcha.js", handler.CaptchaScript)
-	router.Get("/assets/admin-users.js", handler.AdminUsersScript)
-	router.Get("/assets/admin-users.css", handler.AdminUsersStyles)
-	router.Get("/assets/htmx-errors.js", handler.HTMXErrorsScript)
 	router.Get("/health/live", handler.Live)
 	router.Get("/health/ready", handler.Ready)
 	router.Get("/setup", handler.SetupPage)
@@ -208,14 +199,6 @@ func accessLog(logger *slog.Logger) func(http.Handler) http.Handler {
 	}
 }
 
-// The CDN assets pages load, scoped to their package versions so the policy
-// does not trust every package jsDelivr serves. Keep these in step with
-// template/partials.html; TestCSPCoversEveryCDNAsset checks that they are.
-const (
-	cdnScriptSource = "https://cdn.jsdelivr.net/npm/htmx.org@2.0.11/"
-	cdnStyleSource  = "https://cdn.jsdelivr.net/npm/@tabler/core@1.7.3/"
-)
-
 func securityHeaders(captchaEnabled bool, imageSources []string, connectSources ...string) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
@@ -227,14 +210,14 @@ func securityHeaders(captchaEnabled bool, imageSources []string, connectSources 
 			if len(connectSources) > 0 {
 				connectSource += " " + strings.Join(connectSources, " ")
 			}
-			scriptSource := "'self' " + cdnScriptSource
+			scriptSource := "'self'"
 			frameSource := "'none'"
 			if captchaEnabled {
 				scriptSource += " https://challenges.cloudflare.com"
 				connectSource += " https://challenges.cloudflare.com"
 				frameSource = "https://challenges.cloudflare.com"
 			}
-			writer.Header().Set("Content-Security-Policy", "default-src 'none'; script-src "+scriptSource+"; connect-src "+connectSource+"; frame-src "+frameSource+"; style-src 'self' "+cdnStyleSource+"; font-src "+cdnStyleSource+"; img-src "+imageSource+"; form-action 'self'; base-uri 'none'; frame-ancestors 'none'")
+			writer.Header().Set("Content-Security-Policy", "default-src 'none'; script-src "+scriptSource+"; connect-src "+connectSource+"; frame-src "+frameSource+"; style-src 'self'; font-src 'self'; img-src "+imageSource+"; form-action 'self'; base-uri 'none'; frame-ancestors 'none'")
 			writer.Header().Set("Permissions-Policy", "camera=(), geolocation=(), microphone=()")
 			writer.Header().Set("Referrer-Policy", "same-origin")
 			writer.Header().Set("X-Content-Type-Options", "nosniff")

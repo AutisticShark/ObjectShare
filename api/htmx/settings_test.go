@@ -10,7 +10,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
-	"os"
 	"strings"
 	"testing"
 	"time"
@@ -126,7 +125,7 @@ func TestAdminConfigurationDashboardKeepsSecretsWriteOnlyAndSavesRevision(t *tes
 	repository.setting = &db.ApplicationSetting{Key: "runtime_config", Value: sealed, UpdatedBy: "bootstrap import", CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}
 	admin := &db.User{ID: "admin", Email: "admin@example.com", DisplayName: "Admin", Role: db.RoleAdmin, Active: true, TokenVersion: 1}
 	repository.users[admin.ID] = admin
-	handler, err := New(cfg, repository, &memoryStorage{objects: make(map[string][]byte)}, os.DirFS("../.."), slog.New(slog.NewTextHandler(io.Discard, nil)))
+	handler, err := New(cfg, repository, &memoryStorage{objects: make(map[string][]byte)}, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -136,8 +135,10 @@ func TestAdminConfigurationDashboardKeepsSecretsWriteOnlyAndSavesRevision(t *tes
 	getRequest = getRequest.WithContext(context.WithValue(getRequest.Context(), identityContextKey{}, &identity{User: admin, Claims: claims, Transport: transportCookie}))
 	getResponse := httptest.NewRecorder()
 	handler.AdminSettings(getResponse, getRequest)
-	if getResponse.Code != http.StatusOK || !strings.Contains(getResponse.Body.String(), "Configuration dashboard") || !strings.Contains(getResponse.Body.String(), "configured") {
-		t.Fatalf("dashboard response = %d, %q", getResponse.Code, getResponse.Body.String())
+	dashboard, dashboardData := pageOf(t, getResponse.Body.String())
+	secrets, _ := dashboardData["Secrets"].(map[string]any)
+	if getResponse.Code != http.StatusOK || dashboard != "admin_settings" || secrets["Captcha"] != true || secrets["Discord"] != true || secrets["PayPalSecret"] != true {
+		t.Fatalf("dashboard response = %d, %q, %v", getResponse.Code, dashboard, secrets)
 	}
 	if strings.Contains(getResponse.Body.String(), runtime.Captcha.SecretKey) {
 		t.Fatal("dashboard rendered a stored secret")
@@ -221,7 +222,7 @@ func TestAdminConfigurationDashboardKeepsSecretsWriteOnlyAndSavesRevision(t *tes
 	staleRequest = staleRequest.WithContext(context.WithValue(staleRequest.Context(), identityContextKey{}, &identity{User: admin, Claims: claims, Transport: transportCookie}))
 	staleResponse := httptest.NewRecorder()
 	handler.AdminSaveSettings(staleResponse, staleRequest)
-	if staleResponse.Code != http.StatusOK || !strings.Contains(staleResponse.Body.String(), "changed in another administrator session") {
+	if staleResponse.Code != http.StatusOK || !strings.Contains(pageText(staleResponse.Body.String()), "changed in another administrator session") {
 		t.Fatalf("stale save response = %d, %q", staleResponse.Code, staleResponse.Body.String())
 	}
 	stillSaved, err := config.OpenRuntime(repository.setting.Value, cfg.SettingsKey)
@@ -279,7 +280,7 @@ func TestSavedConfigurationActivatesInProcessWithoutRestart(t *testing.T) {
 	repository.setting = &db.ApplicationSetting{Key: "runtime_config", Value: sealed, UpdatedBy: "bootstrap import", CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}
 	admin := &db.User{ID: "admin", Email: "admin@example.com", DisplayName: "Admin", Role: db.RoleAdmin, Active: true, TokenVersion: 1}
 	repository.users[admin.ID] = admin
-	handler, err := New(cfg, repository, &memoryStorage{objects: make(map[string][]byte)}, os.DirFS("../.."), slog.New(slog.NewTextHandler(io.Discard, nil)))
+	handler, err := New(cfg, repository, &memoryStorage{objects: make(map[string][]byte)}, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -332,11 +333,11 @@ func TestActivatedHandlerInheritsProcessLocalState(t *testing.T) {
 	}
 	cfg.RateLimit.Enabled = false
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	previous, err := New(cfg, newAuthMemoryRepository(), &memoryStorage{objects: make(map[string][]byte)}, os.DirFS("../.."), logger)
+	previous, err := New(cfg, newAuthMemoryRepository(), &memoryStorage{objects: make(map[string][]byte)}, nil, logger)
 	if err != nil {
 		t.Fatal(err)
 	}
-	activated, err := New(cfg, newAuthMemoryRepository(), &memoryStorage{objects: make(map[string][]byte)}, os.DirFS("../.."), logger)
+	activated, err := New(cfg, newAuthMemoryRepository(), &memoryStorage{objects: make(map[string][]byte)}, nil, logger)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -349,7 +350,7 @@ func TestActivatedHandlerInheritsProcessLocalState(t *testing.T) {
 	otherAuth := *cfg.Auth
 	otherAuth.JWTSecret = "a-different-jwt-secret-with-at-least-32-bytes"
 	otherConfig.Auth = &otherAuth
-	other, err := New(&otherConfig, newAuthMemoryRepository(), &memoryStorage{objects: make(map[string][]byte)}, os.DirFS("../.."), logger)
+	other, err := New(&otherConfig, newAuthMemoryRepository(), &memoryStorage{objects: make(map[string][]byte)}, nil, logger)
 	if err != nil {
 		t.Fatal(err)
 	}

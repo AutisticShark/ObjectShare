@@ -8,7 +8,6 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"os/exec"
 	"strings"
 	"testing"
@@ -18,42 +17,6 @@ import (
 	"github.com/AutisticShark/ObjectShare/db"
 	"github.com/google/uuid"
 )
-
-func TestUploadEncryptionChoiceAndNativeFallback(t *testing.T) {
-	parsed, err := parseTemplates(os.DirFS("../.."), config.BrandingConfig{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, signedIn := range []bool{false, true} {
-		data := map[string]any{"CanUpload": true, "MaxFileSize": 1, "MaxFiles": 10}
-		if signedIn {
-			data["User"] = &db.User{ID: "user", Active: true}
-		}
-		var output bytes.Buffer
-		if err := parsed.ExecuteTemplate(&output, "index.html", data); err != nil {
-			t.Fatal(err)
-		}
-		page := output.String()
-		if strings.Contains(page, `id="encrypt-files"`) != signedIn {
-			t.Fatal("encryption choice must be available only to signed-in users")
-		}
-		if signedIn {
-			for _, id := range []string{"encrypt-files", "encryption-passphrase", "upload-button"} {
-				_, tag, found := strings.Cut(page, `id="`+id+`"`)
-				if !found {
-					t.Fatalf("missing %s", id)
-				}
-				tag, _, _ = strings.Cut(tag, ">")
-				if strings.Contains(tag, " checked") || strings.Contains(tag, " required") || strings.Contains(tag, " disabled") != (id != "upload-button") {
-					t.Fatalf("unsafe native form defaults for %s: %s", id, tag)
-				}
-				if id == "encryption-passphrase" && strings.Contains(tag, "name=") {
-					t.Fatal("passphrase must never be submitted as a form field")
-				}
-			}
-		}
-	}
-}
 
 type clientKeyMemoryRepository struct {
 	*authMemoryRepository
@@ -264,7 +227,7 @@ func TestBrowserClientCryptography(t *testing.T) {
 	if err != nil {
 		t.Skip("Node is required for browser Web Crypto tests")
 	}
-	if output, err := exec.CommandContext(t.Context(), node, "--test", "../../tests/client-encryption.test.cjs", "../../tests/upload-selection.test.cjs", "../../tests/sharing.test.cjs", "../../tests/theme.test.cjs", "../../tests/admin-users.test.cjs", "../../tests/htmx-errors.test.cjs").CombinedOutput(); err != nil {
+	if output, err := exec.CommandContext(t.Context(), node, "--test", "../../tests/client-encryption.test.cjs", "../../tests/upload-selection.test.cjs", "../../tests/sharing.test.cjs", "../../tests/admin-users.test.cjs", "../../tests/htmx-errors.test.cjs").CombinedOutput(); err != nil {
 		t.Fatalf("Web Crypto tests: %v\n%s", err, output)
 	}
 }

@@ -10,11 +10,9 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"strings"
 	"sync"
 	"testing"
-	"testing/fstest"
 	"time"
 
 	"github.com/AutisticShark/ObjectShare/config"
@@ -474,24 +472,6 @@ func TestSafeFileName(t *testing.T) {
 	}
 }
 
-func TestTemplatesKeepTablerHtmxAndAuthorCredit(t *testing.T) {
-	parsed, err := parseTemplates(os.DirFS("../.."), config.BrandingConfig{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, name := range []string{"index.html", "file_view.html"} {
-		var output strings.Builder
-		if err := parsed.ExecuteTemplate(&output, name, map[string]any{"Version": "test"}); err != nil {
-			t.Fatal(err)
-		}
-		for _, expected := range []string{"@tabler/core@1.7.3", "htmx.org@2.0.11", "Made with", "by Cat"} {
-			if !strings.Contains(output.String(), expected) {
-				t.Errorf("%s no longer contains %q", name, expected)
-			}
-		}
-	}
-}
-
 func TestIndexReflectsGuestUploadPolicyWithoutGlobalQuota(t *testing.T) {
 	repository := &memoryRepository{files: make(map[string]*db.FileList)}
 	storage := &memoryStorage{objects: make(map[string][]byte)}
@@ -499,14 +479,15 @@ func TestIndexReflectsGuestUploadPolicyWithoutGlobalQuota(t *testing.T) {
 		MaxFileSize: 1, StorageService: "filesystem", Upload: &config.UploadConfig{GuestEnabled: false},
 		Auth: &config.AuthConfig{SignupEnabled: true}, Encryption: &config.EncryptionConfig{},
 	}
-	handler, err := New(cfg, repository, storage, os.DirFS("../.."), slog.New(slog.NewTextHandler(io.Discard, nil)))
+	handler, err := New(cfg, repository, storage, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	if err != nil {
 		t.Fatal(err)
 	}
 	disabled := httptest.NewRecorder()
 	handler.Index(disabled, httptest.NewRequest(http.MethodGet, "/", nil))
-	if disabled.Code != http.StatusOK || !strings.Contains(disabled.Body.String(), "Guest uploads are disabled") || strings.Contains(disabled.Body.String(), `id="upload-form"`) {
-		t.Fatalf("disabled guest UI did not match policy: status=%d", disabled.Code)
+	disabledPage, disabledData := pageOf(t, disabled.Body.String())
+	if disabled.Code != http.StatusOK || disabledPage != "index" || disabledData["CanUpload"] != false || disabledData["SignupEnabled"] != true {
+		t.Fatalf("disabled guest page data did not match policy: status=%d %v", disabled.Code, disabledData)
 	}
 
 	cfg.Upload = &config.UploadConfig{GuestEnabled: true}
@@ -514,8 +495,9 @@ func TestIndexReflectsGuestUploadPolicyWithoutGlobalQuota(t *testing.T) {
 	enabled := httptest.NewRecorder()
 	handler.Index(enabled, httptest.NewRequest(http.MethodGet, "/", nil))
 	page := enabled.Body.String()
-	if enabled.Code != http.StatusOK || !strings.Contains(page, `id="upload-form"`) || strings.Contains(page, "storage quota") || strings.Contains(page, "Server storage:") {
-		t.Fatalf("enabled guest UI incorrectly showed a storage quota: status=%d", enabled.Code)
+	enabledPage, enabledData := pageOf(t, page)
+	if enabled.Code != http.StatusOK || enabledPage != "index" || enabledData["CanUpload"] != true || strings.Contains(page, "storage quota") || strings.Contains(page, "Server storage:") {
+		t.Fatalf("enabled guest page data incorrectly showed a storage quota: status=%d %v", enabled.Code, enabledData)
 	}
 }
 
@@ -541,18 +523,9 @@ func TestUploadRetentionNoticeExemptsPaidAccounts(t *testing.T) {
 	}
 }
 
-func TestAllProductionTemplatesParse(t *testing.T) {
-	parsed, err := parseTemplates(os.DirFS("../.."), config.BrandingConfig{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, name := range []string{"index.html", "file_view.html", "setup.html", "login.html", "signup.html", "oauth_error.html", "account.html", "admin_users.html"} {
-		if parsed.Lookup(name) == nil {
-			t.Errorf("template %q is missing", name)
-		}
-	}
+func TestEveryPageContextProjectsIntoItsPage(t *testing.T) {
 	user := &db.User{ID: "user", Email: "user@example.com", DisplayName: "User", Role: db.RoleAdmin, Active: true}
-	renders := []struct {
+	for _, render := range []struct {
 		name string
 		data any
 	}{
@@ -564,210 +537,99 @@ func TestAllProductionTemplatesParse(t *testing.T) {
 		{"oauth_error.html", oauthErrorData{Version: "test", Error: "OAuth error", Back: "/login", BackLabel: "Back to login"}},
 		{"account.html", accountPageData{Version: "test", CSRF: "csrf", User: user, OAuthProviders: []oauthAccountProvider{{Key: "discord", Label: "Discord", Configured: true, Linked: true}}}},
 		{"admin_users.html", adminPageData{Version: "test", CSRF: "csrf", User: user}},
-	}
-	for _, render := range renders {
-		if err := parsed.ExecuteTemplate(io.Discard, render.name, render.data); err != nil {
-			t.Errorf("render %s: %v", render.name, err)
+	} {
+		page, data := renderPage(t, render.name, render.data)
+		if page != strings.TrimSuffix(render.name, ".html") || data["Version"] != "test" {
+			t.Errorf("%s rendered page %q with data %v", render.name, page, data)
 		}
 	}
-	// The OAuth continue page must move on by itself to the same-site page,
-	// and the template must never turn a destination into a script URL.
+	login := authPageData{Version: "test", CSRF: "csrf", OAuthProviders: []oauthButton{{Key: "discord", Label: "Discord", URL: "/oauth/discord/start"}}}
+	_, data := renderPage(t, "login.html", login)
+	if providers, _ := data["OAuthProviders"].([]any); len(providers) != 1 || providers[0].(map[string]any)["URL"] != "/oauth/discord/start" {
+		t.Errorf("login providers = %v", data["OAuthProviders"])
+	}
+	// The OAuth continue page must move on by itself to the same-site page, and
+	// must never turn a destination into a script URL.
 	for location, want := range map[string]string{
-		"/account?message=oauth-linked": `content="0;url=/account?message=oauth-linked"`,
-		"javascript:alert(1)":           `content="0;url=#ZgotmplZ"`,
+		"/account?message=oauth-linked": `<meta http-equiv="refresh" content="0;url=/account?message=oauth-linked">`,
+		"javascript:alert(1)":           "",
 	} {
-		var page strings.Builder
-		if err := parsed.ExecuteTemplate(&page, "oauth_continue.html", struct{ Version, Location string }{"test", location}); err != nil {
+		output, err := (&Handler{}).frontendPage("oauth_continue.html", struct{ Version, Location string }{"test", location})
+		if err != nil {
 			t.Fatalf("render oauth_continue.html: %v", err)
 		}
-		if !strings.Contains(page.String(), want) || !strings.Contains(page.String(), "by Cat") {
-			t.Errorf("oauth_continue.html for %q does not contain %q and the footer credit", location, want)
+		if want != "" && !strings.Contains(string(output), want) {
+			t.Errorf("oauth_continue.html for %q does not contain %q", location, want)
+		}
+		if want == "" && strings.Contains(string(output), "http-equiv") {
+			t.Errorf("oauth_continue.html for %q redirects automatically", location)
 		}
 	}
-	for _, name := range []string{"account.html", "admin_users.html"} {
-		contents, err := os.ReadFile("../../template/" + name)
-		if err != nil {
-			t.Fatal(err)
-		}
-		page := string(contents)
-		for _, expected := range []string{"hx-", "{{template"} {
-			if !strings.Contains(page, expected) {
-				t.Errorf("%s no longer contains %q", name, expected)
+}
+
+func TestAuthenticatedPagesCarryTheSavedThemeAndGuestPagesFollowTheSystem(t *testing.T) {
+	for _, dark := range []bool{true, false} {
+		user := &db.User{ID: "user", Email: "user@example.com", DisplayName: "User", Role: db.RoleAdmin, Active: true, DarkMode: dark}
+		theme := map[bool]string{true: "dark", false: "light"}[dark]
+		for _, render := range []struct {
+			name string
+			data any
+		}{
+			{"index.html", map[string]any{"Version": "test", "MaxFileSize": int64(1), "User": user, "CSRF": "csrf"}},
+			{"file_view.html", map[string]any{"Version": "test", "FileName": "file.txt", "User": user, "CSRF": "csrf"}},
+			{"account.html", accountPageData{Version: "test", CSRF: "csrf", User: user}},
+			{"admin_users.html", adminPageData{Version: "test", CSRF: "csrf", User: user}},
+			{"oauth_error.html", oauthErrorData{Version: "test", Error: "OAuth error", Back: "/account", BackLabel: "Back to My account", User: user}},
+		} {
+			output, err := (&Handler{}).frontendPage(render.name, render.data)
+			if err != nil {
+				t.Fatalf("render %s: %v", render.name, err)
+			}
+			if !strings.Contains(string(output), `<html lang="en" data-bs-theme="`+theme+`">`) {
+				t.Errorf("%s did not apply the account %s theme", render.name, theme)
+			}
+			_, data := pageOf(t, string(output))
+			if saved, _ := data["User"].(map[string]any); saved["DarkMode"] != dark {
+				t.Errorf("%s does not carry the saved theme preference: %v", render.name, data["User"])
+			}
+			// The theme toggle posts this token.
+			if render.name != "oauth_error.html" && data["CSRF"] != "csrf" {
+				t.Errorf("%s carries no CSRF token for the theme toggle", render.name)
 			}
 		}
 	}
-	partial, err := os.ReadFile("../../template/partials.html")
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, expected := range []string{"@tabler/core@1.7.3", "htmx.org@2.0.11", "Made with", "by Cat"} {
-		if !strings.Contains(string(partial), expected) {
-			t.Errorf("partials.html no longer contains %q", expected)
-		}
-	}
-}
 
-func TestAuthenticatedTemplatesUsePersistedDarkTheme(t *testing.T) {
-	parsed, err := parseTemplates(os.DirFS("../.."), config.BrandingConfig{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	user := &db.User{ID: "user", Email: "user@example.com", DisplayName: "User", Role: db.RoleAdmin, Active: true, DarkMode: true}
-	renders := []struct {
-		name string
-		data any
-	}{
-		{"index.html", map[string]any{"Version": "test", "MaxFileSize": int64(1), "User": user, "CSRF": "csrf"}},
-		{"file_view.html", map[string]any{"Version": "test", "FileName": "file.txt", "User": user, "CSRF": "csrf"}},
-		{"account.html", accountPageData{Version: "test", CSRF: "csrf", User: user}},
-		{"admin_users.html", adminPageData{Version: "test", CSRF: "csrf", User: user}},
-		{"oauth_error.html", oauthErrorData{Version: "test", Error: "OAuth error", Back: "/account", BackLabel: "Back to My account", User: user}},
-	}
-	for _, render := range renders {
-		var output bytes.Buffer
-		if err := parsed.ExecuteTemplate(&output, render.name, render.data); err != nil {
-			t.Fatalf("render %s: %v", render.name, err)
-		}
-		page := output.String()
-		if !strings.Contains(page, `<html lang="en" data-bs-theme="dark">`) {
-			t.Errorf("%s did not apply the account dark theme", render.name)
-		}
-		if render.name != "oauth_error.html" && (!strings.Contains(page, `action="/account/theme"`) || !strings.Contains(page, `name="csrf_token" value="csrf"`)) {
-			t.Errorf("%s is missing the CSRF-protected theme toggle", render.name)
-		}
-		if render.name != "oauth_error.html" && (!strings.Contains(page, `class="border-0 bg-transparent text-secondary p-1 d-inline-flex align-items-center justify-content-center rounded"`) || !strings.Contains(page, `aria-label="Switch to light theme"`)) {
-			t.Errorf("%s is missing the compact top-right theme icon", render.name)
-		}
-		if strings.Contains(page, `github.com/AutisticShark/ObjectShare`) || strings.Contains(page, ">Light mode</button>") || strings.Contains(page, ">Dark mode</button>") || strings.Contains(page, "btn-ghost-secondary") {
-			t.Errorf("%s still renders a removed header control", render.name)
-		}
-	}
-
-	account := renders[2]
-	var output bytes.Buffer
-	if err := parsed.ExecuteTemplate(&output, account.name, account.data); err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(output.String(), `<option value="dark" selected>Dark</option>`) || !strings.Contains(output.String(), "follows you across browsers") {
-		t.Fatal("account appearance control does not reflect the saved dark preference")
-	}
-
-	captcha, err := os.ReadFile("../../template/captcha.js")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(captcha), `document.documentElement.dataset.bsTheme || "auto"`) {
-		t.Fatal("CAPTCHA widgets do not follow the rendered account theme")
-	}
-}
-
-func TestAdministratorUserTemplateUsesStorageDisplayAndModalActions(t *testing.T) {
-	parsed, err := parseTemplates(os.DirFS("../.."), config.BrandingConfig{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	user := &db.User{ID: "11111111-1111-4111-8111-111111111111", Email: "admin@example.com", DisplayName: "Admin", Role: db.RoleAdmin, Active: true}
-	row := adminUserRow{ID: "22222222-2222-4222-8222-222222222222", Email: "user@example.com", DisplayName: "User", Role: db.RoleUser, Active: true, CreatedAt: "2026-09-03", LastLogin: "Never", StorageUsed: "1.5 MiB"}
-	var output bytes.Buffer
-	if err := parsed.ExecuteTemplate(&output, "admin_users.html", adminPageData{Version: "test", CSRF: "csrf", Error: "Passwords do not match.", TotalStorageUsed: "1.5 MiB", User: user, Users: []adminUserRow{row}}); err != nil {
-		t.Fatal(err)
-	}
-	page := output.String()
-	for _, expected := range []string{
-		"Activity and storage",
-		"Total user storage: <strong class=\"text-reset\">1.5 MiB</strong>",
-		"Storage used:</span> <strong>1.5 MiB</strong>",
-		`data-user-dialog-open="user-actions-22222222-2222-4222-8222-222222222222"`,
-		`id="user-actions-22222222-2222-4222-8222-222222222222"`,
-		`<dialog class="admin-user-dialog"`,
-		`data-user-dialog-close`,
-		`data-user-dialog-form="user-actions-22222222-2222-4222-8222-222222222222"`,
-		`src="/assets/admin-users.js?v=`,
-		`href="/assets/admin-users.css?v=`,
-		`autocomplete="new-password"`,
-		`hx-target=".page" hx-select=".page" hx-swap="outerHTML"`,
-		`aria-live="polite"`,
-		"Reset password and invalidate JWTs",
-	} {
-		if !strings.Contains(page, expected) {
-			t.Errorf("administrator user template is missing %q", expected)
-		}
-	}
-	for _, removed := range []string{`<details class="dropdown">`, `dropdown-menu dropdown-menu-end show`, `.admin-user-modal:target`} {
-		if strings.Contains(page, removed) {
-			t.Errorf("administrator user template still contains broken action markup %q", removed)
-		}
-	}
-	if strings.Contains(page, "<style>") {
-		t.Fatal("administrator user template contains inline styles blocked by the application CSP")
-	}
-	for name, expected := range map[string][]string{
-		"admin_users.js":  {"showModal", "data-user-dialog-open", "htmx:afterSwap"},
-		"admin_users.css": {".admin-user-dialog", "::backdrop", "overflow-y: auto"},
-	} {
-		contents, err := os.ReadFile("../../template/" + name)
-		if err != nil {
-			t.Fatal(err)
-		}
-		for _, fragment := range expected {
-			if !strings.Contains(string(contents), fragment) {
-				t.Errorf("%s is missing %q", name, fragment)
-			}
-		}
-	}
-}
-
-func TestGuestEntryPagesUseAutomaticSystemTheme(t *testing.T) {
-	parsed, err := parseTemplates(os.DirFS("../.."), config.BrandingConfig{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	renders := []struct {
+	// Guests have no saved preference: the document sets no theme, so the
+	// operating system preference applies.
+	for _, render := range []struct {
 		name string
 		data any
 	}{
 		{"index.html", map[string]any{"Version": "test", "MaxFileSize": int64(1)}},
 		{"login.html", authPageData{Version: "test", CSRF: "csrf"}},
 		{"signup.html", authPageData{Version: "test", CSRF: "csrf"}},
-	}
-	for _, render := range renders {
-		var output bytes.Buffer
-		if err := parsed.ExecuteTemplate(&output, render.name, render.data); err != nil {
+	} {
+		output, err := (&Handler{}).frontendPage(render.name, render.data)
+		if err != nil {
 			t.Fatalf("render %s: %v", render.name, err)
 		}
-		page := output.String()
-		if !strings.Contains(page, `<script src="/assets/theme.js?v=`) {
-			t.Errorf("%s does not load the automatic system theme before rendering", render.name)
-		}
-		if strings.Index(page, `/assets/theme.js`) > strings.Index(page, `tabler.min.css`) {
-			t.Errorf("%s loads the automatic theme after Tabler CSS", render.name)
+		if strings.Contains(string(output), "data-bs-theme") || !strings.Contains(string(output), `<meta name="color-scheme" content="light dark">`) {
+			t.Errorf("%s does not leave the theme to the system", render.name)
 		}
 	}
+}
 
-	user := &db.User{ID: "user", DarkMode: false}
-	var authenticated bytes.Buffer
-	if err := parsed.ExecuteTemplate(&authenticated, "index.html", map[string]any{"Version": "test", "MaxFileSize": int64(1), "User": user}); err != nil {
-		t.Fatal(err)
+func TestAdministratorUserPageCarriesStorageUsageAndErrors(t *testing.T) {
+	user := &db.User{ID: "11111111-1111-4111-8111-111111111111", Email: "admin@example.com", DisplayName: "Admin", Role: db.RoleAdmin, Active: true}
+	row := adminUserRow{ID: "22222222-2222-4222-8222-222222222222", Email: "user@example.com", DisplayName: "User", Role: db.RoleUser, Active: true, CreatedAt: "2026-09-03", LastLogin: "Never", StorageUsed: "1.5 MiB"}
+	page, data := renderPage(t, "admin_users.html", adminPageData{Version: "test", CSRF: "csrf", Error: "Passwords do not match.", TotalStorageUsed: "1.5 MiB", User: user, Users: []adminUserRow{row}})
+	rows, _ := data["Users"].([]any)
+	if page != "admin_users" || data["Error"] != "Passwords do not match." || data["TotalStorageUsed"] != "1.5 MiB" || data["CSRF"] != "csrf" || len(rows) != 1 {
+		t.Fatalf("administrator page data: %s %v", page, data)
 	}
-	if strings.Contains(authenticated.String(), `<script src="/assets/theme.js?v=`) || !strings.Contains(authenticated.String(), `data-account-theme`) {
-		t.Fatal("authenticated upload page replaced the persisted account theme with the system theme")
-	}
-
-	theme, err := os.ReadFile("../../template/theme.js")
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, expected := range []string{`prefers-color-scheme: dark`, `"dark" : "light"`, `addEventListener("change", applyTheme)`} {
-		if !strings.Contains(string(theme), expected) {
-			t.Errorf("automatic theme script is missing %q", expected)
-		}
-	}
-	captcha, err := os.ReadFile("../../template/captcha.js")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(captcha), `dataset.themePreference === "system" ? "auto"`) {
-		t.Fatal("guest CAPTCHA widgets do not follow the automatic system theme")
+	shown := rows[0].(map[string]any)
+	if shown["ID"] != row.ID || shown["StorageUsed"] != "1.5 MiB" || shown["Email"] != "user@example.com" || shown["LastLogin"] != "Never" || shown["CreatedAt"] != "2026-09-03" {
+		t.Fatalf("administrator row data: %v", shown)
 	}
 }
 
@@ -876,20 +738,7 @@ func newTestHandler(t *testing.T, repository db.Repository, storage service.Obje
 
 func newTestHandlerConfig(t *testing.T, cfg *config.ServiceConfig, repository db.Repository, storage service.ObjectStore) *Handler {
 	t.Helper()
-	templates := fstest.MapFS{
-		"template/index.html":           {Data: []byte(`{{define "index.html"}}index{{end}}`)},
-		"template/file_view.html":       {Data: []byte(`{{define "file_view.html"}}file{{end}}`)},
-		"template/branding.css":         {Data: []byte(`.site-logo { height: 2rem; }`)},
-		"template/theme.js":             {Data: []byte(`console.log("theme test")`)},
-		"template/sharing.js":           {Data: []byte(`// sharing`)},
-		"template/client-encryption.js": {Data: []byte(`// test`)},
-		"template/upload.js":            {Data: []byte(`console.log("test")`)},
-		"template/captcha.js":           {Data: []byte(`console.log("captcha test")`)},
-		"template/admin_users.js":       {Data: []byte(`console.log("admin users test")`)},
-		"template/admin_users.css":      {Data: []byte(`.admin-user-dialog { display: block; }`)},
-		"template/htmx-errors.js":       {Data: []byte(`// htmx errors`)},
-	}
-	handler, err := New(cfg, repository, storage, templates, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	handler, err := New(cfg, repository, storage, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	if err != nil {
 		t.Fatal(err)
 	}

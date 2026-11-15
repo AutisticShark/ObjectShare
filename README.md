@@ -9,7 +9,7 @@ ObjectShare is a small self-hosted file sharing service written in Go. Files use
 ## Features
 
 - Single-file and multiple-file, size-limited uploads with SHA-256 and SHA3-256 checksums
-- Svelte 5 frontend built with Vite 8 and TypeScript 7, locally served Tabler and HTMX assets, and native-form fallbacks
+- Svelte 5 frontend built with Vite 8 and TypeScript 7, with locally served Tabler and HTMX assets
 - Administrator-managed site name, logo, header banner, favicon, tagline, and footer
 - Filesystem, Cloudflare R2, AWS S3, Backblaze B2, Alibaba Cloud OSS, Tencent Cloud COS, Oracle Cloud Object Storage, or Google Cloud Storage object storage
 - Direct-to-object-storage uploads that avoid reverse-proxy request-body limits
@@ -78,7 +78,7 @@ File links are unlisted by default; owners can restrict details and downloads to
 
 Svelte renders the workspace, account, billing, and administration interfaces. The Go server keeps authorization and validation authoritative and supplies explicitly projected page data; database credentials, password hashes, JWTs, and stored MFA secrets never enter that payload. Tabler and HTMX are bundled locally rather than loaded from a CDN. Cloudflare Turnstile, when enabled, still loads its required provider script.
 
-HTMX remains part of the frontend architecture: login, account, user-management, and sharing forms retain progressive enhancement, with validation responses rendered back into Svelte. The server-rendered native forms remain accessibility and no-JavaScript fallbacks. Browser encryption and direct-upload recovery reuse the existing tested controllers and wire formats.
+HTMX remains part of the frontend architecture: login, account, user-management, and sharing forms submit through HTMX, with validation responses rendered back into Svelte. The server sends each page as a minimal shell with its data, so the web interface requires JavaScript; the JSON and bearer-token APIs do not. Browser encryption and direct-upload recovery reuse the existing tested controllers and wire formats.
 
 ### Supported Object Storage Services
 
@@ -178,14 +178,13 @@ Client-side encryption is optional for every signed-in upload. On **Upload**, se
 then enter your encryption passphrase to unlock the key for that page. The option is
 unchecked by default. Leave it unchecked to upload without client-side encryption;
 no key setup or passphrase is needed, even when the account already has a key.
-Creating a key does not require encryption on future uploads. Bearer API and native
-form uploads may also omit encryption metadata. Supplied metadata still requires a
+Creating a key does not require encryption on future uploads. Bearer API and plain
+multipart uploads may also omit encryption metadata. Supplied metadata still requires a
 valid account key and matching ciphertext length. Server-side encryption, if enabled,
 applies independently. Existing files, keys, backups, and guest uploads retain their
 current behavior; there is no automatic re-encryption or decryption of existing files.
-Encrypted browser uploads require JavaScript and HTTPS (or localhost for development).
-Encryption failure never falls back to an unencrypted upload. Without JavaScript,
-the native form uploads without client-side encryption.
+Encrypted browser uploads require HTTPS (or localhost for development).
+Encryption failure never falls back to an unencrypted upload.
 
 On the file page, use **Decrypt & download**. Owners enter their encryption passphrase;
 the browser retrieves the wrapped account key, decrypts it locally, and derives the
@@ -443,7 +442,7 @@ npm --prefix frontend run build
 go run . -config config.json
 ```
 
-Frontend source and development/test commands are documented in [frontend/README.md](frontend/README.md). Generated assets are embedded into the Go binary; rebuild the frontend and restart/rebuild Go after frontend changes. A source checkout without a frontend build continues to serve the native forms.
+Frontend source and development/test commands are documented in [frontend/README.md](frontend/README.md). Generated assets in `frontend/dist/` are embedded into the Go binary; rebuild the frontend and then rebuild Go after frontend changes. A binary built without the frontend refuses to start the server and says how to build it.
 
 ObjectShare now keeps operational configuration in PostgreSQL. On the first start after this upgrade, it imports the existing JSON/environment values into one encrypted `application_settings` revision. Later starts load that database revision, so changing a legacy operational environment variable does not overwrite an administrator's dashboard changes. This one-time import preserves existing deployments; after it succeeds, manage application policy, OAuth, CAPTCHA, rate limits, storage providers, and object encryption at `/admin/settings`.
 

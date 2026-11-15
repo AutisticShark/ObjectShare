@@ -53,7 +53,7 @@ type configReloader struct {
 	lifetime   context.Context
 	base       *config.ServiceConfig
 	repository applicationRepository
-	templates  fs.FS
+	frontend   fs.FS
 	logger     *slog.Logger
 	current    atomic.Pointer[configSnapshot]
 	mu         sync.Mutex
@@ -79,8 +79,8 @@ func (failure *revisionError) Unwrap() error { return failure.err }
 // newConfigReloader keeps the bootstrap configuration as the pristine base for
 // every snapshot. Listener, database, and JWT bootstrap settings are not part
 // of the database document and therefore still require a restart to change.
-func newConfigReloader(lifetime context.Context, base *config.ServiceConfig, repository applicationRepository, templates fs.FS, logger *slog.Logger) *configReloader {
-	return &configReloader{lifetime: lifetime, base: base, repository: repository, templates: templates, logger: logger}
+func newConfigReloader(lifetime context.Context, base *config.ServiceConfig, repository applicationRepository, frontend fs.FS, logger *slog.Logger) *configReloader {
+	return &configReloader{lifetime: lifetime, base: base, repository: repository, frontend: frontend, logger: logger}
 }
 
 func (reloader *configReloader) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
@@ -130,7 +130,7 @@ func (reloader *configReloader) activate(setting *db.ApplicationSetting, previou
 	if err != nil {
 		return fmt.Errorf("initialize object storage: %w", err)
 	}
-	handler, err := htmx.New(cfg, reloader.repository, objectStore, reloader.templates, reloader.logger)
+	handler, err := htmx.New(cfg, reloader.repository, objectStore, reloader.frontend, reloader.logger)
 	if err != nil {
 		return fmt.Errorf("initialize HTTP handlers: %w", err)
 	}

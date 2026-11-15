@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
-	"os"
 	"strings"
 	"testing"
 	"time"
@@ -361,32 +360,31 @@ func TestLocalPlanFormUsesOnePriceWithoutGateway(t *testing.T) {
 	}
 }
 
-func TestPlansDisplayStoredPriceWithoutConfiguredGateway(t *testing.T) {
+func TestPlansOfferStoredPriceWithoutConfiguredGateway(t *testing.T) {
 	repo := &entitlementRepository{memoryRepository: &memoryRepository{files: make(map[string]*db.FileList)}, plan: &db.PaidPlan{ID: "plan", Name: "Plus", LegacyPriceLabel: "$999 / month", Price: 10, DurationDays: 30, StorageQuotaBytes: 1024}}
 	handler := newTestHandler(t, repo, &memoryStorage{objects: make(map[string][]byte)})
 	handler.billingGateways = nil
-	var err error
-	handler.templates, err = parseTemplates(os.DirFS("../.."), config.BrandingConfig{})
-	if err != nil {
-		t.Fatal(err)
-	}
 	request := httptest.NewRequest(http.MethodGet, "/plans", nil)
 	request = request.WithContext(context.WithValue(request.Context(), identityContextKey{}, &identity{User: &db.User{ID: "user"}, Claims: &appauth.Claims{CSRF: "csrf"}, Transport: transportBearer}))
 	response := httptest.NewRecorder()
 	handler.Plans(response, request)
 	body := response.Body.String()
-	if response.Code != http.StatusOK || !strings.Contains(body, "10 credits") || !strings.Contains(body, "30 days") || !strings.Contains(body, `action="/billing/invoices/plan"`) {
-		t.Fatalf("status=%d body=%s", response.Code, body)
+	page, data := pageOf(t, body)
+	cards, _ := data["Plans"].([]any)
+	if response.Code != http.StatusOK || page != "plans" || data["BillingEnabled"] != true || len(cards) != 1 {
+		t.Fatalf("status=%d page=%s body=%s", response.Code, page, body)
 	}
-	for _, forbidden := range []string{"$999", "/billing/checkout/", "Subscribe with", "No plans are currently available"} {
-		if strings.Contains(body, forbidden) {
-			t.Errorf("unexpected %q", forbidden)
-		}
+	if card, _ := cards[0].(map[string]any); card["Price"] != "10 credits" || card["Duration"] != "30 days" {
+		t.Fatalf("plan card = %v", cards[0])
+	}
+	if strings.Contains(body, "$999") {
+		t.Error("the legacy price label was exposed")
 	}
 	repo.plan.Price = 0
 	response = httptest.NewRecorder()
 	handler.Plans(response, request)
-	if strings.Contains(response.Body.String(), `action="/billing/invoices/plan"`) {
+	_, data = pageOf(t, response.Body.String())
+	if cards, _ := data["Plans"].([]any); data["BillingEnabled"] != false || len(cards) != 0 {
 		t.Fatal("offered a legacy plan without a numeric price")
 	}
 }
@@ -403,21 +401,15 @@ func (twoPlanRepository) PublicPlans(context.Context) ([]db.PaidPlan, error) {
 // refused as a conflicting retry.
 func TestPlansPageGivesEachPlanItsOwnRequestID(t *testing.T) {
 	handler := newTestHandler(t, twoPlanRepository{&entitlementRepository{memoryRepository: &memoryRepository{files: make(map[string]*db.FileList)}}}, &memoryStorage{objects: make(map[string][]byte)})
-	var err error
-	if handler.templates, err = parseTemplates(os.DirFS("../.."), config.BrandingConfig{}); err != nil {
-		t.Fatal(err)
-	}
 	request := httptest.NewRequest(http.MethodGet, "/plans", nil)
 	request = request.WithContext(context.WithValue(request.Context(), identityContextKey{}, &identity{User: &db.User{ID: "11111111-1111-4111-8111-111111111111"}, Transport: transportCookie, Claims: &appauth.Claims{CSRF: "expected"}}))
 	response := httptest.NewRecorder()
 	handler.Plans(response, request)
-	const field = `name="credit_request_id" value="`
-	body := response.Body.String()
+	_, data := pageOf(t, response.Body.String())
 	var ids []string
-	for rest := body; strings.Contains(rest, field); {
-		_, rest, _ = strings.Cut(rest, field)
-		var id string
-		id, rest, _ = strings.Cut(rest, `"`)
+	cards, _ := data["Plans"].([]any)
+	for _, card := range cards {
+		id, _ := card.(map[string]any)["RequestID"].(string)
 		ids = append(ids, id)
 	}
 	if response.Code != http.StatusOK || len(ids) != 2 || ids[0] == ids[1] || ids[0] == "" {

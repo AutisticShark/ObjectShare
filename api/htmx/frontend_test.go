@@ -18,9 +18,9 @@ import (
 func frontendFixture(t *testing.T) *frontendAssets {
 	t.Helper()
 	assets, err := loadFrontend(fstest.MapFS{
-		"template/frontend/manifest.json":        {Data: []byte(`{"src/main.ts":{"file":"assets/main-123.js","css":["assets/style-123.css"]}}`)},
-		"template/frontend/assets/main-123.js":   {Data: []byte("export {};")},
-		"template/frontend/assets/style-123.css": {Data: []byte("body {}")},
+		"frontend/dist/manifest.json":        {Data: []byte(`{"src/main.ts":{"file":"assets/main-123.js","css":["assets/style-123.css"]}}`)},
+		"frontend/dist/assets/main-123.js":   {Data: []byte("export {};")},
+		"frontend/dist/assets/style-123.css": {Data: []byte("body {}")},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -94,36 +94,61 @@ func TestFrontendRuntimeProjectionRedactsSecretsAndFormatsDurations(t *testing.T
 	}
 }
 
-func TestFrontendPayloadIsInertAndPreservesNativeForms(t *testing.T) {
-	handler := &Handler{frontend: frontendFixture(t), config: &config.ServiceConfig{Branding: config.BrandingConfig{SiteName: "Custom site"}}}
-	page := []byte(`<html><head><link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/core@1/tabler.css"><script defer src="/assets/upload.js?v=abc"></script></head><body><div class="page"><form action="/login" method="post"></form></div></body></html>`)
-	output, err := handler.frontendPage(page, "login.html", authPageData{Email: `</script><script>alert(1)</script>`})
+func TestPageShellCarriesOnlyInertDataAndTheBundle(t *testing.T) {
+	handler := &Handler{frontend: frontendFixture(t), config: &config.ServiceConfig{Branding: config.BrandingConfig{SiteName: "Custom <site>", Tagline: "Fast \"files\""}}}
+	output, err := handler.frontendPage("login.html", authPageData{Email: `</script><script>alert(1)</script>`})
 	if err != nil {
 		t.Fatal(err)
 	}
 	body := string(output)
-	for _, expected := range []string{`action="/login" method="post"`, `type="application/json"`, `"Page":"login"`, `"SiteName":"Custom site"`, `/assets/frontend/assets/main-123.js`, `/assets/frontend/assets/style-123.css`, `</script>`} {
+	for _, expected := range []string{"<title>Custom &lt;site&gt;</title>", `content="Fast &#34;files&#34;"`, `<body><div id="objectshare-app"></div><noscript>`, `/assets/frontend/assets/main-123.js`, `/assets/frontend/assets/style-123.css`} {
 		if !strings.Contains(body, expected) {
 			t.Fatalf("missing %q: %s", expected, body)
 		}
 	}
-	for _, forbidden := range []string{"alert(1)</script>", "cdn.jsdelivr.net", "/assets/upload.js"} {
+	for _, forbidden := range []string{"alert(1)</script>", "cdn.jsdelivr.net", "<form", "class=\"page", "data-bs-theme"} {
 		if strings.Contains(body, forbidden) {
-			t.Fatalf("unsafe or duplicate frontend source %q", forbidden)
+			t.Fatalf("shell contains %q: %s", forbidden, body)
 		}
 	}
-	output, err = (&Handler{}).frontendPage(page, "login.html", authPageData{})
-	if err != nil || string(output) != string(page) {
-		t.Fatal("source-only native fallback changed")
+	page, data := pageOf(t, body)
+	if page != "login" || data["Email"] != "</script><script>alert(1)</script>" {
+		t.Fatalf("page data did not round-trip: %s %v", page, data)
+	}
+	if strings.Count(body, "<script") != 2 {
+		t.Fatal("the shell must contain only the bundle and the inert data element")
+	}
+}
+
+func TestPageShellAppliesTheSavedThemeAndContinuesOAuthWithoutScripts(t *testing.T) {
+	handler := &Handler{}
+	for _, dark := range []bool{false, true} {
+		output, err := handler.frontendPage("account.html", accountPageData{User: &db.User{ID: "u", DarkMode: dark}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := map[bool]string{false: `data-bs-theme="light"`, true: `data-bs-theme="dark"`}[dark]
+		if !strings.Contains(string(output), want) {
+			t.Fatalf("signed-in first paint must use the saved theme %s", want)
+		}
+	}
+	for location, refresh := range map[string]bool{"/account?message=oauth-linked": true, "//attacker.example": false, "https://attacker.example": false} {
+		output, err := handler.frontendPage("oauth_continue.html", struct{ Version, Location string }{"t", location})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(output), `http-equiv="refresh"`) != refresh {
+			t.Fatalf("refresh for %q = %v", location, !refresh)
+		}
 	}
 }
 
 func TestFrontendManifestAndAssetBoundary(t *testing.T) {
 	if assets, err := loadFrontend(fstest.MapFS{}); err != nil || assets != nil {
-		t.Fatal("unbuilt source checkout should keep native pages")
+		t.Fatal("an unbuilt checkout has no assets; main refuses to serve it")
 	}
 	for _, manifest := range []string{`{`, `{}`, `{"src/main.ts":{"file":"../secret"}}`, `{"src/main.ts":{"file":"assets/missing.js"}}`} {
-		if _, err := loadFrontend(fstest.MapFS{"template/frontend/manifest.json": {Data: []byte(manifest)}}); err == nil {
+		if _, err := loadFrontend(fstest.MapFS{"frontend/dist/manifest.json": {Data: []byte(manifest)}}); err == nil {
 			t.Fatalf("accepted invalid build: %s", manifest)
 		}
 	}

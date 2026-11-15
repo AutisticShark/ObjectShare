@@ -4,7 +4,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 
-const source = fs.readFileSync(path.join(__dirname, '../template/upload.js'), 'utf8');
+const source = fs.readFileSync(path.join(__dirname, '../frontend/src/controllers/upload.js'), 'utf8');
 function uploader(encrypted, cryptoAvailable = true) {
   const element = () => ({value:'', textContent:'', disabled:false, children:[], events:{}, classList:{add(){},remove(){}},
     addEventListener(name, fn){this.events[name]=fn;}, setCustomValidity(value){this.validationMessage=value;}, reportValidity(){return !this.validationMessage;},

@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
-	"os"
 	"strings"
 	"testing"
 	"time"
@@ -42,11 +41,6 @@ func mfaFixture(t *testing.T, method string) (*Handler, *authMemoryRepository, *
 		t.Fatal(err)
 	}
 	h := newAuthTestHandler(t, repo, false)
-	var err error
-	h.templates, err = parseTemplates(os.DirFS("../.."), h.config.Branding)
-	if err != nil {
-		t.Fatal(err)
-	}
 	user = repo.users[user.ID]
 	secret, _ := appauth.NewTOTPSecret()
 	user.MFA.Method = method
@@ -264,11 +258,13 @@ func TestMFAEnrollmentCSRFProofAndSessionInvalidation(t *testing.T) {
 	if start("bad", "a sufficiently long password").Code != http.StatusForbidden {
 		t.Fatal("CSRF bypass")
 	}
-	if w := start(claims.CSRF, "wrong"); !strings.Contains(w.Body.String(), "Confirm your current password") || user.MFA.Manage.Challenge != "" {
+	_, refused := pageOf(t, start(claims.CSRF, "wrong").Body.String())
+	if message, _ := refused["Error"].(string); !strings.Contains(message, "Confirm your current password") || refused["Secret"] != "" || user.MFA.Manage.Challenge != "" {
 		t.Fatal("password reauthentication bypass")
 	}
 	w := start(claims.CSRF, "a sufficiently long password")
-	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "Enter a setup key") || user.MFA.Method != "" {
+	setupPage, setup := pageOf(t, w.Body.String())
+	if w.Code != http.StatusOK || setupPage != "mfa" || setup["Action"] != "setup-totp" || setup["Secret"] == "" || user.MFA.Method != "" {
 		t.Fatalf("setup %d %s", w.Code, w.Body.String())
 	}
 	if user.MFA.Challenge != "" {
@@ -277,6 +273,9 @@ func TestMFAEnrollmentCSRFProofAndSessionInvalidation(t *testing.T) {
 	secret, err := appauth.OpenMFASecret(h.settingsKey, user.ID, user.MFA.Manage.PendingSecret)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if setup["Secret"] != secret {
+		t.Fatal("the setup key shown is not the pending secret")
 	}
 	var cookie *http.Cookie
 	for _, c := range w.Result().Cookies() {
@@ -310,7 +309,8 @@ func TestMFAEnrollmentCSRFProofAndSessionInvalidation(t *testing.T) {
 		t.Fatal("enrolled without original authenticated session")
 	}
 	w = verify(code, challenge.CSRF, true)
-	if !strings.Contains(w.Body.String(), "Save your recovery codes") || user.MFA.Method != "totp" || len(user.MFA.Recovery) != 10 || user.TokenVersion != 2 || user.MFA.Manage.PendingSecret != "" {
+	_, enrolled := pageOf(t, w.Body.String())
+	if codes, _ := enrolled["Codes"].([]any); len(codes) != 10 || user.MFA.Method != "totp" || len(user.MFA.Recovery) != 10 || user.TokenVersion != 2 || user.MFA.Manage.PendingSecret != "" {
 		t.Fatalf("enrollment failed: %s", w.Body.String())
 	}
 	if strings.Contains(w.Body.String(), secret) {
@@ -344,8 +344,11 @@ func TestMFAOAuthAndEmailOutageRecovery(t *testing.T) {
 			cookie = c
 		}
 	}
-	if cookie == nil || !strings.Contains(w.Body.String(), "could not confirm delivery") {
+	if cookie == nil {
 		t.Fatalf("OAuth challenge missing: %s", w.Body.String())
+	}
+	if _, data := pageOf(t, w.Body.String()); !strings.Contains(data["Message"].(string), "could not confirm delivery") {
+		t.Fatalf("OAuth challenge does not report the failed delivery: %v", data)
 	}
 	claims, _ := h.jwt.ParseMFA(cookie.Value)
 	r := formRequest("/login/mfa", url.Values{"csrf_token": {claims.CSRF}, "code": {strings.Repeat("a", 32)}})
@@ -400,7 +403,8 @@ func TestMFADisableAndRecoveryReplacementRequireProof(t *testing.T) {
 					t.Fatal("MFA not cleared")
 				}
 			} else {
-				if user.MFA.Method != "totp" || len(user.MFA.Recovery) != 10 || !strings.Contains(w.Body.String(), "Save your recovery codes") {
+				_, shown := pageOf(t, w.Body.String())
+				if codes, _ := shown["Codes"].([]any); user.MFA.Method != "totp" || len(user.MFA.Recovery) != 10 || len(codes) != 10 {
 					t.Fatal("codes not regenerated")
 				}
 				oldHash := appauth.MFAHash(h.settingsKey, user.ID+":recovery", strings.Repeat("a", 32))
@@ -579,8 +583,8 @@ func TestMFABrowserPasswordLoginAndTransportIsolation(t *testing.T) {
 	if cookie == nil || !cookie.Secure || !cookie.HttpOnly || !strings.HasPrefix(cookie.Name, "__Host-") {
 		t.Fatal("missing secure MFA cookie")
 	}
-	if !strings.Contains(w.Body.String(), "Complete verification") || w.Header().Get("Cache-Control") != "private, no-store" {
-		t.Fatal("challenge render failed")
+	if challengePage, data := pageOf(t, w.Body.String()); challengePage != "mfa" || data["Action"] != "login" || data["Method"] != "totp" || w.Header().Get("Cache-Control") != "private, no-store" {
+		t.Fatalf("challenge render failed: %s %v", challengePage, data)
 	}
 	if verifyAPI(h, cookie.Value, strings.Repeat("a", 32)).Code != http.StatusUnauthorized {
 		t.Fatal("browser challenge usable through bearer API")

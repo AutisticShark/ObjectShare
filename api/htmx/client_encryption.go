@@ -9,7 +9,6 @@ import (
 	"io"
 	"mime/multipart"
 	"net/http"
-	"time"
 
 	"github.com/AutisticShark/ObjectShare/db"
 )
@@ -36,11 +35,6 @@ type clientEncryptionMetadata struct {
 func encodedBytes(value string, size int) bool {
 	decoded, err := base64.RawURLEncoding.Strict().DecodeString(value)
 	return err == nil && len(decoded) == size && base64.RawURLEncoding.EncodeToString(decoded) == value
-}
-
-func (handler *Handler) ClientEncryptionScript(writer http.ResponseWriter, request *http.Request) {
-	writer.Header().Set("Content-Type", "text/javascript; charset=utf-8")
-	http.ServeContent(writer, request, "client-encryption.js", time.Time{}, bytes.NewReader(handler.clientEncryptionJS))
 }
 
 func (handler *Handler) ClientKey(writer http.ResponseWriter, request *http.Request) {

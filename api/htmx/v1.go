@@ -11,7 +11,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"html/template"
 	"io"
 	"io/fs"
 	"log/slog"
@@ -38,44 +37,34 @@ import (
 const mebibyte = int64(1024 * 1024)
 
 type Handler struct {
-	frontend           *frontendAssets
-	clientEncryptionJS []byte
-	emailSender        email.Sender
-	config             *config.ServiceConfig
-	repository         db.Repository
-	storage            service.ObjectStore
-	direct             service.DirectUploader
-	directPolicy       service.DirectUploadPolicy
-	templates          *template.Template
-	brandingCSS        []byte
-	themeJS            []byte
-	sharingJS          []byte
-	uploadJS           []byte
-	captchaJS          []byte
-	adminUsersJS       []byte
-	adminUsersCSS      []byte
-	htmxErrorsJS       []byte
-	cipher             *appcrypto.Cipher // encrypts new uploads; nil while encryption is off
-	readCipher         *appcrypto.Cipher // decrypts stored objects whenever a key is configured
-	cipherSlot         chan struct{}
-	cipherSlotWait     time.Duration
-	logger             *slog.Logger
-	users              db.AuthRepository
-	jwt                *appauth.JWTManager
-	csrfSecret         []byte
-	oauthSecret        []byte
-	downloadSecret     []byte
-	oauthProviders     map[string]appauth.OAuthProvider
-	captcha            captchaVerifier
-	rateLimits         db.RateLimitRepository
-	settings           db.SettingsRepository
-	billing            db.BillingRepository
-	billingGateways    map[string]billingGateway
-	settingsKey        string
-	priorSettingsKey   string
-	localRateLimits    *localRateLimiter
-	trustedProxies     []*net.IPNet
-	reloadConfig       func(context.Context) error
+	frontend         *frontendAssets
+	emailSender      email.Sender
+	config           *config.ServiceConfig
+	repository       db.Repository
+	storage          service.ObjectStore
+	direct           service.DirectUploader
+	directPolicy     service.DirectUploadPolicy
+	cipher           *appcrypto.Cipher // encrypts new uploads; nil while encryption is off
+	readCipher       *appcrypto.Cipher // decrypts stored objects whenever a key is configured
+	cipherSlot       chan struct{}
+	cipherSlotWait   time.Duration
+	logger           *slog.Logger
+	users            db.AuthRepository
+	jwt              *appauth.JWTManager
+	csrfSecret       []byte
+	oauthSecret      []byte
+	downloadSecret   []byte
+	oauthProviders   map[string]appauth.OAuthProvider
+	captcha          captchaVerifier
+	rateLimits       db.RateLimitRepository
+	settings         db.SettingsRepository
+	billing          db.BillingRepository
+	billingGateways  map[string]billingGateway
+	settingsKey      string
+	priorSettingsKey string
+	localRateLimits  *localRateLimiter
+	trustedProxies   []*net.IPNet
+	reloadConfig     func(context.Context) error
 	// adminsExistUntil is the Unix-nanosecond deadline until which SetupComplete
 	// may skip its AdminCount query after seeing an administrator.
 	adminsExistUntil atomic.Int64
@@ -124,50 +113,12 @@ func preAuthCSRFSecret(cfg *config.ServiceConfig) ([]byte, error) {
 	return secret, nil
 }
 
-func New(cfg *config.ServiceConfig, repository db.Repository, storage service.ObjectStore, templates fs.FS, logger *slog.Logger) (*Handler, error) {
-	frontend, err := loadFrontend(templates)
+// New builds a handler. frontendFiles holds the Vite build under frontend/dist;
+// without it pages render empty shells, which the start-up check in main refuses.
+func New(cfg *config.ServiceConfig, repository db.Repository, storage service.ObjectStore, frontendFiles fs.FS, logger *slog.Logger) (*Handler, error) {
+	frontend, err := loadFrontend(frontendFiles)
 	if err != nil {
 		return nil, fmt.Errorf("load frontend: %w", err)
-	}
-	parsed, err := parseTemplates(templates, cfg.Branding)
-	if err != nil {
-		return nil, fmt.Errorf("parse templates: %w", err)
-	}
-	brandingCSS, err := fs.ReadFile(templates, "template/branding.css")
-	if err != nil {
-		return nil, fmt.Errorf("read branding stylesheet: %w", err)
-	}
-	themeJS, err := fs.ReadFile(templates, "template/theme.js")
-	if err != nil {
-		return nil, fmt.Errorf("read theme script: %w", err)
-	}
-	sharingJS, err := fs.ReadFile(templates, "template/sharing.js")
-	if err != nil {
-		return nil, fmt.Errorf("read sharing script: %w", err)
-	}
-	uploadJS, err := fs.ReadFile(templates, "template/upload.js")
-	if err != nil {
-		return nil, fmt.Errorf("read upload script: %w", err)
-	}
-	clientEncryptionJS, err := fs.ReadFile(templates, "template/client-encryption.js")
-	if err != nil {
-		return nil, fmt.Errorf("read client encryption script: %w", err)
-	}
-	captchaJS, err := fs.ReadFile(templates, "template/captcha.js")
-	if err != nil {
-		return nil, fmt.Errorf("read CAPTCHA script: %w", err)
-	}
-	adminUsersJS, err := fs.ReadFile(templates, "template/admin_users.js")
-	if err != nil {
-		return nil, fmt.Errorf("read administrator user script: %w", err)
-	}
-	adminUsersCSS, err := fs.ReadFile(templates, "template/admin_users.css")
-	if err != nil {
-		return nil, fmt.Errorf("read administrator user stylesheet: %w", err)
-	}
-	htmxErrorsJS, err := fs.ReadFile(templates, "template/htmx-errors.js")
-	if err != nil {
-		return nil, fmt.Errorf("read HTMX error script: %w", err)
 	}
 	csrfSecret, err := preAuthCSRFSecret(cfg)
 	if err != nil {
@@ -192,13 +143,11 @@ func New(cfg *config.ServiceConfig, repository db.Repository, storage service.Ob
 	handler := &Handler{
 		frontend: frontend,
 		config:   cfg, repository: repository, users: userRepository, storage: storage,
-		clientEncryptionJS: clientEncryptionJS, templates: parsed, sharingJS: sharingJS, brandingCSS: brandingCSS, themeJS: themeJS, uploadJS: uploadJS, captchaJS: captchaJS,
-		adminUsersJS: adminUsersJS, adminUsersCSS: adminUsersCSS, logger: logger, csrfSecret: csrfSecret,
+		logger: logger, csrfSecret: csrfSecret,
 		captcha: newCaptchaVerifier(cfg.Captcha), rateLimits: rateLimits,
 		settings: settings, billing: billing, billingGateways: billingGateways,
 		localRateLimits: newLocalRateLimiter(), trustedProxies: trustedProxies,
 		cipherSlotWait: cipherSlotWait,
-		htmxErrorsJS:   htmxErrorsJS,
 	}
 	if cfg.Upload == nil || cfg.Upload.GuestEnabled {
 		if cfg.RateLimit == nil || !cfg.RateLimit.Enabled {
@@ -290,42 +239,6 @@ func (handler *Handler) Index(writer http.ResponseWriter, request *http.Request)
 
 func (handler *Handler) DirectUploadConnectSources() []string {
 	return append([]string(nil), handler.directPolicy.ConnectSources...)
-}
-
-func (handler *Handler) UploadScript(writer http.ResponseWriter, request *http.Request) {
-	writer.Header().Set("Content-Type", "text/javascript; charset=utf-8")
-	writer.Header().Set("Cache-Control", "public, max-age=86400")
-	http.ServeContent(writer, request, "upload.js", time.Time{}, bytes.NewReader(handler.uploadJS))
-}
-
-func (handler *Handler) SharingScript(writer http.ResponseWriter, request *http.Request) {
-	writer.Header().Set("Content-Type", "text/javascript; charset=utf-8")
-	writer.Header().Set("Cache-Control", "public, max-age=86400")
-	http.ServeContent(writer, request, "sharing.js", time.Time{}, bytes.NewReader(handler.sharingJS))
-}
-
-func (handler *Handler) ThemeScript(writer http.ResponseWriter, request *http.Request) {
-	writer.Header().Set("Content-Type", "text/javascript; charset=utf-8")
-	writer.Header().Set("Cache-Control", "public, max-age=86400")
-	http.ServeContent(writer, request, "theme.js", time.Time{}, bytes.NewReader(handler.themeJS))
-}
-
-func (handler *Handler) CaptchaScript(writer http.ResponseWriter, request *http.Request) {
-	writer.Header().Set("Content-Type", "text/javascript; charset=utf-8")
-	writer.Header().Set("Cache-Control", "public, max-age=86400")
-	http.ServeContent(writer, request, "captcha.js", time.Time{}, bytes.NewReader(handler.captchaJS))
-}
-
-func (handler *Handler) AdminUsersScript(writer http.ResponseWriter, request *http.Request) {
-	writer.Header().Set("Content-Type", "text/javascript; charset=utf-8")
-	writer.Header().Set("Cache-Control", "public, max-age=86400")
-	http.ServeContent(writer, request, "admin_users.js", time.Time{}, bytes.NewReader(handler.adminUsersJS))
-}
-
-func (handler *Handler) AdminUsersStyles(writer http.ResponseWriter, request *http.Request) {
-	writer.Header().Set("Content-Type", "text/css; charset=utf-8")
-	writer.Header().Set("Cache-Control", "public, max-age=86400")
-	http.ServeContent(writer, request, "admin_users.css", time.Time{}, bytes.NewReader(handler.adminUsersCSS))
 }
 
 func (handler *Handler) FileView(writer http.ResponseWriter, request *http.Request) {
@@ -676,19 +589,13 @@ func (handler *Handler) render(writer http.ResponseWriter, name string, data any
 	handler.renderStatus(writer, http.StatusOK, name, data)
 }
 
-// Render before committing headers so a template failure cannot masquerade as
-// a successful, partially rendered page (including pages containing forms).
+// Build the whole page before committing headers so a projection failure
+// cannot masquerade as a successful, partially rendered page.
 func (handler *Handler) renderStatus(writer http.ResponseWriter, status int, name string, data any) {
 	writer.Header().Set("Cache-Control", cachePrivateNoStore)
-	var page bytes.Buffer
-	if err := handler.templates.ExecuteTemplate(&page, name, data); err != nil {
-		handler.logger.Error("render template", "template", name, "error", err)
-		http.Error(writer, "This page could not be displayed. Please try again.", http.StatusInternalServerError)
-		return
-	}
-	output, err := handler.frontendPage(page.Bytes(), name, data)
+	output, err := handler.frontendPage(name, data)
 	if err != nil {
-		handler.logger.Error("prepare frontend page", "template", name, "error", err)
+		handler.logger.Error("render page", "page", name, "error", err)
 		http.Error(writer, "This page could not be displayed. Please try again.", http.StatusInternalServerError)
 		return
 	}

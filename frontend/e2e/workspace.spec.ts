@@ -7,10 +7,15 @@ const runtimeErrors = new WeakMap<Page, string[]>();
 const email = `frontend-${randomBytes(6).toString('hex')}@example.test`;
 const password = randomBytes(24).toString('hex');
 let state: Awaited<ReturnType<APIRequestContext['storageState']>>;
+const pageData = (html: string) => {
+  const match = html.match(/<script id="objectshare-page" type="application\/json">(.*?)<\/script>/s);
+  if (!match) throw new Error('Expected page data.');
+  return JSON.parse(match[1]) as { Page: string; Data: Record<string, unknown> };
+};
 const csrf = (html: string) => {
-  const token = html.match(/name="csrf_token" value="([^"]+)"/);
-  if (!token) throw new Error('Expected a native CSRF-protected form.');
-  return token[1];
+  const token = pageData(html).Data.CSRF;
+  if (typeof token !== 'string' || !token) throw new Error('Expected a CSRF token in the page data.');
+  return token;
 };
 const shell = (page: Page) => expect(page.locator('#objectshare-app .app-shell')).toBeVisible();
 async function expectNoOverflow(page: Page, route: string) {
@@ -287,14 +292,38 @@ test('MFA enrollment and recovery-code sign-in retain the authentication boundar
   await expect(page.getByRole('button', { name: 'Set up authenticator app' })).toBeVisible();
 });
 
-test('native forms remain usable without JavaScript', async ({ browser, baseURL }) => {
-  const context = await browser.newContext({ javaScriptEnabled: false, storageState: state });
+test('the server sends only the app shell, so nothing appears before the interface', async ({ browser, baseURL }) => {
+  const guest = await browser.newContext();
+  for (const route of ['/', '/login', '/plans']) {
+    const html = await (await guest.request.get(baseURL + route)).text();
+    const body = html.slice(html.indexOf('<body>'));
+    expect(body, route).toMatch(/^<body><div id="objectshare-app"><\/div><noscript>/);
+    expect(body, route).not.toMatch(/<form|<nav|<main|class="page/);
+    expect(pageData(html).Page.length, route).toBeGreaterThan(0);
+  }
+  await guest.close();
+  // A slow bundle must leave a blank page in the visitor's theme, not old markup or a white flash.
+  const context = await browser.newContext({ colorScheme: 'dark' });
+  const page = await context.newPage();
+  let release!: () => void;
+  const held = new Promise<void>(resolve => { release = resolve; });
+  await page.route('**/assets/frontend/assets/*.js', async route => { await held; await route.continue(); });
+  // Module scripts are deferred, so DOMContentLoaded waits for the held bundle;
+  // the document can already paint, which is the moment under test.
+  await page.goto(baseURL + '/login', { waitUntil: 'commit' });
+  await page.locator('#objectshare-page').waitFor({ state: 'attached' });
+  expect(await page.locator('body').innerText()).toBe('');
+  expect(await page.evaluate(() => getComputedStyle(document.body).backgroundColor)).toBe('rgb(21, 24, 30)');
+  release();
+  await shell(page);
+  await expect(page.locator('html')).toHaveAttribute('data-bs-theme', 'dark');
+  await context.close();
+});
+
+test('browsers without JavaScript are told it is required', async ({ browser, baseURL }) => {
+  const context = await browser.newContext({ javaScriptEnabled: false });
   const page = await context.newPage();
   await page.goto(baseURL + '/');
-  await expect(page.locator('form[action="/api/v1/upload"]')).toBeVisible();
-  await page.goto(baseURL + '/account');
-  await expect(page.locator('form[action="/account/profile"]')).toBeVisible();
-  await page.getByRole('button', { name: 'Save profile', exact: true }).click();
-  await expect(page.getByText('Profile updated.', { exact: true })).toBeVisible();
+  await expect(page.getByText(/requires JavaScript\.$/)).toBeVisible();
   await context.close();
 });

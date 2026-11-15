@@ -30,7 +30,8 @@ node_modules/
 frontend/.check/
 frontend/playwright-report/
 frontend/test-results/
-template/frontend/
+frontend/dist/*
+!frontend/dist/.gitkeep
 
 # Personal Codex memory (stored globally, outside the repository)
 /MEMORY.md

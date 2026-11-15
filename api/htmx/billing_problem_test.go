@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"net/http/httptest"
-	"os"
 	"strings"
 	"testing"
 	"time"
@@ -20,11 +19,6 @@ func TestBillingFailuresGiveBrowserRecoveryWithoutChangingAPIStatus(t *testing.T
 	const id = "22222222-2222-4222-8222-222222222222"
 	repo := &invoiceTestRepository{entitlementRepository: &entitlementRepository{memoryRepository: &memoryRepository{files: make(map[string]*db.FileList)}}, invoice: db.Invoice{ID: id, UserID: owner, Kind: "plan"}}
 	handler := newTestHandler(t, repo, &memoryStorage{objects: make(map[string][]byte)})
-	var err error
-	handler.templates, err = parseTemplates(os.DirFS("../.."), config.BrandingConfig{})
-	if err != nil {
-		t.Fatal(err)
-	}
 	router := chi.NewRouter()
 	router.Post("/invoices/{id}/pay", handler.PayInvoice)
 	for _, failure := range []struct {
@@ -64,8 +58,11 @@ func TestBillingFailuresGiveBrowserRecoveryWithoutChangingAPIStatus(t *testing.T
 			if strings.HasPrefix(response.Header().Get("Content-Type"), "text/html") != wantHTML {
 				t.Fatalf("wrong content type: %s", response.Header().Get("Content-Type"))
 			}
-			if wantHTML && (!strings.Contains(body, `href="/invoices/`+id+`"`) || !strings.Contains(body, "Return to invoice") || !strings.HasSuffix(strings.TrimSpace(body), "</html>")) {
-				t.Fatal("browser error does not provide a complete invoice recovery page")
+			if wantHTML {
+				page, data := pageOf(t, body)
+				if page != "billing_problem" || data["InvoiceURL"] != "/invoices/"+id || data["Message"] == "" || !strings.HasSuffix(strings.TrimSpace(body), "</html>") {
+					t.Fatalf("browser error does not provide a complete invoice recovery page: %s %v", page, data)
+				}
 			}
 			if failure.status != 404 && response.Header().Get("Cache-Control") != "private, no-store" {
 				t.Fatal("billing error is cacheable")
@@ -74,24 +71,19 @@ func TestBillingFailuresGiveBrowserRecoveryWithoutChangingAPIStatus(t *testing.T
 	}
 }
 
-func TestPaidInvoiceReceiptMessageMatchesDeliveryConfiguration(t *testing.T) {
+func TestPaidInvoiceReceiptStateMatchesDeliveryConfiguration(t *testing.T) {
 	const owner = "11111111-1111-4111-8111-111111111111"
 	const id = "22222222-2222-4222-8222-222222222222"
 	repo := &invoiceTestRepository{entitlementRepository: &entitlementRepository{memoryRepository: &memoryRepository{files: make(map[string]*db.FileList)}}, invoice: db.Invoice{ID: id, UserID: owner, Kind: "plan", Status: "paid"}}
 	handler := newTestHandler(t, repo, &memoryStorage{objects: make(map[string][]byte)})
-	var err error
-	handler.templates, err = parseTemplates(os.DirFS("../.."), config.BrandingConfig{})
-	if err != nil {
-		t.Fatal(err)
-	}
 	router := chi.NewRouter()
 	router.Get("/invoices/{id}", handler.Invoice)
 	for _, test := range []struct {
 		provider string
 		sent     bool
-		want     string
+		enabled  bool
 	}{
-		{"none", false, "Email receipts are not enabled"}, {"smtp", false, "queued for email delivery"}, {"smtp", true, "accepted by the email provider"}, {"none", true, "accepted by the email provider"},
+		{"none", false, false}, {"smtp", false, true}, {"smtp", true, true}, {"none", true, false},
 	} {
 		handler.config.Email = &config.EmailConfig{Provider: test.provider}
 		repo.invoice.EmailSentAt = nil
@@ -103,8 +95,15 @@ func TestPaidInvoiceReceiptMessageMatchesDeliveryConfiguration(t *testing.T) {
 		request = request.WithContext(context.WithValue(request.Context(), identityContextKey{}, &identity{User: &db.User{ID: owner}, Claims: &appauth.Claims{CSRF: "expected"}}))
 		response := httptest.NewRecorder()
 		router.ServeHTTP(response, request)
-		if response.Code != 200 || !strings.Contains(response.Body.String(), test.want) {
+		page, data := pageOf(t, response.Body.String())
+		if response.Code != 200 || page != "invoice" {
 			t.Fatalf("%s sent=%v: %d %s", test.provider, test.sent, response.Code, response.Body.String())
+		}
+		// The page decides between "not enabled", "queued" and "accepted" from
+		// these two values.
+		invoice, _ := data["Invoice"].(map[string]any)
+		if data["ReceiptEnabled"] != test.enabled || (invoice["EmailSentAt"] != nil) != test.sent {
+			t.Fatalf("%s sent=%v: receipt enabled=%v, EmailSentAt=%v", test.provider, test.sent, data["ReceiptEnabled"], invoice["EmailSentAt"])
 		}
 	}
 }

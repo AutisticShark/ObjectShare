@@ -3,7 +3,7 @@
 const assert = require('node:assert/strict');
 const {randomBytes} = require('node:crypto');
 const {execFileSync} = require('node:child_process');
-require('../template/client-encryption.js');
+require('../frontend/src/controllers/client-encryption.js');
 
 function localOrigin(value) {
   const url = new URL(value);
@@ -35,16 +35,21 @@ async function runSmoke({origin, restart}) {
     assert.equal(response.status, 200, `${route} should render successfully`);
     return response.text();
   };
+  const pageData = html => {
+    const match = html.match(/<script id="objectshare-page" type="application\/json">(.*?)<\/script>/s);
+    assert.ok(match, 'Expected page data');
+    return JSON.parse(match[1]);
+  };
   const csrfFrom = html => {
-    const match = html.match(/name="csrf_token" value="([^"]+)"/);
-    assert.ok(match, 'Expected a CSRF-protected form');
-    return match[1];
+    const token = pageData(html).Data.CSRF;
+    assert.ok(typeof token === 'string' && token, 'Expected a CSRF token');
+    return token;
   };
 
   assert.equal((await request('/health/ready')).status, 200, 'Database readiness');
   // Refuse to reuse credentials, users, or files from an existing installation.
   const setup = await page('/setup');
-  assert.match(setup, /action="\/setup"/);
+  assert.equal(pageData(setup).Page, 'setup');
   const password = randomBytes(24).toString('hex');
   const created = await request('/setup', {method: 'POST', body: new URLSearchParams({
     csrf_token: csrfFrom(setup), email: `install-${randomBytes(8).toString('hex')}@example.test`,
@@ -81,11 +86,10 @@ async function runSmoke({origin, restart}) {
     assert.match(filePage, /^\/file\/[0-9a-f-]{36}$/);
     const downloadRoute = '/api/v1/download/' + filePage.split('/').pop();
     const verifyFile = async () => {
-      const html = await page(filePage);
-      assert.match(html, /install-smoke\.txt/);
-      const token = html.match(/name="download_token" value="([^"]+)"/);
-      assert.ok(token, 'Expected scoped download authorization');
-      const downloaded = await request(downloadRoute, {method: 'POST', body: new URLSearchParams({download_token: token[1]})});
+      const data = pageData(await page(filePage)).Data;
+      assert.equal(data.FileName, 'install-smoke.txt');
+      assert.ok(typeof data.DownloadToken === 'string' && data.DownloadToken, 'Expected scoped download authorization');
+      const downloaded = await request(downloadRoute, {method: 'POST', body: new URLSearchParams({download_token: data.DownloadToken})});
       assert.equal(downloaded.status, 200, 'Owner download');
       assert.equal(downloaded.headers.get('location'), null, 'Private download must stream through ObjectShare');
       const plaintext = await crypto.decryptFile(await downloaded.blob(), encrypted.metadata, fileKey);

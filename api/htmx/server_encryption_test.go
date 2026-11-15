@@ -7,7 +7,6 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"strings"
 	"testing"
 	"time"
@@ -179,7 +178,7 @@ func TestSettingsRefuseEncryptionKeyChangeWhileEncryptedFilesExist(t *testing.T)
 	repository.setting = &db.ApplicationSetting{Key: "runtime_config", Value: sealed, UpdatedBy: "bootstrap import", CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}
 	admin := &db.User{ID: "admin", Email: "admin@example.com", DisplayName: "Admin", Role: db.RoleAdmin, Active: true, TokenVersion: 1}
 	repository.users[admin.ID] = admin
-	handler, err := New(cfg, repository, &memoryStorage{objects: make(map[string][]byte)}, os.DirFS("../.."), slog.New(slog.NewTextHandler(io.Discard, nil)))
+	handler, err := New(cfg, repository, &memoryStorage{objects: make(map[string][]byte)}, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	if err != nil {
 		t.Fatal(err)
 	}

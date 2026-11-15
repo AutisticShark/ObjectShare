@@ -12,7 +12,6 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"strings"
 	"testing"
 	"time"
@@ -163,11 +162,6 @@ func TestInvoiceCreateReadPDFAndPaymentBoundaries(t *testing.T) {
 	const id = "22222222-2222-4222-8222-222222222222"
 	repo := &invoiceTestRepository{entitlementRepository: &entitlementRepository{memoryRepository: &memoryRepository{files: make(map[string]*db.FileList)}}, invoice: db.Invoice{ID: id, UserID: owner, Kind: "plan", Status: "pending", Name: "<script>plan</script>", Email: "buyer@example.com", Credits: 10, AmountMinor: 1000, Currency: "USD", ExpiresAt: time.Now().Add(time.Hour)}}
 	handler := newTestHandler(t, repo, &memoryStorage{objects: make(map[string][]byte)})
-	var err error
-	handler.templates, err = parseTemplates(os.DirFS("../.."), config.BrandingConfig{})
-	if err != nil {
-		t.Fatal(err)
-	}
 	router := chi.NewRouter()
 	router.Get("/invoices/{id}", handler.Invoice)
 	router.Get("/invoices/{id}/pdf", handler.InvoicePDF)
@@ -192,8 +186,11 @@ func TestInvoiceCreateReadPDFAndPaymentBoundaries(t *testing.T) {
 		t.Fatalf("invoice creation must not pay: %d", response.Code)
 	}
 	response = call("GET", "/invoices/"+id, owner, "")
-	if response.Code != 200 || strings.Contains(response.Body.String(), "<script>plan</script>") || !strings.Contains(response.Body.String(), "&lt;script&gt;") || response.Header().Get("Cache-Control") != "private, no-store" {
+	if response.Code != 200 || strings.Contains(response.Body.String(), "<script>plan</script>") || response.Header().Get("Cache-Control") != "private, no-store" {
 		t.Fatalf("invoice page: %d %s", response.Code, response.Body.String())
+	}
+	if page, data := pageOf(t, response.Body.String()); page != "invoice" || data["Invoice"].(map[string]any)["Name"] != "<script>plan</script>" {
+		t.Fatalf("invoice page data: %s %v", page, data)
 	}
 	response = call("GET", "/invoices/"+id+"/pdf", owner, "")
 	if response.Code != 200 || response.Header().Get("Content-Type") != "application/pdf" || !strings.HasPrefix(response.Body.String(), "%PDF-") {
@@ -382,8 +379,8 @@ func TestTopUpRetryFromInvoiceRepeatsTheOriginalCheckoutRequest(t *testing.T) {
 }
 
 // A PayPal order expires after three hours, and paying the invoice again then
-// opens a new checkout, so the page must not keep sending the buyer back to the
-// checkout that can no longer be completed.
+// opens a new checkout, so the page must be told whether the checkout bound to
+// the invoice is still live and whether the invoice can still be paid.
 func TestInvoicePageDescribesWhetherTheGatewayCheckoutIsLive(t *testing.T) {
 	const owner = "11111111-1111-4111-8111-111111111111"
 	const id = "22222222-2222-4222-8222-222222222222"
@@ -391,24 +388,18 @@ func TestInvoicePageDescribesWhetherTheGatewayCheckoutIsLive(t *testing.T) {
 	repo := &invoiceTestRepository{entitlementRepository: &entitlementRepository{memoryRepository: &memoryRepository{files: make(map[string]*db.FileList)}}}
 	handler := newTestHandler(t, repo, &memoryStorage{objects: make(map[string][]byte)})
 	handler.billingGateways = map[string]billingGateway{db.BillingGatewayPayPal: &paypalGatewayStub{}}
-	var err error
-	handler.templates, err = parseTemplates(os.DirFS("../.."), config.BrandingConfig{})
-	if err != nil {
-		t.Fatal(err)
-	}
 	router := chi.NewRouter()
 	router.Get("/invoices/{id}", handler.Invoice)
-	const original, expired, again = "Complete the original checkout", "has expired without a confirmed payment", "Pay again below to open a new checkout."
 	for _, test := range []struct {
-		name             string
-		invoiceExpires   time.Time
-		checkoutExpires  *time.Time
-		want, wantAbsent []string
+		name                    string
+		invoiceExpires          time.Time
+		checkoutExpires         *time.Time
+		checkoutExpired, canPay bool
 	}{
-		{"live checkout", now.Add(20 * time.Hour), new(now.Add(time.Hour)), []string{original, "Pay with PayPal"}, []string{expired}},
-		{"expired checkout", now.Add(20 * time.Hour), new(now.Add(-time.Minute)), []string{expired, again, "Pay with PayPal"}, []string{original}},
-		{"expired checkout and payment window", now.Add(-time.Minute), new(now.Add(-time.Hour)), []string{expired, "payment window has ended"}, []string{original, again, "Pay with PayPal"}},
-		{"no stored checkout", now.Add(20 * time.Hour), nil, []string{original}, []string{expired}},
+		{"live checkout", now.Add(20 * time.Hour), new(now.Add(time.Hour)), false, true},
+		{"expired checkout", now.Add(20 * time.Hour), new(now.Add(-time.Minute)), true, true},
+		{"expired checkout and payment window", now.Add(-time.Minute), new(now.Add(-time.Hour)), true, false},
+		{"no stored checkout", now.Add(20 * time.Hour), nil, false, true},
 	} {
 		repo.invoice = db.Invoice{ID: id, UserID: owner, Kind: "plan", Status: "pending", Name: "Plus", Email: "buyer@example.com", Credits: 10, AmountMinor: 1000, Currency: "USD",
 			Gateway: db.BillingGatewayPayPal, CreatedAt: now.Add(-4 * time.Hour), ExpiresAt: test.invoiceExpires}
@@ -425,15 +416,13 @@ func TestInvoicePageDescribesWhetherTheGatewayCheckoutIsLive(t *testing.T) {
 		if response.Code != http.StatusOK {
 			t.Fatalf("%s: status %d %s", test.name, response.Code, body)
 		}
-		for _, text := range test.want {
-			if !strings.Contains(body, text) {
-				t.Errorf("%s: page does not say %q", test.name, text)
-			}
+		page, data := pageOf(t, body)
+		if page != "invoice" || data["CheckoutExpired"] != test.checkoutExpired || data["CanPay"] != test.canPay {
+			t.Errorf("%s: page %s CheckoutExpired=%v CanPay=%v, want %v and %v", test.name, page, data["CheckoutExpired"], data["CanPay"], test.checkoutExpired, test.canPay)
 		}
-		for _, text := range test.wantAbsent {
-			if strings.Contains(body, text) {
-				t.Errorf("%s: page says %q", test.name, text)
-			}
+		gateways, _ := data["Gateways"].([]any)
+		if len(gateways) != 1 || gateways[0].(map[string]any)["Key"] != db.BillingGatewayPayPal {
+			t.Errorf("%s: gateways = %v", test.name, data["Gateways"])
 		}
 	}
 }

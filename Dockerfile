@@ -5,7 +5,6 @@ COPY frontend/package.json frontend/package-lock.json ./
 COPY frontend/tools/svelte-types/package.json ./tools/svelte-types/package.json
 RUN --mount=type=cache,target=/root/.npm npm ci --ignore-scripts
 COPY frontend/ ./
-COPY template/ /src/template/
 RUN npm run check && npm run build
 
 FROM --platform=$BUILDPLATFORM golang:1.27.4-alpine3.24@sha256:0a5f7fe796599ff487605987432e7619ae45beeb2fba4c2ce0b907879932aebf AS build
@@ -18,7 +17,7 @@ RUN apk add --no-cache ca-certificates tzdata && mkdir -p /out/data/objects /out
 COPY go.mod go.sum ./
 RUN --mount=type=cache,target=/go/pkg/mod go mod download
 COPY . .
-COPY --from=frontend /src/template/frontend ./template/frontend
+COPY --from=frontend /src/frontend/dist ./frontend/dist
 RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
     CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build \

@@ -10,13 +10,16 @@ import (
 	"net/http"
 	"path"
 	"reflect"
-	"regexp"
 	"strings"
 	"time"
 
 	"github.com/AutisticShark/ObjectShare/config"
 	"github.com/AutisticShark/ObjectShare/db"
 )
+
+// FrontendManifest is where the Vite build manifest lives inside the embedded
+// file system passed to New.
+const FrontendManifest = "frontend/dist/manifest.json"
 
 type frontendManifestEntry struct {
 	File string   `json:"file"`
@@ -29,7 +32,10 @@ type frontendAssets struct {
 }
 
 func loadFrontend(files fs.FS) (*frontendAssets, error) {
-	manifest, err := fs.ReadFile(files, "template/frontend/manifest.json")
+	if files == nil {
+		return nil, nil
+	}
+	manifest, err := fs.ReadFile(files, FrontendManifest)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
 			return nil, nil
@@ -44,15 +50,16 @@ func loadFrontend(files fs.FS) (*frontendAssets, error) {
 	if !ok || !validFrontendPath(entry.File) || len(entry.CSS) == 0 {
 		return nil, fmt.Errorf("frontend manifest has no valid entry")
 	}
+	dist := path.Dir(FrontendManifest)
 	for _, file := range append([]string{entry.File}, entry.CSS...) {
 		if !validFrontendPath(file) {
 			return nil, fmt.Errorf("invalid frontend asset path")
 		}
-		if _, err := fs.Stat(files, "template/frontend/"+file); err != nil {
+		if _, err := fs.Stat(files, dist+"/"+file); err != nil {
 			return nil, fmt.Errorf("missing frontend asset: %w", err)
 		}
 	}
-	sub, err := fs.Sub(files, "template/frontend")
+	sub, err := fs.Sub(files, dist)
 	if err != nil {
 		return nil, err
 	}
@@ -82,62 +89,84 @@ func (handler *Handler) FrontendAsset(writer http.ResponseWriter, request *http.
 	http.ServeContent(writer, request, path.Base(file), time.Time{}, bytes.NewReader(data))
 }
 
-var frontendScripts = regexp.MustCompile(`(?s)<script\b[^>]*\bsrc="(?:/assets/[^\"]+|https://cdn\.jsdelivr\.net/[^\"]+|https://challenges\.cloudflare\.com/[^\"]+)"[^>]*>\s*</script>`)
-var frontendCDNStyle = regexp.MustCompile(`(?s)<link\s+rel="stylesheet"\s+href="https://cdn\.jsdelivr\.net/[^\"]+"[^>]*>`)
-
-func (handler *Handler) frontendPage(page []byte, name string, data any) ([]byte, error) {
-	if handler.frontend == nil || !strings.HasSuffix(name, ".html") {
-		return page, nil
-	}
+// frontendPage renders the HTML shell for a page: document metadata, the
+// bundle, an empty mount point, and the page data as inert JSON.
+func (handler *Handler) frontendPage(name string, data any) ([]byte, error) {
 	props, err := frontendValue(reflect.ValueOf(data))
 	if err != nil {
 		return nil, err
+	}
+	fields, _ := props.(map[string]any)
+	if fields == nil {
+		fields = map[string]any{}
+	}
+	switch context := data.(type) {
+	case mfaPageData:
+		if context.User != nil {
+			fields["HasPassword"] = context.User.PasswordHash != ""
+			fields["RecoveryCount"] = len(context.User.MFA.Recovery)
+		}
+	case adminPageData:
+		fields["HasPassword"] = context.User != nil && context.User.PasswordHash != ""
 	}
 	branding := config.BrandingConfig{}.Display()
 	if handler.config != nil {
 		branding = handler.config.Branding.Display()
 	}
-	if fields, ok := props.(map[string]any); ok {
-		switch context := data.(type) {
-		case mfaPageData:
-			if context.User != nil {
-				fields["HasPassword"] = context.User.PasswordHash != ""
-				fields["RecoveryCount"] = len(context.User.MFA.Recovery)
-			}
-		case adminPageData:
-			fields["HasPassword"] = context.User != nil && context.User.PasswordHash != ""
-		}
-	}
 	publicBranding, err := frontendValue(reflect.ValueOf(branding))
 	if err != nil {
 		return nil, err
 	}
+	page := strings.TrimSuffix(name, ".html")
+	// encoding/json escapes <, >, and &, so text such as a filename containing
+	// "</script>" cannot end the data element. The payload is never executed.
 	payload, err := json.Marshal(struct {
 		Page     string
 		Data     any
 		Branding any
-	}{Page: strings.TrimSuffix(name, ".html"), Data: props, Branding: publicBranding})
+	}{Page: page, Data: fields, Branding: publicBranding})
 	if err != nil {
 		return nil, err
 	}
-	// encoding/json escapes HTML delimiters, including a closing script tag in
-	// a filename. The payload is inert data, never executable JavaScript.
-	boot := append([]byte(`<script id="objectshare-page" type="application/json">`), payload...)
-	boot = append(boot, []byte(`</script>`)...)
-	page = frontendScripts.ReplaceAll(page, nil)
-	page = frontendCDNStyle.ReplaceAll(page, nil)
-	var head strings.Builder
-	for _, css := range handler.frontend.entry.CSS {
-		fmt.Fprintf(&head, `<link rel="stylesheet" href="/assets/frontend/%s">`, html.EscapeString(css))
+
+	var out strings.Builder
+	out.WriteString(`<!doctype html><html lang="en"`)
+	// Signed-in pages carry the saved theme so the first paint already matches
+	// it; guests follow the operating system through CSS until the app starts.
+	if user, ok := fields["User"].(map[string]any); ok {
+		theme := "light"
+		if dark, _ := user["DarkMode"].(bool); dark {
+			theme = "dark"
+		}
+		fmt.Fprintf(&out, ` data-bs-theme="%s"`, theme)
 	}
-	fmt.Fprintf(&head, `<script type="module" src="/assets/frontend/%s"></script>`, html.EscapeString(handler.frontend.entry.File))
-	page = bytes.Replace(page, []byte("</head>"), []byte(head.String()+"</head>"), 1)
-	if bytes.Contains(page, []byte("</body>")) {
-		page = bytes.Replace(page, []byte("</body>"), append(boot, []byte("</body>")...), 1)
-	} else {
-		page = append(page, boot...)
+	out.WriteString(`><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">`)
+	out.WriteString(`<meta name="color-scheme" content="light dark">`)
+	fmt.Fprintf(&out, `<title>%s</title>`, html.EscapeString(branding.SiteName))
+	if branding.Tagline != "" {
+		fmt.Fprintf(&out, `<meta name="description" content="%s">`, html.EscapeString(branding.Tagline))
 	}
-	return page, nil
+	if branding.FaviconURL != "" {
+		fmt.Fprintf(&out, `<link rel="icon" href="%s">`, html.EscapeString(branding.FaviconURL))
+	}
+	if page == "oauth_continue" {
+		// The OAuth callback finishes with a same-site navigation so SameSite=Strict
+		// cookies are sent; it must not depend on the bundle loading.
+		if location, _ := fields["Location"].(string); strings.HasPrefix(location, "/") && !strings.HasPrefix(location, "//") {
+			fmt.Fprintf(&out, `<meta http-equiv="refresh" content="0;url=%s">`, html.EscapeString(location))
+		}
+	}
+	if handler.frontend != nil {
+		for _, css := range handler.frontend.entry.CSS {
+			fmt.Fprintf(&out, `<link rel="stylesheet" href="/assets/frontend/%s">`, html.EscapeString(css))
+		}
+		fmt.Fprintf(&out, `<script type="module" src="/assets/frontend/%s"></script>`, html.EscapeString(handler.frontend.entry.File))
+	}
+	fmt.Fprintf(&out, `</head><body><div id="objectshare-app"></div><noscript><p class="noscript">%s requires JavaScript.</p></noscript>`, html.EscapeString(branding.SiteName))
+	out.WriteString(`<script id="objectshare-page" type="application/json">`)
+	out.Write(payload)
+	out.WriteString(`</script></body></html>`)
+	return []byte(out.String()), nil
 }
 
 // Page contexts contain database models as well as presentation values. Project
@@ -188,6 +217,19 @@ func frontendValue(value reflect.Value) (any, error) {
 			}
 		}
 		return frontendStruct(value)
+	case reflect.Map:
+		if value.Type().Key().Kind() != reflect.String {
+			return nil, fmt.Errorf("unsupported frontend map key %s", value.Type().Key())
+		}
+		result := make(map[string]any, value.Len())
+		for _, key := range value.MapKeys() {
+			item, err := frontendValue(value.MapIndex(key))
+			if err != nil {
+				return nil, err
+			}
+			result[key.String()] = item
+		}
+		return result, nil
 	case reflect.Slice, reflect.Array:
 		items := make([]any, value.Len())
 		for i := range items {

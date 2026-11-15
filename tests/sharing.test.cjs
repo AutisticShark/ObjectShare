@@ -2,9 +2,9 @@ const {test} = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const vm = require('node:vm');
-require('../template/client-encryption.js');
+require('../frontend/src/controllers/client-encryption.js');
 const crypto = globalThis.ObjectShareCrypto;
-const source = fs.readFileSync(require('node:path').join(__dirname, '../template/sharing.js'), 'utf8');
+const source = fs.readFileSync(require('node:path').join(__dirname, '../frontend/src/controllers/sharing.js'), 'utf8');
 
 function page({encrypted = false, api = crypto, clipboardFails = false, invalid = false} = {}) {
   function element(extra = {}) {

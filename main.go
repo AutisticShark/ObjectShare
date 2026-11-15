@@ -7,6 +7,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"io/fs"
 	"log/slog"
 	"net"
 	"net/http"
@@ -16,14 +17,15 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/AutisticShark/ObjectShare/api/htmx"
 	appauth "github.com/AutisticShark/ObjectShare/auth"
 	"github.com/AutisticShark/ObjectShare/config"
 	"github.com/AutisticShark/ObjectShare/db"
 	"github.com/google/uuid"
 )
 
-//go:embed template/*
-var templateFiles embed.FS
+//go:embed all:frontend/dist
+var frontendFiles embed.FS
 
 func main() {
 	if err := run(); err != nil {
@@ -90,12 +92,15 @@ func run() error {
 	if *createAdmin {
 		return createInitialAdmin(startupContext, repository, *adminEmail, *adminName, *adminPasswordFile, *adminPasswordStdin)
 	}
+	if _, err := fs.Stat(frontendFiles, htmx.FrontendManifest); err != nil {
+		return errors.New("the web interface is not built into this binary; run `npm --prefix frontend ci && npm --prefix frontend run build`, then rebuild")
+	}
 	if err := repository.EnableRedis(startupContext, cfg.Redis); err != nil {
 		return err
 	}
 	logger.Info("request state backend configured", "redis_enabled", cfg.Redis.URL != "")
 	runContext, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	reloader := newConfigReloader(runContext, cfg, repository, templateFiles, logger)
+	reloader := newConfigReloader(runContext, cfg, repository, frontendFiles, logger)
 	defer func() {
 		stop()
 		reloader.Stop()

@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
-	"os"
 	"strings"
 	"testing"
 	"time"
@@ -239,11 +238,6 @@ func TestAdminModerationAuthorizationAndForms(t *testing.T) {
 	user := &db.User{ID: uuid.NewString(), Email: "user@example.com", Role: db.RoleUser, Active: true, TokenVersion: 1}
 	repo.users[admin.ID], repo.users[user.ID] = admin, user
 	h := newAuthTestHandler(t, repo, false)
-	var err error
-	h.templates, err = parseTemplates(os.DirFS("../.."), config.BrandingConfig{})
-	if err != nil {
-		t.Fatal(err)
-	}
 	router := chi.NewRouter()
 	router.With(h.RequireAdmin).Post("/{id}", h.AdminModerateUser)
 	for _, test := range []struct {
@@ -273,8 +267,10 @@ func TestAdminModerationAuthorizationAndForms(t *testing.T) {
 			if response.Code != test.want || user.ModerationStatus != test.status || admin.ModerationStatus != "" {
 				t.Fatalf("status=%d moderation=%s body=%s", response.Code, user.ModerationStatus, response.Body.String())
 			}
-			if test.want == 200 && !strings.Contains(response.Body.String(), "moderation_status") {
-				t.Fatal("moderation form absent from rendered page")
+			if test.want == 200 {
+				if page, data := pageOf(t, response.Body.String()); page != "admin_users" || data["Error"] == "" {
+					t.Fatalf("rejected moderation did not re-render the directory with an error: %s %v", page, data)
+				}
 			}
 		})
 	}

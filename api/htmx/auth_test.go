@@ -17,7 +17,6 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"testing/fstest"
 	"time"
 
 	appauth "github.com/AutisticShark/ObjectShare/auth"
@@ -440,7 +439,7 @@ func TestInitialSetupIsCSRFProtectedAndOneTime(t *testing.T) {
 	handler := newAuthTestHandler(t, repository, false)
 	page := httptest.NewRecorder()
 	handler.SetupPage(page, httptest.NewRequest(http.MethodGet, "/setup", nil))
-	csrf := strings.TrimSpace(page.Body.String())
+	csrf := csrfOf(t, page.Body.String())
 	if csrf == "" || len(page.Result().Cookies()) != 1 {
 		t.Fatal("setup page did not issue a pre-authentication CSRF token")
 	}
@@ -487,7 +486,7 @@ func TestSignupCreatesNormalUserAndSecureJWT(t *testing.T) {
 	handler := newAuthTestHandler(t, repository, true)
 	page := httptest.NewRecorder()
 	handler.SignupPage(page, httptest.NewRequest(http.MethodGet, "/signup", nil))
-	request := formRequest("/signup", url.Values{"csrf_token": {strings.TrimSpace(page.Body.String())}, "display_name": {"Regular User"}, "email": {"USER@example.com"}, "password": {"a sufficiently long password"}, "password_confirm": {"a sufficiently long password"}})
+	request := formRequest("/signup", url.Values{"csrf_token": {csrfOf(t, page.Body.String())}, "display_name": {"Regular User"}, "email": {"USER@example.com"}, "password": {"a sufficiently long password"}, "password_confirm": {"a sufficiently long password"}})
 	request.AddCookie(page.Result().Cookies()[0])
 	response := httptest.NewRecorder()
 	handler.Signup(response, request)
@@ -518,13 +517,13 @@ func TestLoginRejectsBadPasswordAndIssuesJWT(t *testing.T) {
 	handler := newAuthTestHandler(t, repository, false)
 	page := httptest.NewRecorder()
 	handler.LoginPage(page, httptest.NewRequest(http.MethodGet, "/login", nil))
-	csrf, preAuthCookie := strings.TrimSpace(page.Body.String()), page.Result().Cookies()[0]
+	csrf, preAuthCookie := csrfOf(t, page.Body.String()), page.Result().Cookies()[0]
 
 	badRequest := formRequest("/login", url.Values{"csrf_token": {csrf}, "email": {user.Email}, "password": {"this password is wrong"}})
 	badRequest.AddCookie(preAuthCookie)
 	badResponse := httptest.NewRecorder()
 	handler.Login(badResponse, badRequest)
-	if badResponse.Code != http.StatusOK || !strings.Contains(badResponse.Body.String(), "Email or password is incorrect.") {
+	if badResponse.Code != http.StatusOK || !strings.Contains(pageText(badResponse.Body.String()), "Email or password is incorrect.") {
 		t.Fatalf("bad login status=%d body=%q", badResponse.Code, badResponse.Body.String())
 	}
 
@@ -702,7 +701,7 @@ func TestAccountThemePreferencePersistsAndRequiresCSRF(t *testing.T) {
 	request.AddCookie(&http.Cookie{Name: "objectshare_jwt", Value: token})
 	response = httptest.NewRecorder()
 	protected.ServeHTTP(response, request)
-	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "Choose either the light or dark theme.") || !repository.users[user.ID].DarkMode {
+	if response.Code != http.StatusOK || !strings.Contains(pageText(response.Body.String()), "Choose either the light or dark theme.") || !repository.users[user.ID].DarkMode {
 		t.Fatalf("invalid theme status=%d body=%q dark=%t", response.Code, response.Body.String(), repository.users[user.ID].DarkMode)
 	}
 
@@ -789,8 +788,14 @@ func TestAdministratorUserListDisplaysQuotaAccountedStorage(t *testing.T) {
 	request = request.WithContext(context.WithValue(request.Context(), identityContextKey{}, &identity{User: admin, Claims: &appauth.Claims{CSRF: "csrf"}}))
 	response := httptest.NewRecorder()
 	handler.AdminUsers(response, request)
-	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "total=1.5 MiB") || !strings.Contains(response.Body.String(), "user@example.com=1.5 MiB") {
-		t.Fatalf("administrator storage display status=%d body=%q", response.Code, response.Body.String())
+	_, listing := pageOf(t, response.Body.String())
+	storage := map[string]any{}
+	users, _ := listing["Users"].([]any)
+	for _, row := range users {
+		storage[row.(map[string]any)["Email"].(string)] = row.(map[string]any)["StorageUsed"]
+	}
+	if response.Code != http.StatusOK || listing["TotalStorageUsed"] != "1.5 MiB" || storage["user@example.com"] != "1.5 MiB" {
+		t.Fatalf("administrator storage display status=%d total=%v users=%v", response.Code, listing["TotalStorageUsed"], storage)
 	}
 }
 
@@ -823,7 +828,7 @@ func TestAdministratorPasswordResetValidatesAndInvalidatesJWTs(t *testing.T) {
 	request = request.WithContext(context.WithValue(request.Context(), identityContextKey{}, &identity{User: admin, Claims: &appauth.Claims{CSRF: "csrf"}, Transport: transportCookie}))
 	response = httptest.NewRecorder()
 	router.ServeHTTP(response, request)
-	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "Passwords do not match.") || repository.users[user.ID].TokenVersion != 7 {
+	if response.Code != http.StatusOK || !strings.Contains(pageText(response.Body.String()), "Passwords do not match.") || repository.users[user.ID].TokenVersion != 7 {
 		t.Fatalf("mismatched reset status=%d version=%d body=%q", response.Code, repository.users[user.ID].TokenVersion, response.Body.String())
 	}
 
@@ -833,7 +838,7 @@ func TestAdministratorPasswordResetValidatesAndInvalidatesJWTs(t *testing.T) {
 		request = request.WithContext(context.WithValue(request.Context(), identityContextKey{}, &identity{User: admin, Claims: &appauth.Claims{CSRF: "csrf"}, Transport: transportCookie}))
 		response = httptest.NewRecorder()
 		router.ServeHTTP(response, request)
-		if !strings.Contains(response.Body.String(), "Enter your own current password") || repository.users[user.ID].TokenVersion != 7 {
+		if !strings.Contains(pageText(response.Body.String()), "Enter your own current password") || repository.users[user.ID].TokenVersion != 7 {
 			t.Fatalf("reset with administrator password %q status=%d version=%d body=%q", adminPassword, response.Code, repository.users[user.ID].TokenVersion, response.Body.String())
 		}
 	}
@@ -1004,7 +1009,7 @@ func TestAdministratorPaidStatusUpdateIsAuthorizedAndDoesNotInvalidateJWTs(t *te
 	request = request.WithContext(context.WithValue(request.Context(), identityContextKey{}, &identity{User: admin, Claims: &appauth.Claims{CSRF: "csrf"}, Transport: transportBearer}))
 	response = httptest.NewRecorder()
 	router.ServeHTTP(response, request)
-	if response.Code != http.StatusOK || !repository.users[user.ID].IsPaid || !strings.Contains(response.Body.String(), "Choose a valid payment status.") {
+	if response.Code != http.StatusOK || !repository.users[user.ID].IsPaid || !strings.Contains(pageText(response.Body.String()), "Choose a valid payment status.") {
 		t.Fatalf("invalid paid update status=%d paid=%t body=%q", response.Code, repository.users[user.ID].IsPaid, response.Body.String())
 	}
 
@@ -1132,29 +1137,8 @@ func TestLoginRedirectsUseOnlyServerOwnedDestinations(t *testing.T) {
 
 func newAuthTestHandler(t *testing.T, repository *authMemoryRepository, secure bool) *Handler {
 	t.Helper()
-	templates := fstest.MapFS{
-		"template/setup.html":           {Data: []byte(`{{define "setup.html"}}{{.CSRF}}{{.Error}}{{end}}`)},
-		"template/login.html":           {Data: []byte(`{{define "login.html"}}{{.CSRF}}{{.Error}}{{end}}`)},
-		"template/signup.html":          {Data: []byte(`{{define "signup.html"}}{{.CSRF}}{{.Error}}{{end}}`)},
-		"template/account.html":         {Data: []byte(`{{define "account.html"}}{{.User.Email}}{{.Error}}{{end}}`)},
-		"template/admin_users.html":     {Data: []byte(`{{define "admin_users.html"}}{{.Error}}total={{.TotalStorageUsed}};{{range .Users}}{{.Email}}={{.StorageUsed}};{{end}}{{end}}`)},
-		"template/admin_settings.html":  {Data: []byte(`{{define "admin_settings.html"}}{{.Error}}{{.Message}}{{end}}`)},
-		"template/index.html":           {Data: []byte(`{{define "index.html"}}index{{end}}`)},
-		"template/file_view.html":       {Data: []byte(`{{define "file_view.html"}}file{{end}}`)},
-		"template/oauth_error.html":     {Data: []byte(`{{define "oauth_error.html"}}{{.Error}}{{end}}`)},
-		"template/oauth_continue.html":  {Data: []byte(`{{define "oauth_continue.html"}}continue={{.Location}}{{end}}`)},
-		"template/branding.css":         {Data: []byte(`.site-logo { height: 2rem; }`)},
-		"template/theme.js":             {Data: []byte(`console.log("theme test")`)},
-		"template/sharing.js":           {Data: []byte(`// sharing`)},
-		"template/client-encryption.js": {Data: []byte(`// test`)},
-		"template/upload.js":            {Data: []byte(`console.log("test")`)},
-		"template/captcha.js":           {Data: []byte(`console.log("captcha test")`)},
-		"template/admin_users.js":       {Data: []byte(`console.log("admin users test")`)},
-		"template/admin_users.css":      {Data: []byte(`.admin-user-dialog { display: block; }`)},
-		"template/htmx-errors.js":       {Data: []byte(`// htmx errors`)},
-	}
 	cfg := &config.ServiceConfig{MaxFileSize: 1, StorageService: "filesystem", SecureCookies: secure, SettingsKey: "test-only-settings-key-with-at-least-32-bytes", Encryption: &config.EncryptionConfig{}, Auth: &config.AuthConfig{SignupEnabled: true, JWTSecret: "test-only-jwt-secret-with-at-least-32-bytes", TokenLifetime: config.Duration(12 * time.Hour)}}
-	handler, err := New(cfg, repository, &memoryStorage{objects: make(map[string][]byte)}, templates, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	handler, err := New(cfg, repository, &memoryStorage{objects: make(map[string][]byte)}, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1274,7 +1258,7 @@ func TestOAuthOnlyAccountsCannotLogInWithAnyPassword(t *testing.T) {
 
 	page := httptest.NewRecorder()
 	handler.LoginPage(page, httptest.NewRequest(http.MethodGet, "/login", nil))
-	csrf, preAuthCookie := strings.TrimSpace(page.Body.String()), page.Result().Cookies()[0]
+	csrf, preAuthCookie := csrfOf(t, page.Body.String()), page.Result().Cookies()[0]
 	request := formRequest("/login", url.Values{"csrf_token": {csrf}, "email": {user.Email}, "password": {"objectshare-dummy-password"}})
 	request.AddCookie(preAuthCookie)
 	response := httptest.NewRecorder()
@@ -1284,7 +1268,7 @@ func TestOAuthOnlyAccountsCannotLogInWithAnyPassword(t *testing.T) {
 			t.Fatal("browser login issued a JWT for a passwordless account")
 		}
 	}
-	if !strings.Contains(response.Body.String(), "Email or password is incorrect.") {
+	if !strings.Contains(pageText(response.Body.String()), "Email or password is incorrect.") {
 		t.Fatalf("browser login status=%d body=%q", response.Code, response.Body.String())
 	}
 }
@@ -1334,7 +1318,7 @@ func TestPreAuthCSRFTokensAreValidAcrossReplicas(t *testing.T) {
 	second := newAuthTestHandler(t, repository, false) // another replica, same configuration
 	page := httptest.NewRecorder()
 	first.LoginPage(page, httptest.NewRequest(http.MethodGet, "/login", nil))
-	csrf, cookie := strings.TrimSpace(page.Body.String()), page.Result().Cookies()[0]
+	csrf, cookie := csrfOf(t, page.Body.String()), page.Result().Cookies()[0]
 
 	request := formRequest("/login", url.Values{"csrf_token": {csrf}, "email": {"nobody@example.com"}, "password": {"whatever password"}})
 	request.AddCookie(cookie)
@@ -1351,7 +1335,7 @@ func TestSetupRequiresTheConfiguredTokenWhenOneIsSet(t *testing.T) {
 	handler.config.Auth.SetupToken = "a-sufficiently-long-setup-token"
 	page := httptest.NewRecorder()
 	handler.SetupPage(page, httptest.NewRequest(http.MethodGet, "/setup", nil))
-	csrf, cookie := strings.TrimSpace(page.Body.String()), page.Result().Cookies()[0]
+	csrf, cookie := csrfOf(t, page.Body.String()), page.Result().Cookies()[0]
 	submit := func(token string) *httptest.ResponseRecorder {
 		values := url.Values{"csrf_token": {csrf}, "display_name": {"Admin"}, "email": {"admin@example.com"}, "password": {"a sufficiently long password"}, "password_confirm": {"a sufficiently long password"}}
 		if token != "" {
@@ -1364,7 +1348,7 @@ func TestSetupRequiresTheConfiguredTokenWhenOneIsSet(t *testing.T) {
 		return response
 	}
 	for _, wrong := range []string{"", "not-the-token", "a-sufficiently-long-setup-token "} {
-		if response := submit(wrong); response.Code != http.StatusForbidden || len(repository.users) != 0 || !strings.Contains(response.Body.String(), "setup token is incorrect") {
+		if response := submit(wrong); response.Code != http.StatusForbidden || len(repository.users) != 0 || !strings.Contains(pageText(response.Body.String()), "setup token is incorrect") {
 			t.Fatalf("setup with token %q: status=%d users=%d body=%q", wrong, response.Code, len(repository.users), response.Body.String())
 		}
 	}

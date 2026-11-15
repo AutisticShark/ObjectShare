@@ -161,10 +161,11 @@ func (handler *Handler) VerifyEmail(writer http.ResponseWriter, request *http.Re
 			data.Error, data.Success = "", true
 		}
 	}
+	status := http.StatusOK
 	if !data.Success {
-		writer.WriteHeader(http.StatusBadRequest)
+		status = http.StatusBadRequest
 	}
-	handler.render(writer, "verify_email.html", data)
+	handler.renderStatus(writer, status, "verify_email.html", data)
 }
 
 func (handler *Handler) purchaseAllowed(writer http.ResponseWriter, request *http.Request) bool {

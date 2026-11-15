@@ -5,12 +5,10 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/AutisticShark/ObjectShare/config"
 	"github.com/AutisticShark/ObjectShare/db"
 	"github.com/google/uuid"
 )
@@ -47,11 +45,6 @@ func TestWorkspaceAuthenticationAuthorizationAndEscaping(t *testing.T) {
 				repo := &workspaceStub{authMemoryRepository: newAuthMemoryRepository()}
 				h := newAuthTestHandler(t, repo.authMemoryRepository, false)
 				h.repository = repo
-				var err error
-				h.templates, err = parseTemplates(os.DirFS("../.."), config.BrandingConfig{})
-				if err != nil {
-					t.Fatal(err)
-				}
 				u := &db.User{ID: uuid.NewString(), Role: db.RoleUser, Active: true, TokenVersion: 1}
 				if role == "admin" {
 					u.Role = db.RoleAdmin
@@ -110,16 +103,31 @@ func TestWorkspaceAuthenticationAuthorizationAndEscaping(t *testing.T) {
 				}
 				body := res.Body.String()
 				if !strings.HasSuffix(strings.TrimSpace(body), "</html>") || strings.Contains(body, "<script>owner") || strings.Contains(body, "<script>customer") {
-					t.Fatal("incomplete or unsafe template output")
+					t.Fatal("incomplete or unsafe page output")
+				}
+				page, data := pageOf(t, body)
+				if want := map[string]string{"/files": "files", "/billing": "billing", "/admin": "admin_dashboard", "/admin/invoices": "admin_invoices"}[path]; page != want {
+					t.Fatalf("page = %q, want %q", page, want)
 				}
 				if res.Header().Get("Cache-Control") != "private, no-store" {
 					t.Fatal("private page is cacheable")
 				}
-				if path == "/files" && (repo.owner != u.ID || repo.search != "report&file" || repo.filter != "private" || repo.page != 1 || !strings.Contains(body, "rel=\"next\"")) {
-					t.Fatal("file scope or pagination not preserved")
+				if path == "/files" {
+					files, _ := data["Files"].([]any)
+					if repo.owner != u.ID || repo.search != "report&file" || repo.filter != "private" || repo.page != 1 || data["NextURL"] == "" || data["PreviousURL"] == "" || data["Search"] != "report&file" || len(files) != 25 {
+						t.Fatal("file scope or pagination not preserved")
+					}
+					if files[0].(map[string]any)["Name"] != "<script>owner file</script>" {
+						t.Fatalf("file name did not round-trip: %v", files[0])
+					}
 				}
-				if path == "/admin" && strings.Contains(body, `bg-green-lt">Configured`) {
-					t.Fatal("disabled configuration reported as configured")
+				if path == "/admin" {
+					checks, _ := data["Checks"].([]any)
+					for _, check := range checks {
+						if check.(map[string]any)["Configured"] != false {
+							t.Fatalf("disabled configuration reported as configured: %v", check)
+						}
+					}
 				}
 			})
 		}

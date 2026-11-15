@@ -16,7 +16,7 @@ let container: HTMLElement | undefined;
 let disposeControllers: (() => void) | undefined;
 
 function render(boot: Bootstrap) {
-  const previous = container || document.querySelector<HTMLElement>('.page');
+  const previous = container || document.getElementById('objectshare-app');
   if (!previous) return;
   const next = document.createElement('div');
   next.id = 'objectshare-app';

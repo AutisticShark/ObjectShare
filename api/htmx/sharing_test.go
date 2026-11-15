@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
-	"os"
 	"strings"
 	"testing"
 	"time"
@@ -52,14 +51,9 @@ func sharingTestHandler(t *testing.T) (*Handler, *authMemoryRepository, *memoryS
 	repo.files[file.FileID] = file
 	storage := &memoryStorage{objects: map[string][]byte{file.FileID: []byte("secret")}}
 	// Use the lightweight constructor then attach the auth repository, avoiding
-	// unrelated login setup while exercising real templates and permission handlers.
+	// unrelated login setup while exercising real page rendering and permission handlers.
 	h := newTestHandler(t, repo.memoryRepository, storage)
 	h.repository, h.users = repo, repo
-	var err error
-	h.templates, err = parseTemplates(os.DirFS("../.."), config.BrandingConfig{})
-	if err != nil {
-		t.Fatal(err)
-	}
 	return h, repo, storage, file, owner
 }
 
@@ -98,7 +92,7 @@ func TestFileSharingReadAndManagementMatrix(t *testing.T) {
 				response := httptest.NewRecorder()
 				h.SharingPage(response, sharingRequest("GET", file.FileID, "", actor.user))
 				if actor.name == "owner" {
-					if response.Code != 200 || !strings.Contains(response.Body.String(), "Save permissions") {
+					if page, data := pageOf(t, response.Body.String()); response.Code != 200 || page != "sharing" || data["FileID"] != file.FileID {
 						t.Fatalf("owner sharing page: %d %s", response.Code, response.Body.String())
 					}
 				} else if response.Code != 404 || strings.Contains(response.Body.String(), recipient.Email) {
@@ -164,11 +158,15 @@ func TestSharingUpdatesResolveAccountsAndRevokeAccess(t *testing.T) {
 	if h.canReadFile(sharingRequest("GET", file.FileID, "", recipient), file) {
 		t.Fatal("revoked recipient still has access")
 	}
-	// Filenames and recipient form values are escaped in real templates.
+	// Filenames and recipient form values are escaped in the page shell and
+	// reach the frontend unchanged as data.
 	file.FileName = `<script>alert(1)</script>`
 	response = save(db.ShareSelected, `<img src=x onerror=alert(1)>`)
 	if strings.Contains(response.Body.String(), `<img src=x`) || strings.Contains(response.Body.String(), `<script>alert`) {
 		t.Fatal("sharing page rendered unescaped data")
+	}
+	if page, data := pageOf(t, response.Body.String()); page != "sharing" || data["FileName"] != `<script>alert(1)</script>` || data["Recipients"] != `<img src=x onerror=alert(1)>` {
+		t.Fatalf("sharing page data did not round-trip: %s %v", page, data)
 	}
 }
 
@@ -271,9 +269,8 @@ func TestSelectedAccountLookupsAreRateLimited(t *testing.T) {
 	}
 }
 
-// htmx drops 4xx responses unless htmx-errors.js finds the form's .page target
-// in them, so a throttled save must answer with the sharing page and its error
-// alert rather than plain text, keeping what the owner entered.
+// A throttled save must answer with the sharing page and its error rather than
+// plain text, keeping what the owner entered and marking it as not yet saved.
 func TestThrottledRecipientLookupRendersTheSharingPage(t *testing.T) {
 	h, _, _, file, owner := sharingTestHandler(t)
 	h.config.RateLimit = &config.RateLimitConfig{Enabled: true, Window: config.Duration(time.Minute)}
@@ -293,10 +290,13 @@ func TestThrottledRecipientLookupRendersTheSharingPage(t *testing.T) {
 		response := save(htmx)
 		body := response.Body.String()
 		if response.Code != http.StatusTooManyRequests || response.Header().Get("Retry-After") == "" ||
-			!strings.HasPrefix(response.Header().Get("Content-Type"), "text/html") || !strings.Contains(body, `<div class="page">`) ||
-			!strings.Contains(body, `<div class="alert alert-danger" role="alert">Too many recipient lookups. Try again later.</div>`) ||
-			!strings.Contains(body, "owner@example.com, other@example.com</textarea>") || !strings.Contains(body, `data-unsaved="true"`) {
+			!strings.HasPrefix(response.Header().Get("Content-Type"), "text/html") {
 			t.Fatalf("throttled save (HTMX %v): %d %q %s", htmx, response.Code, response.Header().Get("Content-Type"), body)
+		}
+		page, data := pageOf(t, body)
+		if page != "sharing" || data["Error"] != "Too many recipient lookups. Try again later." || data["Recipients"] != "owner@example.com, other@example.com" ||
+			data["Mode"] != db.ShareSelected || data["SavedMode"] != db.ShareLink {
+			t.Fatalf("throttled save (HTMX %v) page data: %s %v", htmx, page, data)
 		}
 	}
 	if file.ShareMode != db.ShareLink {
@@ -445,7 +445,7 @@ func TestDownloadEntitlementsAndFormTokensCannotBypassSharing(t *testing.T) {
 	}
 }
 
-func TestSharingWorkspaceShowsSavedAccessAndOwnerOnlyKeyControls(t *testing.T) {
+func TestSharingPageCarriesSavedAccessAndOwnerOnlyKeyMetadata(t *testing.T) {
 	h, _, _, file, owner := sharingTestHandler(t)
 	file.ShareMode = db.SharePrivate
 	file.ClientEncryption = `{"version":1,"key_id":"public-metadata"}`
@@ -454,18 +454,15 @@ func TestSharingWorkspaceShowsSavedAccessAndOwnerOnlyKeyControls(t *testing.T) {
 	if response.Code != http.StatusOK {
 		t.Fatalf("sharing page: %d %s", response.Code, response.Body.String())
 	}
-	for _, expected := range []string{`id="encrypted-sharing"`, `id="create-encrypted-link"`, `id="share-passphrase"`, `Only you can access this file.`, `src="/assets/sharing.js?v=`} {
-		if !strings.Contains(response.Body.String(), expected) {
-			t.Fatalf("sharing page missing %q", expected)
-		}
-	}
-	if strings.Contains(response.Body.String(), `name="share-passphrase"`) || strings.Contains(response.Body.String(), `name="encryption_passphrase"`) {
-		t.Fatal("encryption passphrase must not be a successful native form field")
+	page, data := pageOf(t, response.Body.String())
+	if page != "sharing" || data["ClientEncrypted"] != true || data["ClientEncryption"] != file.ClientEncryption || data["SavedMode"] != db.SharePrivate || data["Mode"] != db.SharePrivate {
+		t.Fatalf("sharing page data: %s %v", page, data)
 	}
 	response = httptest.NewRecorder()
 	h.UpdateSharing(response, sharingRequest("POST", file.FileID, "share_mode=selected", owner))
-	if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), `data-unsaved="true"`) || !strings.Contains(response.Body.String(), `Only you can access this file.`) {
-		t.Fatal("validation failure misrepresented unsaved access as saved")
+	_, data = pageOf(t, response.Body.String())
+	if response.Code != http.StatusBadRequest || data["Error"] == "" || data["Mode"] != db.ShareSelected || data["SavedMode"] != db.SharePrivate {
+		t.Fatalf("validation failure misrepresented unsaved access as saved: %d %v", response.Code, data)
 	}
 	response = httptest.NewRecorder()
 	h.SharingPage(response, sharingRequest("GET", file.FileID, "", &db.User{ID: uuid.NewString(), Active: true, Role: db.RoleAdmin}))
@@ -474,14 +471,16 @@ func TestSharingWorkspaceShowsSavedAccessAndOwnerOnlyKeyControls(t *testing.T) {
 	}
 }
 
-func TestSharingHTMXValidationAndGuestTokenBinding(t *testing.T) {
+func TestSharingValidationErrorsAndGuestTokenBinding(t *testing.T) {
 	h, _, _, file, owner := sharingTestHandler(t)
 	request := sharingRequest("POST", file.FileID, "share_mode=selected", owner)
 	request.Header.Set("HX-Request", "true")
 	response := httptest.NewRecorder()
 	h.UpdateSharing(response, request)
-	if response.Code != 200 || !strings.Contains(response.Body.String(), "Enter between 1 and 50") || !strings.Contains(response.Body.String(), `hx-select=".page"`) {
-		t.Fatal("HTMX validation cannot replace the page")
+	// HTMX swaps only successful responses, so a validation failure answers 200
+	// with the sharing page carrying the error.
+	if page, data := pageOf(t, response.Body.String()); response.Code != 200 || page != "sharing" || !strings.Contains(data["Error"].(string), "Enter between 1 and 50") {
+		t.Fatalf("HTMX validation did not return the sharing page with its error: %d %s", response.Code, response.Body.String())
 	}
 	_, hash, err := newOwnerToken()
 	if err != nil {
