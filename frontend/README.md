@@ -83,7 +83,8 @@ npm --prefix frontend run test:e2e
 ```
 
 `OBJECTSHARE_BROWSER_CHANNEL=msedge` selects an installed Microsoft Edge. Otherwise
-Playwright uses its Chromium build. CI provisions a disposable application with
+Playwright runs its full Chromium build in new headless mode, not the headless
+shell, whose frame scheduling hides first-paint regressions. CI provisions a disposable application with
 `scripts/test-e2e.sh` and runs the same suite. Browser traces and screenshots
 remain in ignored `frontend/test-results/`.
 
