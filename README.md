@@ -370,7 +370,7 @@ creating the first administrator. Existing `.env` files keep their current port
 binding; a bare value such as `8080` publishes on all host interfaces. Complete
 administrator setup before intentionally exposing the application.
 
-Compose uses PostgreSQL 18, Redis, and persistent local object, database, and
+Compose uses PostgreSQL 19, Redis, and persistent local object, database, and
 Redis volumes. Set `OBJECTSHARE_REDIS_PASSWORD` to a long random secret in `.env`;
 old `.env` files still start with the development default `objectshare-dev`.
 Redis is private to the Compose network and has no published host port. Stop it with
@@ -424,7 +424,7 @@ outer scheme rather than its own `$scheme`. When the scheme cannot be determined
 
 ## Run from source
 
-Requirements: Go 1.27, Node.js 26 LTS with npm for frontend builds, and PostgreSQL 18 (PostgreSQL 17 is also supported). Node.js is not needed to run the built binary. The Docker build compiles and embeds the frontend automatically.
+Requirements: Go 1.27, Node.js 26 LTS with npm for frontend builds, and PostgreSQL 19 (PostgreSQL 17 and 18 are also supported). Node.js is not needed to run the built binary. The Docker build compiles and embeds the frontend automatically.
 
 Startup schema migrations run in a transaction under a PostgreSQL advisory lock.
 Statement caching is disabled during migration and enabled for application queries
